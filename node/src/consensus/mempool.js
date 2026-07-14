@@ -24,7 +24,6 @@ const { nowMs } = require("../../../shared/time");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { TX_REJECTION_REASON } = require("../../../shared/constants");
 const { createRejectionSink } = require("./tx-rejection-sink");
-const { ownerOf: _defaultOwnerOf, ownerKey } = require("./tx-owner");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.mempool");
@@ -42,9 +41,6 @@ const log = getLogger("tip.mempool");
 function createMempool(dag, options = {}) {
   const maxSize = options.maxSize || CONSENSUS.MEMPOOL_MAX_SIZE;
   const maxTxAgeSec = options.maxTxAgeSec || CONSENSUS.MEMPOOL_TX_TTL_SECONDS;
-  // Injectable so unit tests can stub owner resolution without full signature
-  // machinery; production uses the real signer-entity resolver.
-  const _ownerOf = typeof options.ownerOf === "function" ? options.ownerOf : _defaultOwnerOf;
 
   // tx_rejections sink (#64) — shared with commit-handler so every
   // drop site in the codebase produces identically-shaped rows.
@@ -159,19 +155,6 @@ function createMempool(dag, options = {}) {
   // peers reject the cert, stalling consensus (live halt, 2026-07-04).
   const _batchByteBudget = () => Math.floor(CONSENSUS.CERTIFICATE_MAX_BYTES * 0.85);
 
-  // Owner-lane resolution memoized on the entry: drain scans the whole
-  // mempool each round and ownerOf parses signer fields, so recomputing per
-  // scan is wasteful (owner is immutable per tx).
-  function _laneOf(entry) {
-    if (entry._laneComputed) return entry._lane;
-    let lane = null;
-    try { const o = _ownerOf(entry.tx); lane = o ? ownerKey(o) : null; }
-    catch { lane = null; }
-    entry._lane = lane;
-    entry._laneComputed = true;
-    return lane;
-  }
-
   function drain(limit = CONSENSUS.MAX_TXS_PER_CERTIFICATE) {
     _evictStale();
 
@@ -179,21 +162,6 @@ function createMempool(dag, options = {}) {
     const drained = [];
     const drainedIds = [];
     let bytes = 0;
-
-    // Emit each owner lane in prev-link DEPENDENCY order: insertion order lies
-    // (requeue addFront reverses chains; ~11x stale churn per tx, 2026-07-12).
-    // Siblings: first wins, rest held. Owner-less txs are never restricted.
-    const laneMembers = new Map();   // lane -> Set<tx_id>
-    const laneByPrev = new Map();    // lane -> Map<prev0, [txId, entry]>
-    for (const [txId, entry] of _pending) {
-      const lane = _laneOf(entry);
-      if (lane === null) continue;
-      if (!laneMembers.has(lane)) { laneMembers.set(lane, new Set()); laneByPrev.set(lane, new Map()); }
-      laneMembers.get(lane).add(txId);
-      const prev0 = (entry.tx.prev && entry.tx.prev[0]) || null;
-      const byPrev = laneByPrev.get(lane);
-      if (!byPrev.has(prev0)) byPrev.set(prev0, [txId, entry]);   // later siblings held
-    }
 
     const _take = (txId, entry) => {
       if (drained.length >= limit) return false;
@@ -205,28 +173,10 @@ function createMempool(dag, options = {}) {
       return true;
     };
 
-    const laneDone = new Set();
-    let stop = false;
+    // No owner-chain: the cert DAG is the order. Drain in insertion order up to
+    // the count + byte budget; consensus fixes the final ordering.
     for (const [txId, entry] of _pending) {
-      if (stop) break;
-      const lane = _laneOf(entry);
-      if (lane === null) { if (!_take(txId, entry)) stop = true; continue; }
-      if (laneDone.has(lane)) continue;
-      laneDone.add(lane);
-      // Chain base: the member whose prev0 is NOT another member's tx_id ,
-      // it hangs off already-committed (or in-flight) state, so it's the only
-      // tx in the lane that can possibly commit this round.
-      const members = laneMembers.get(lane);
-      const byPrev = laneByPrev.get(lane);
-      let cur = null;
-      for (const [p0, pair] of byPrev) { if (!members.has(p0)) { cur = pair; break; } }
-      // No base (members only reference each other): hold the lane this round.
-      const seen = new Set();
-      while (cur && !seen.has(cur[0])) {
-        seen.add(cur[0]);
-        if (!_take(cur[0], cur[1])) { stop = true; break; }
-        cur = byPrev.get(cur[0]) || null;   // continuation chains onto the taken tx
-      }
+      if (!_take(txId, entry)) break;
     }
 
     // Remove from memory

@@ -172,14 +172,13 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
 
   // ── 1. Transactions ──────────────────────────────────────────────────────
 
-  test("addTx auto-fills timestamp/prev/tx_id and getTx round-trips", async () => {
+  test("addTx auto-fills timestamp/tx_id and getTx round-trips", async () => {
     const dag = await makeDag();
     const before = dag.count();
     const tx = dag.addTx({ tx_type: "TEST_EVENT", data: { n: 1 } });
 
     expect(tx.tx_id).toBeTruthy();
     expect(tx.timestamp).toBeGreaterThan(0);
-    expect(tx.prev).toHaveLength(2);
     expect(dag.count()).toBe(before + 1);
 
     const got = dag.getTx(tx.tx_id);

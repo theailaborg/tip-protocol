@@ -2253,8 +2253,8 @@ class SQLiteStore {
     this._stmts = {
       saveTx: this.db.prepare(
         `INSERT OR IGNORE INTO transactions
-           (tx_id,tx_type,data,timestamp,prev,signature,subject_tip_id)
-         VALUES (?,?,?,?,?,?,?)`
+           (tx_id,tx_type,data,timestamp,signature,subject_tip_id)
+         VALUES (?,?,?,?,?,?)`
       ),
       getTx: this.db.prepare("SELECT * FROM transactions WHERE tx_id=?"),
       getAllTxs: this.db.prepare("SELECT * FROM transactions ORDER BY local_inserted_at ASC"),
@@ -2922,7 +2922,7 @@ class SQLiteStore {
   // ── Helpers ───────────────────────────────────────────────────────────────
   _parseTx(row) {
     if (!row) return null;
-    return { ...row, data: JSON.parse(row.data), prev: JSON.parse(row.prev) };
+    return { ...row, data: JSON.parse(row.data) };
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -2931,7 +2931,6 @@ class SQLiteStore {
       tx.tx_id, tx.tx_type,
       JSON.stringify(tx.data),
       tx.timestamp,
-      JSON.stringify(tx.prev || []),
       tx.signature || null,
       subjectTipId(tx)
     );
@@ -4723,7 +4722,6 @@ function _writeGenesisBlock(store, config) {
   const vpTx = {
     tx_type: TX_TYPES.VP_REGISTERED,
     timestamp: GENESIS_TIMESTAMP,
-    prev: [GENESIS_TX_ID, GENESIS_TX_ID],
     data: {
       vp_id: foundingVP.vp_id,
       name: foundingVP.name,
@@ -4752,7 +4750,6 @@ function _writeGenesisBlock(store, config) {
     const idTx = {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: registeredAt,
-      prev: [lastTxId, lastTxId],
       data: {
         tip_id: member.tip_id,
         region: member.region || "US",
@@ -4814,7 +4811,6 @@ function _writeGenesisBlock(store, config) {
     const nodeTx = {
       tx_type: TX_TYPES.NODE_REGISTERED,
       timestamp: GENESIS_TIMESTAMP,
-      prev: [lastTxId, lastTxId],
       data: {
         node_id: foundingNode.node_id,
         name: foundingNode.name,

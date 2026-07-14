@@ -40,7 +40,6 @@ exports.up = async (knex) => {
     t.string("tx_type", 64).notNullable();
     t.text("data").notNullable();
     t.bigInteger("timestamp").notNullable();
-    t.text("prev").notNullable().defaultTo("[]");
     t.text("signature").nullable();
     _id(t, "subject_tip_id").nullable();
     // local_inserted_at = this node's `nowMs()` when the row was written.
