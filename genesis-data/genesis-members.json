@@ -11,16 +11,16 @@
   },
   "founding_nodes": [
     {
-      "tag": "genesis-node-us-east-1",
-      "name": "The AI Lab Genesis Node — US East"
+      "tag": "genesis-tip-node-us-east-sr-1",
+      "name": "The AI Lab Genesis TIP Node - US East (node.theailab.org)"
     },
     {
-      "tag": "genesis-node-us-west-1",
-      "name": "The AI Lab Genesis Node — US West"
+      "tag": "genesis-tip-node-us-west-sr-2",
+      "name": "The AI Lab Genesis TIP Node - US West (node2.theailab.org)"
     },
     {
-      "tag": "genesis-node-ap-south-1",
-      "name": "The AI Lab Genesis Node — AP South (Mumbai)"
+      "tag": "genesis-tip-node-ap-south-sr-3",
+      "name": "The AI Lab Genesis TIP Node - AP South (Mumbai) (node3.theailab.org)"
     }
   ],
   "founding_members": [
