@@ -46,11 +46,9 @@ const LOCAL_CONFIG = Object.freeze({
   // Front door 503s when the oldest un-written tx waited this long (memory ahead
   // of disk). Machine-dependent; keep well under DB_WRITE_STALL_FAIL_STOP_MS.
   DB_WRITE_BACKPRESSURE_MS:            _num("TIP_DB_WRITE_BACKPRESSURE_MS",            10000),
-  // Persistence fail-stop window: exit only after nothing settled (true write
-  // wedge) OR the mirror/db parity gap stayed unresolved this long. 60s false-fired
-  // under sustained DB lag (mirror legitimately ahead of disk); machine-dependent.
+  // Persistence fail-stop window. 60s false-fired under sustained DB lag (mirror
+  // legitimately ahead of disk, not a wedge); machine-dependent.
   DB_WRITE_STALL_FAIL_STOP_MS:         _num("TIP_DB_WRITE_STALL_FAIL_STOP_MS",         180000),
-  // Cadence of the persistence watchdog poll and the mirror-vs-DB parity probe.
   DB_WATCHDOG_TICK_MS:                 _num("TIP_DB_WATCHDOG_TICK_MS",                 5000),
   DB_PARITY_PROBE_INTERVAL_MS:         _num("TIP_DB_PARITY_PROBE_INTERVAL_MS",         60000),
   MEMPOOL_TX_TTL_SECONDS:              _num("TIP_MEMPOOL_TX_TTL_SECONDS",              300),
