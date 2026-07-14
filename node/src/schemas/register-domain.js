@@ -13,7 +13,7 @@
  *
  * Quick summary of the 4 signed fields (alphabetical):
  *
- *   claimed_at  string,  required (ISO8601 timestamp — replay-resistant binding)
+ *   claimed_at  number,  required (epoch ms, replay-resistant binding)
  *   domain      string,  required (lowercased, normalised)
  *   method      string,  required (enum: http / dns / auto)
  *   tip_id      string,  required (tip://id/...)
