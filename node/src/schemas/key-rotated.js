@@ -39,6 +39,7 @@
 "use strict";
 
 const { signPayload, verifyPayload, schemaError } = require("./_common");
+const { shake256 } = require("../../../shared/crypto");
 const {
   TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
   SIGNATURE_ALGORITHM_VALUES, SIGNATURE_ALGORITHM_DEFAULT,
@@ -163,6 +164,17 @@ function verifyTx(tx, dag) {
   }
   if (!Number.isFinite(d.effective_at) || d.effective_at < tx.timestamp) {
     return { ok: false, status: 400, error: "effective_at must be >= tx.timestamp", code: "effective_at_invalid" };
+  }
+  if (typeof d.old_key_fingerprint !== "string" || d.old_key_fingerprint.length === 0) {
+    return { ok: false, status: 400, error: "old_key_fingerprint missing", code: "old_key_fingerprint_missing" };
+  }
+  // CAS — old_key_fingerprint must match the live active key.
+  // Concurrency/replay defense: any rotation or recovery that moved the
+  // active key since this tx was signed makes it stale -> reject, so two
+  // rotations racing the same identity can't both commit.
+  const active = typeof dag.getActiveKey === "function" ? dag.getActiveKey("identity", d.tip_id) : null;
+  if (!active || shake256(active.public_key).slice(0, 32) !== d.old_key_fingerprint) {
+    return { ok: false, status: 409, error: "old_key_fingerprint does not match current active key (state changed)", code: "state_changed" };
   }
   return { ok: true };
 }
