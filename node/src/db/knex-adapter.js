@@ -23,7 +23,8 @@ const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx }
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
-const { SNAPSHOT_BULK_CHUNK_ROWS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/constants");
+const { SNAPSHOT_BULK_CHUNK_ROWS } = require("../../../shared/constants");
+const { DB_WRITE_BACKPRESSURE_MS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/local-config");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
 // Every SQL driver TIP supports returns BIGINT differently in JS land:
@@ -308,7 +309,13 @@ class KnexAdapter {
     this._ffPendingSince = [];
     this._ffLastSettledMs = nowMs();
     this._parityLastOkMs = 0;
+    this._parityMismatchSince = 0;   // first time a still-unresolved mismatch was seen
+    this._overloaded = false;   // set by the watchdog when memory outruns disk
   }
+
+  // Write queue is behind but still draining: callers refuse new work so it
+  // catches up, instead of exiting and losing the un-persisted txs.
+  isPersistenceOverloaded() { return this._overloaded; }
 
   // Armed at node boot, not construction: constructor timers leak into test
   // and tooling processes and fail-stop them spuriously. The _ff chain
@@ -317,9 +324,17 @@ class KnexAdapter {
     if (this._ffWatchdog) return;
     this._ffWatchdog = setInterval(() => {
       const s = this.persistenceStats();
-      if (s.oldest_pending_ms > DB_WRITE_STALL_FAIL_STOP_MS) {
-        this.log.error(`KnexAdapter: oldest pending DB write stalled for ${Math.round(s.oldest_pending_ms / 1000)}s (queue depth ${s.queue_depth}), persistence wedged, fail-stop`);
+      // Overloaded but still draining: backpressure only, never exit (exiting
+      // drops the un-persisted in-memory txs, the loss we are preventing).
+      this._overloaded = s.oldest_pending_ms > DB_WRITE_BACKPRESSURE_MS;
+      // True wedge: nothing drained for the fail-stop window (a real hang, not
+      // backlog). Only this exits, so anti-entropy resyncs from peers.
+      if (s.queue_depth > 0 && s.last_settled_age_ms > DB_WRITE_STALL_FAIL_STOP_MS) {
+        this.log.error(`KnexAdapter: persistence wedged, no write settled for ${Math.round(s.last_settled_age_ms / 1000)}s (queue depth ${s.queue_depth}), fail-stop`);
         process.exit(78);
+      }
+      if (this._overloaded) {
+        this.log.warn(`KnexAdapter: persistence overloaded (queue ${s.queue_depth}, oldest ${Math.round(s.oldest_pending_ms / 1000)}s, draining), backpressure engaged`);
       }
     }, DB_WATCHDOG_TICK_MS);
     this._ffWatchdog.unref?.();
@@ -337,13 +352,9 @@ class KnexAdapter {
     };
   }
 
-  // Mirror counts snapshotted synchronously, compared from inside the FIFO
-  // chain: the DB then holds exactly the writes enqueued before the snapshot.
-  _enqueueParityProbe() {
-    if (this._bulkInstall || this._txBuffer || !this.mirror) return;
-    // Every SMT-backed canonical table plus the chain itself; counts catch
-    // lost or extra rows, boot rehydration re-establishes exact equality.
-    const expected = {
+  // Every SMT-backed canonical table; counts catch lost or extra rows.
+  _paritySnapshot() {
+    return {
       transactions: this.mirror._txs.size,
       commits: this.mirror._commits.size,
       identities: this.mirror._identities.size,
@@ -359,17 +370,48 @@ class KnexAdapter {
       owner_heads: this.mirror._ownerHeads.size,
       platform_links: this.mirror._platformLinks.size,
     };
-    this._ff(async () => {
-      for (const [table, want] of Object.entries(expected)) {
-        const row = await this._k(table).count({ n: "*" }).first();
-        const got = Number(row && row.n);
-        if (got !== want) {
-          this.log.error(`KnexAdapter parity probe: ${table} mirror=${want} db=${got}, memory and DB diverged, fail-stop`);
-          process.exit(78);
-        }
-      }
-      this._parityLastOkMs = nowMs();
-    });
+  }
+
+  async _parityMismatches(expected) {
+    const bad = [];
+    for (const [table, want] of Object.entries(expected)) {
+      const row = await this._k(table).count({ n: "*" }).first();
+      const got = Number(row && row.n);
+      if (got !== want) bad.push(`${table}(mirror=${want} db=${got})`);
+    }
+    return bad;
+  }
+
+  _enqueueParityProbe() {
+    if (this._bulkInstall || this._txBuffer || !this.mirror) return;
+    this._ff(async () => this._evaluateParity(await this._parityMismatches(this._paritySnapshot())));
+  }
+
+  // A mismatch while writes are in flight is a transient race (mirror counted a
+  // write whose DB write has not landed) and self-heals. Exit only when the
+  // mismatch is real: it shows at a QUIESCENT queue (no in-flight write can
+  // explain it), or it never clears for the fail-stop window (backstop, matches
+  // the write-stall threshold; backpressure normally forces a quiescent read
+  // well before this).
+  _evaluateParity(bad) {
+    if (bad.length === 0) { this._parityMismatchSince = 0; this._parityLastOkMs = nowMs(); return; }
+    // _ffPendingSince still holds this probe task itself, so <= 1 means no
+    // pending writes remain to explain the mismatch.
+    const quiescent = this._ffPendingSince.length <= 1;
+    if (quiescent) {
+      this.log.error(`KnexAdapter parity probe: ${bad.join(", ")} diverged at quiescent queue, memory and DB diverged, fail-stop`);
+      process.exit(78);
+    }
+    if (!this._parityMismatchSince) this._parityMismatchSince = nowMs();
+    if (nowMs() - this._parityMismatchSince > DB_WRITE_STALL_FAIL_STOP_MS) {
+      this.log.error(`KnexAdapter parity probe: ${bad.join(", ")} unresolved for ${Math.round((nowMs() - this._parityMismatchSince) / 1000)}s, fail-stop`);
+      process.exit(78);
+    }
+    this.log.warn(`KnexAdapter parity probe: ${bad.join(", ")} with ${this._ffPendingSince.length - 1} writes in flight, re-verifying`);
+    setTimeout(() => {
+      if (this._bulkInstall || this._txBuffer || !this.mirror) return;
+      this._ff(async () => this._evaluateParity(await this._parityMismatches(this._paritySnapshot())));
+    }, DB_WATCHDOG_TICK_MS).unref?.();
   }
 
   // ── Startup ────────────────────────────────────────────────────────────────

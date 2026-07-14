@@ -124,12 +124,6 @@ const STATE_ROOT_INTEGRITY_CHECK_MS = 60_000;
 // budget self-limits content txs near this count anyway.
 const BATCH_TX_SOFT_CAP = 250;
 
-// Persistence guards: fail-stop when the oldest pending DB write stalls (a
-// hung chain runs split-brained, 2026-07-10), and probe mirror-vs-DB parity.
-const DB_WRITE_STALL_FAIL_STOP_MS = 60_000;
-const DB_WATCHDOG_TICK_MS = 5_000;
-const DB_PARITY_PROBE_INTERVAL_MS = 60_000;
-
 // Install crash marker in consensus_meta: set at the install's first row,
 // cleared on verified go-live or by resolveStaleInstallMarker. Still
 // in_progress at boot means mixed state: keep it and re-enter syncing.
@@ -882,9 +876,6 @@ module.exports = {
   SNAPSHOT_INSTALL_MARKER_KEY,
   SNAPSHOT_INSTALL_BATCH_ROWS,
   SNAPSHOT_BULK_CHUNK_ROWS,
-  DB_WRITE_STALL_FAIL_STOP_MS,
-  DB_WATCHDOG_TICK_MS,
-  DB_PARITY_PROBE_INTERVAL_MS,
   STATE_ROOT_INTEGRITY_CHECK_MS,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
