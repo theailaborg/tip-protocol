@@ -3,24 +3,24 @@
   "founding_vp": {
     "tag": "primary-vp",
     "name": "The AI Lab Intelligence Unobscured, Inc.",
-    "short_name": "The AI Lab",
+    "short_name": "theailab.org",
     "jurisdiction": "US",
     "jurisdiction_tier": "green",
     "url": "https://vp.theailab.org",
-    "email": "trust@theailab.org"
+    "email": "tip@theailab.org"
   },
   "founding_nodes": [
     {
-      "tag": "primary-node",
-      "name": "The AI Lab TIP Node"
+      "tag": "genesis-node-us-east-1",
+      "name": "The AI Lab Genesis Node — US East"
     },
     {
-      "tag": "secondary-node",
-      "name": "The AI Lab TIP Node 2"
+      "tag": "genesis-node-us-west-1",
+      "name": "The AI Lab Genesis Node — US West"
     },
     {
-      "tag": "tertiary-node",
-      "name": "The AI Lab TIP Node 3"
+      "tag": "genesis-node-ap-south-1",
+      "name": "The AI Lab Genesis Node — AP South (Mumbai)"
     }
   ],
   "founding_members": [
@@ -37,14 +37,62 @@
       "tip_id_type": "personal"
     },
     {
-      "tag": "cofounder-tushar",
-      "name": "Tushar Bhendarkar",
+      "tag": "sofia-martinez",
+      "name": "Sofia Martinez",
       "region": "US",
       "tip_id_type": "personal"
     },
     {
-      "tag": "cofounder-vishal",
-      "name": "Vishal",
+      "tag": "vishal-kothekar",
+      "name": "Vishal Kothekar",
+      "region": "IN",
+      "tip_id_type": "personal"
+    },
+    {
+      "tag": "tushar-bhendarkar",
+      "name": "Tushar Bhendarkar",
+      "region": "IN",
+      "tip_id_type": "personal"
+    },
+    {
+      "tag": "joshua-baron",
+      "name": "Joshua Baron",
+      "region": "US",
+      "tip_id_type": "personal"
+    },
+    {
+      "tag": "ross-thorpe",
+      "name": "Ross Thorpe",
+      "region": "US",
+      "tip_id_type": "personal"
+    },
+    {
+      "tag": "issa-nesheiwat",
+      "name": "Issa E Nesheiwat",
+      "region": "US",
+      "tip_id_type": "personal"
+    },
+    {
+      "tag": "ram-ghonmode",
+      "name": "Ram Ghonmode",
+      "region": "IN",
+      "tip_id_type": "personal"
+    },
+    {
+      "tag": "siddarth-narayanan",
+      "name": "Siddarth Narayanan",
+      "region": "US",
+      "tip_id_type": "personal"
+    },
+    {
+      "tag": "rishabh-narayanan",
+      "name": "Rishabh Narayanan",
+      "region": "US",
+      "tip_id_type": "personal"
+    },
+    {
+      "tag": "prithvi-govindareddy",
+      "name": "Prithvi Govindareddy",
       "region": "US",
       "tip_id_type": "personal"
     }
