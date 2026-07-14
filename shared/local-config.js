@@ -43,6 +43,9 @@ const LOCAL_CONFIG = Object.freeze({
 
   // Capacity and limits
   MEMPOOL_MAX_SIZE:                    _num("TIP_MEMPOOL_MAX_SIZE",                    10000),
+  // Front door 503s when the oldest un-written tx waited this long (memory ahead
+  // of disk). Machine-dependent; keep well under the 60s fail-stop.
+  DB_WRITE_BACKPRESSURE_MS:            _num("TIP_DB_WRITE_BACKPRESSURE_MS",            10000),
   MEMPOOL_TX_TTL_SECONDS:              _num("TIP_MEMPOOL_TX_TTL_SECONDS",              300),
   SYNC_BATCH_SIZE:                     _num("TIP_SYNC_BATCH_SIZE",                     100),
   // Lag within this many rounds heals via gossip + AE; only a larger gap (a real

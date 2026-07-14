@@ -114,6 +114,14 @@ function createMempool(dag, options = {}) {
       return { added: false, reason: "mempool_full" };
     }
 
+    // Persistence backpressure: memory ahead of disk. Refuse new client work
+    // (503, client retries) so the queue drains instead of a fail-stop. Requeue
+    // (addFront) and gossip (cert path) bypass this; they must not be dropped.
+    if (dag && typeof dag.isPersistenceOverloaded === "function" && dag.isPersistenceOverloaded()) {
+      _counters.rejected_total++;
+      return { added: false, reason: "persistence_backpressure" };
+    }
+
     // Over-budget tx can never ride a valid cert; admitting it would
     // head-of-line block drain forever (drain always takes the first tx).
     const txBytes = Buffer.byteLength(JSON.stringify(tx));

@@ -24,6 +24,7 @@ const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
 const { SNAPSHOT_BULK_CHUNK_ROWS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/constants");
+const { DB_WRITE_BACKPRESSURE_MS } = require("../../../shared/local-config");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
 // Every SQL driver TIP supports returns BIGINT differently in JS land:
@@ -308,7 +309,12 @@ class KnexAdapter {
     this._ffPendingSince = [];
     this._ffLastSettledMs = nowMs();
     this._parityLastOkMs = 0;
+    this._overloaded = false;   // set by the watchdog when memory outruns disk
   }
+
+  // Write queue is behind but still draining: callers refuse new work so it
+  // catches up, instead of exiting and losing the un-persisted txs.
+  isPersistenceOverloaded() { return this._overloaded; }
 
   // Armed at node boot, not construction: constructor timers leak into test
   // and tooling processes and fail-stop them spuriously. The _ff chain
@@ -317,9 +323,17 @@ class KnexAdapter {
     if (this._ffWatchdog) return;
     this._ffWatchdog = setInterval(() => {
       const s = this.persistenceStats();
-      if (s.oldest_pending_ms > DB_WRITE_STALL_FAIL_STOP_MS) {
-        this.log.error(`KnexAdapter: oldest pending DB write stalled for ${Math.round(s.oldest_pending_ms / 1000)}s (queue depth ${s.queue_depth}), persistence wedged, fail-stop`);
+      // Overloaded but still draining: backpressure only, never exit (exiting
+      // drops the un-persisted in-memory txs, the loss we are preventing).
+      this._overloaded = s.oldest_pending_ms > DB_WRITE_BACKPRESSURE_MS;
+      // True wedge: nothing drained for the fail-stop window (a real hang, not
+      // backlog). Only this exits, so anti-entropy resyncs from peers.
+      if (s.queue_depth > 0 && s.last_settled_age_ms > DB_WRITE_STALL_FAIL_STOP_MS) {
+        this.log.error(`KnexAdapter: persistence wedged, no write settled for ${Math.round(s.last_settled_age_ms / 1000)}s (queue depth ${s.queue_depth}), fail-stop`);
         process.exit(78);
+      }
+      if (this._overloaded) {
+        this.log.warn(`KnexAdapter: persistence overloaded (queue ${s.queue_depth}, oldest ${Math.round(s.oldest_pending_ms / 1000)}s, draining), backpressure engaged`);
       }
     }, DB_WATCHDOG_TICK_MS);
     this._ffWatchdog.unref?.();
