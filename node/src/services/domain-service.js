@@ -151,6 +151,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
     const canonicalBinding = bindDomainSchema.buildSigningPayload({
       binding_state: DOMAIN_BINDING_STATUS.VERIFIED,
       claimed_at: claim.claimed_at,
+      claimed_method: claim.method,
       domain,
       method: result.method,
       node_id: nodeId,
@@ -167,6 +168,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
         // replay buildSigningPayload(d) deterministically
         binding_state: canonicalBinding.binding_state,
         claimed_at: canonicalBinding.claimed_at,
+        claimed_method: canonicalBinding.claimed_method,
         domain: canonicalBinding.domain,
         method: canonicalBinding.method,
         node_id: canonicalBinding.node_id,
