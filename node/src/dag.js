@@ -2253,8 +2253,8 @@ class SQLiteStore {
     this._stmts = {
       saveTx: this.db.prepare(
         `INSERT OR IGNORE INTO transactions
-           (tx_id,tx_type,data,timestamp,prev,signature,subject_tip_id)
-         VALUES (?,?,?,?,?,?,?)`
+           (tx_id,tx_type,data,timestamp,signature,subject_tip_id)
+         VALUES (?,?,?,?,?,?)`
       ),
       getTx: this.db.prepare("SELECT * FROM transactions WHERE tx_id=?"),
       getAllTxs: this.db.prepare("SELECT * FROM transactions ORDER BY local_inserted_at ASC"),
@@ -2922,7 +2922,7 @@ class SQLiteStore {
   // ── Helpers ───────────────────────────────────────────────────────────────
   _parseTx(row) {
     if (!row) return null;
-    return { ...row, data: JSON.parse(row.data), prev: JSON.parse(row.prev) };
+    return { ...row, data: JSON.parse(row.data) };
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -2931,7 +2931,6 @@ class SQLiteStore {
       tx.tx_id, tx.tx_type,
       JSON.stringify(tx.data),
       tx.timestamp,
-      JSON.stringify(tx.prev || []),
       tx.signature || null,
       subjectTipId(tx)
     );
@@ -4152,27 +4151,10 @@ function _computeExpectedOwnerHead(store, owner) {
   return store.getOwnerHead(ownerKey(owner)) || anchor || GENESIS_TX_ID;
 }
 
-// Owner-chain prev pair assigned at submit time. slot0 = the owner's required
-// head (single source above); slot1 = advisory subject anchor. Shared by the
-// initDAG facade and the Knex adapter so both stores assign prev identically.
-function _computePrevFor(store, txType, data) {
-  const { ownerOf, ownerKey } = require("./consensus/tx-owner");
-  const { subjectTipId } = require("./tx-attribution");
-  const { GENESIS_TX_ID } = require("./genesis");
-  const owner = ownerOf({ tx_type: txType, data });
-  // Chain onto our own SEALED-but-pending tx first (burst chaining); the
-  // committed head is the base only when no fresh pending link exists.
-  const pending = owner && typeof store.getPendingOwnerHead === "function"
-    ? store.getPendingOwnerHead(ownerKey(owner)) : null;
-  const slot0 = pending || _computeExpectedOwnerHead(store, owner);
-  let slot1 = GENESIS_TX_ID;
-  const subject = subjectTipId({ tx_type: txType, data });
-  if (subject && !(owner && owner.entityType === "identity" && owner.entityId === subject)) {
-    slot1 = store.getOwnerHead(`identity:${subject}`)
-      || store.getIdentity(subject)?.tx_id
-      || GENESIS_TX_ID;
-  }
-  return [slot0, slot1];
+// prev removed: the cert DAG is the order, tamper-evidence is the
+// content-addressed tx_id + state_root. Txs carry no prev chain.
+function _computePrevFor() {
+  return [];
 }
 
 // Record a freshly-sealed tx as its owner's pending chain base (burst chaining).
@@ -4237,19 +4219,17 @@ function _buildDagHandle(store, config) {
     addTx(tx) {
       // Order matters:
       // 1. timestamp first (part of canonical form)
-      // 2. prev refs second (part of canonical form — must precede tx_id)
-      // 3. tx_id last — SHAKE-256(canonical{tx_type,data,timestamp,prev})
+      // 2. tx_id last: SHAKE-256(canonical{tx_type,data,timestamp})
       //
       // Auto-fill only fires when tx_id is NOT already set. A caller
       // that has committed to a tx_id has by construction committed to
-      // a specific canonical form (timestamp + prev) — defaulting either
+      // a specific canonical form (timestamp); defaulting it
       // here would change the canonical bytes and break verifyTxId.
-      // Genesis ships with `prev: []` on purpose; snapshot install and
-      // committed-tx replay both pass tx_id and rely on this preservation.
+      // Snapshot install and committed-tx replay both pass tx_id and
+      // rely on this preservation.
       const hadTxId = !!tx.tx_id;
       if (!hadTxId) {
         if (!tx.timestamp) tx.timestamp = nowMs();
-        if (!tx.prev || tx.prev.length === 0) tx.prev = [..._prev];
       }
       if (hadTxId && !verifyTxId(tx)) throw new Error(`addTx: tx_id mismatch — rejecting tampered tx ${tx.tx_id}`);
 
@@ -4273,9 +4253,8 @@ function _buildDagHandle(store, config) {
      */
     prevFor: (txType, data) => _computePrevFor(store, txType, data),
 
-    // Owner-chain prev[0] the given owner MUST reference at commit time (same
-    // computation prevFor used at submit time). Commit-handler compares tx.prev[0]
-    // against this; a mismatch means the head moved (OWNER_HEAD_STALE).
+    // Owner-chain head the given owner would reference at submit time (same
+    // computation prevFor uses).
     expectedOwnerHead: (owner) => _computeExpectedOwnerHead(store, owner),
     // Burst chaining hooks: sealers record each sealed tx; the stale path
     // resets a broken chain so rebuilds restart from the committed head.
@@ -4286,8 +4265,8 @@ function _buildDagHandle(store, config) {
     // §14/#49 — streaming iterator over all rows in `transactions`,
     // ordered by tx_id. Used by snapshot sender to ship the full pre-
     // snapshot history. Receiver installs each row via addTx; addTx's
-    // tightened auto-fill (no fill when tx_id is set) preserves
-    // genesis-style `prev: []` correctly, and its per-row _updatePrev
+    // tightened auto-fill (no fill when tx_id is set) preserves the
+    // committed canonical form, and its per-row _updatePrev
     // leaves the ring at [highest_tx_id, second_highest] after the
     // batch — exactly what a fresh re-prime would compute.
     iterateAllTransactions: () => store.iterateAllTransactions(),
@@ -4741,7 +4720,6 @@ function _writeGenesisBlock(store, config) {
   const vpTx = {
     tx_type: TX_TYPES.VP_REGISTERED,
     timestamp: GENESIS_TIMESTAMP,
-    prev: [GENESIS_TX_ID, GENESIS_TX_ID],
     data: {
       vp_id: foundingVP.vp_id,
       name: foundingVP.name,
@@ -4770,7 +4748,6 @@ function _writeGenesisBlock(store, config) {
     const idTx = {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: registeredAt,
-      prev: [lastTxId, lastTxId],
       data: {
         tip_id: member.tip_id,
         region: member.region || "US",
@@ -4832,7 +4809,6 @@ function _writeGenesisBlock(store, config) {
     const nodeTx = {
       tx_type: TX_TYPES.NODE_REGISTERED,
       timestamp: GENESIS_TIMESTAMP,
-      prev: [lastTxId, lastTxId],
       data: {
         node_id: foundingNode.node_id,
         name: foundingNode.name,

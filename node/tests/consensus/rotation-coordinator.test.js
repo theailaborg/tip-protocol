@@ -805,12 +805,9 @@ describe("#68 rotation coordinator", () => {
     // DAG state and different wall-clock timing.
     expect(txFromNodeA.tx_id).toBe(txFromNodeB.tx_id);
     expect(txFromNodeA.timestamp).toBe(txFromNodeB.timestamp);
-    expect(txFromNodeA.prev).toEqual(txFromNodeB.prev);
 
-    // Sanity: tx_id is a 64-char hex string (SHAKE-256). prev is empty
-    // — rotation tx is a system tx, not part of the user-tx prev chain.
+    // Sanity: tx_id is a 64-char hex string (SHAKE-256).
     expect(txFromNodeA.tx_id).toMatch(/^[0-9a-f]{64}$/);
-    expect(txFromNodeA.prev).toEqual([]);
   });
 
   test("buildRotationTx timestamp anchors at latest committed cert.timestamp (BFT-Time)", () => {
@@ -843,13 +840,10 @@ describe("#68 rotation coordinator", () => {
     expect(tx2.tx_id).not.toBe(tx1.tx_id);
   });
 
-  // System-tx semantic: rotation tx with empty prev passes structural
-  // validation. Prevents regressing the validator's "non-system tx must
-  // have prev refs" rule into rejecting legitimate rotation txs — the
-  // exact failure that broke n4 mid-flight on 2026-05-05 when one node's
-  // DB held only the old genesis row and rotation tx prev pointed to the
-  // current genesis tx_id.
-  test("buildRotationTx carries owner-chain prev (rotation:committee chain) and passes validateTransaction", () => {
+  // System-tx semantic: a rotation tx built by buildRotationTx passes
+  // structural validation. Guards the regression that broke n4 mid-flight
+  // on 2026-05-05 when a node rejected a legitimate rotation tx.
+  test("buildRotationTx passes validateTransaction", () => {
     const { buildRotationTx } = require(path.join(SRC, "consensus", "rotation-coordinator"));
     const { validateTransaction } = require(path.join(SRC, "validators", "tx-validator"));
 
@@ -865,12 +859,7 @@ describe("#68 rotation coordinator", () => {
     };
     const aMsg = `rotation:${proposal.payload_hash}:${ids[0].node_id}`;
     const aSig = mldsaSign(aMsg, a.privateKey);
-    // Owner-chain (#199): rotation txs chain on rotation:committee; the first
-    // rotation anchors at genesis, later ones at the previous rotation tx.
-    // Capture the expectation BEFORE building , sealing notes the pending head.
-    const expectedPrev = dag.prevFor("COMMITTEE_ROTATION", { rotation_number: 2 });
     const tx = buildRotationTx(dag, proposal, [ids[0].node_id], [aSig]);
-    expect(tx.prev).toEqual(expectedPrev);
     const result = validateTransaction(tx, dag, { skipState: true });
     expect(result).toEqual({ valid: true, errors: [], layer: null });
   });

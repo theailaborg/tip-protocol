@@ -34,6 +34,7 @@ const { initCrypto, shake256, tipNormalize } = require(path.join(ROOT, "shared/c
 const contentRegisterSchema = require(path.join(ROOT, "node/src/schemas/content-register"));
 const PC = require(path.join(ROOT, "shared/protocol-constants"));
 const { getGenesisPayload } = require(path.join(ROOT, "node/src/genesis"));
+const { nowMs } = require(path.join(ROOT, "shared/time"));
 
 const SUBMIT_URL = process.env.SUBMIT_URL || "http://localhost:4000";
 const AUDIT_URLS = (process.env.AUDIT_URLS || "http://localhost:4000,http://localhost:4100,http://localhost:4200").split(",");
@@ -56,7 +57,7 @@ function signContent(signer, text) {
     media_canonical_hash: null, content_type_hint: null, cna_version: "2.2",
     attribution_mode: "self",
     authors: [{ tip_id: signer.tip_id, tip_id_type: signer.tip_id_type || "personal", contribution_role: "creator" }],
-    extras: {}, registered_urls: [`https://loss-audit.test/${Date.now()}-${Math.random().toString(36).slice(2, 9)}`],
+    extras: {}, registered_urls: [`https://loss-audit.test/${nowMs()}-${Math.random().toString(36).slice(2, 9)}`],
   };
   const canonical = contentRegisterSchema.buildSigningPayload(body, shake256(tipNormalize(text)));
   body.signature = contentRegisterSchema.sign(canonical, signer.private_key);
@@ -66,7 +67,7 @@ function signContent(signer, text) {
 console.log(`loss-audit: ${COUNT} registrations -> ${SUBMIT_URL}, audit across ${AUDIT_URLS.length} node(s)`);
 const payloads = [];
 for (let i = 0; i < COUNT; i++) {
-  payloads.push(signContent(signers[i % signers.length], `loss-audit ${i} ${Date.now()} ${Math.random()}`));
+  payloads.push(signContent(signers[i % signers.length], `loss-audit ${i} ${nowMs()} ${Math.random()}`));
 }
 
 const ledger = [];
@@ -101,7 +102,7 @@ async function presentOn(url, ctid) {
 
 // Poll until every ledger ctid resolves on every node (accepted txs can take
 // rounds to commit; a restart mid-run adds catch-up time), then final verdict.
-const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+const deadline = nowMs() + SETTLE_TIMEOUT_MS;
 let missingByNode = new Map();
 while (true) {
   missingByNode = new Map();
@@ -114,7 +115,7 @@ while (true) {
   }
   const total = [...missingByNode.values()].reduce((n, m) => n + m.length, 0);
   if (total === 0) break;
-  if (Date.now() > deadline) break;
+  if (nowMs() > deadline) break;
   console.log(`waiting: ${[...missingByNode.entries()].map(([u, m]) => `${u.replace(/^https?:\/\//, "")}=${m.length}`).join(" ")} missing , settling...`);
   await new Promise(r => setTimeout(r, 15000));
 }

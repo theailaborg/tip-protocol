@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS `rotation_participation` (`node_id` varchar(512) not 
 
 CREATE TABLE IF NOT EXISTS `scores` (`tip_id` varchar(512), `score` integer not null default '500', `offense_count` integer not null default '0', `last_updated` bigint not null, primary key (`tip_id`));
 
-CREATE TABLE IF NOT EXISTS `transactions` (`tx_id` varchar(512), `tx_type` varchar(64) not null, `data` text not null, `timestamp` bigint not null, `prev` text not null default '[]', `signature` text null, `subject_tip_id` varchar(512) null, `local_inserted_at` bigint not null default (unixepoch() * 1000), primary key (`tx_id`));
+CREATE TABLE IF NOT EXISTS `transactions` (`tx_id` varchar(512), `tx_type` varchar(64) not null, `data` text not null, `timestamp` bigint not null, `signature` text null, `subject_tip_id` varchar(512) null, `local_inserted_at` bigint not null default (unixepoch() * 1000), primary key (`tx_id`));
 
 CREATE TABLE IF NOT EXISTS `tx_rejections` (`tx_id` varchar(128), `reason` varchar(64) not null, `reason_detail` text null, `rejected_at_ms` bigint not null, `rejected_at_round` integer null, `dropper_node_id` varchar(512) not null, `tx_type` varchar(64) null, `origin_node_id` varchar(512) null, `tx_data` text null, `subject_tip_id` varchar(512) null, primary key (`tx_id`));
 

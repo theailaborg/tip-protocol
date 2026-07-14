@@ -169,7 +169,6 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
       timestamp: nowMs(),
-      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         review_id: reviewId,
         ctid,
@@ -179,9 +178,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         triggered_at_round: round,
       },
     };
-    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
-    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, _nodePrivateKey);
   }
 
@@ -189,7 +186,6 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     const txBody = {
       tx_type: TX_TYPES.CONTENT_DISPUTED,
       timestamp: nowMs(),
-      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         ctid,
         reason: "creator_decision_window_expired",
@@ -202,9 +198,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         suggested_origin: suggestedOrigin || null,
       },
     };
-    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
-    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, _nodePrivateKey);
   }
 
@@ -251,7 +245,6 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
       timestamp: nowMs(),
-      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         review_id: reviewId,
         auto: true,
@@ -264,9 +257,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         recusal_reason: RECUSAL_REASONS.SLA_EXPIRED,
       },
     };
-    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
-    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, _nodePrivateKey);
   }
 

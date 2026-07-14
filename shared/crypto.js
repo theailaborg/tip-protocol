@@ -453,17 +453,13 @@ function generateCTID(originCode, contentHash, tipId) {
  */
 function signTransaction(tx, privateKeyHex, opts = {}) {
   if (!tx.timestamp) tx = { ...tx, timestamp: nowMs() };
-  // NOTE: prev must be set before calling this so tx_id commits to chain position.
-  // dag.addTx() sets prev first, then calls computeTxId — do not reverse that order.
   const canonical = canonicalTx(tx);
   // opts plumbs `{ deterministic: true }` through to mldsaSign for the genesis
   // signing path. Old 2-arg callers get opts={} → hedged (same behaviour as before).
   const sig = mldsaSign(canonical, privateKeyHex, opts);
   const signed = { ...tx, signature: sig };
-  // Compute content-addressed tx_id only if prev is already attached
-  if (!signed.tx_id && Array.isArray(signed.prev) && signed.prev.length > 0) {
-    signed.tx_id = computeTxId(signed);
-  }
+  // Content-addressed tx_id over (tx_type, data, timestamp).
+  if (!signed.tx_id) signed.tx_id = computeTxId(signed);
   return signed;
 }
 
@@ -488,7 +484,7 @@ function randomHex(bytes = 16) {
 
 /**
  * Recursively sort all object keys alphabetically for deterministic JSON serialisation.
- * Arrays preserve their original order (order matters for prev refs).
+ * Arrays preserve their original order (order is significant in data arrays).
  * This ensures two nodes constructing the same tx always produce the same canonical string,
  * regardless of the order keys were inserted into the object.
  *
@@ -513,7 +509,7 @@ function _sortObjectKeys(val) {
 
 /**
  * Produce the canonical JSON string for a transaction.
- * Covers exactly 4 fields: tx_type, data, timestamp, prev.
+ * Covers exactly 3 fields: tx_type, data, timestamp.
  * tx_id and signature are intentionally excluded:
  *   - tx_id  would be circular (it IS the hash of this string)
  *   - signature is computed over this same string, added after
@@ -527,22 +523,17 @@ function _sortObjectKeys(val) {
 function canonicalTx(tx) {
   return JSON.stringify(_sortObjectKeys({
     data: tx.data,
-    prev: tx.prev || [],
     timestamp: tx.timestamp,
     tx_type: tx.tx_type,
   }));
 }
 
 /**
- * Compute the content-addressed tx_id for a transaction.
- * tx_id = SHAKE-256(canonicalTx(tx))  — always 64 hex chars (256 bits).
- *
- * IMPORTANT: tx.prev must already be set before calling this.
- * Calling it before prev is attached gives a tx_id that doesn't commit
- * to the chain position, breaking tamper-evidence.
- *
- * @param {Object} tx  — must have tx_type, data, timestamp, prev
- * @returns {string}   — 64-char hex string
+ * Content-addressed tx_id = SHAKE-256(canonicalTx(tx)), 64 hex chars.
+ * Pure hash of (tx_type, data, timestamp); tamper-evidence comes from the
+ * cert DAG + state_root, not a prev chain.
+ * @param {Object} tx
+ * @returns {string}
  */
 function computeTxId(tx) {
   return shake256(canonicalTx(tx));

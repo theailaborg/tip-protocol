@@ -250,13 +250,12 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
     });
 
     const result = fx.handler.commitOrderedTxs([tx1, tx2], 100);
-    // Same node signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
-    // rebuilt + re-signed against the new head, requeued, commits next round.
-    expect(result.committed).toBe(1);
-    expect(result.dropped).toBe(1);
-    const [requeued] = fx.dag.getMempoolTxs();
-    expect(requeued.prev[0]).toBe(tx1.tx_id);
-    expect(fx.handler.commitOrderedTxs([requeued], 101).committed).toBe(1);
+    // Distinct events (different reason -> different tx_id). No owner-chain
+    // serialization: both commit in the same round.
+    expect(result.committed).toBe(2);
+    expect(result.dropped).toBe(0);
+    const after = fx.dag.getScore(fx.jurorTipIds[0]).score;
+    expect(after).toBe(750 + JURY.JUROR_MAJORITY_BONUS - JURY.JUROR_MINORITY_PENALTY);
   });
 
   test("dedup applies across rounds — same SCORE_UPDATE arriving in round R+1 is dropped", () => {

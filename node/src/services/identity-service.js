@@ -165,7 +165,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const founding = false;
 
     const txBody = {
-      tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt, prev: [],
+      tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt,
       data: {
         // ── Server-derived / tx-level fields ──────────────────────
         tip_id: tipId,
@@ -215,7 +215,6 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const revoked = dag.isRevoked(tipId);
     const tx = rec.tx_id ? dag.getTx(rec.tx_id) : null;
     const txValid = tx ? verifyTxId(tx) : false;
-    const prevValid = tx && tx.prev ? tx.prev.every(p => !!dag.getTx(p)) : false;
 
     return {
       tip_id: rec.tip_id, region: rec.region, public_key: rec.public_key,
@@ -224,7 +223,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       tier: scoreData.tier.name, tier_color: scoreData.tier.color,
       content_count: content.length, registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
-      verification: { tx_exists: !!tx, tx_id_valid: txValid, prev_valid: prevValid, on_dag: true },
+      verification: { tx_exists: !!tx, tx_id_valid: txValid, on_dag: true },
     };
   }
 
@@ -475,7 +474,6 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       tx_type: TX_TYPES.LINK_PLATFORM,
       timestamp: verifiedAt,
       signature: nodeSig,
-      prev: [],
       data: txData,
     }, dag);
 
@@ -527,7 +525,6 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const unlinkTx = withTxId({
       tx_type: TX_TYPES.UNLINK_PLATFORM,
       timestamp,
-      prev: [],
       data: {
         tip_id: tipId,
         platform,

@@ -108,7 +108,6 @@ function initScoring(dag, config) {
     const txBody = {
       tx_type: TX_TYPES.SCORE_UPDATE,
       timestamp,
-      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         tip_id: tipId,
         delta,
@@ -118,9 +117,7 @@ function initScoring(dag, config) {
         node_id: config.nodeRegisteredId || config.nodeId,
       },
     };
-    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
-    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, config.nodePrivateKey);
   }
 

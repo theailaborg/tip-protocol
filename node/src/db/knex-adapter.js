@@ -192,7 +192,6 @@ function _parseTxRow(row) {
     tx_type: row.tx_type,
     data: _j(row.data) || {},
     timestamp: row.timestamp != null ? Number(row.timestamp) : row.timestamp,
-    prev: _j(row.prev) || [],
     signature: row.signature || null,
     subject_tip_id: row.subject_tip_id || null,
   };
@@ -813,7 +812,6 @@ class KnexAdapter {
       tx_type: tx.tx_type,
       data: JSON.stringify(tx.data || {}),
       timestamp: tx.timestamp,
-      prev: JSON.stringify(tx.prev || []),
       signature: tx.signature || null,
       subject_tip_id: (entry && entry.subject_tip_id) || null,
       local_inserted_at: nowMs(),

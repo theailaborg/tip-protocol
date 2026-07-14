@@ -51,7 +51,6 @@ function createProfileService({ dag, config, submitTx }) {
     const tx = withTxId({
       tx_type: TX_TYPES.UPDATE_PROFILE,
       timestamp,
-      prev: [],
       data,
       signature: safeBody.signature,
     }, dag);

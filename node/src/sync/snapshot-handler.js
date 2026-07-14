@@ -1221,8 +1221,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     //
     // Order:
     //   1. Derived state rows (identities, content, nodes, etc.)
-    //   2. Pre-snapshot transactions (#49 — addTx preserves prev:[] for
-    //      genesis-style txs because its auto-fill is gated on tx_id
+    //   2. Pre-snapshot transactions (#49, addTx preserves the committed
+    //      canonical form because its auto-fill is gated on tx_id
     //      being absent. verifyTxId runs as defense-in-depth behind the
     //      snapshot-layer txs_full_root. _updatePrev fires per-row;
     //      installing in tx_id-ascending order leaves _prev pointing at

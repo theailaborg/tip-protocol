@@ -34,7 +34,7 @@ function createRevocationService({ dag, submitTx }) {
     if (reason_code !== undefined && reason_code !== null) txData.reason_code = reason_code;
     if (evidence_hash !== undefined && evidence_hash !== null) txData.evidence_hash = evidence_hash;
     const revokeTx = withTxId({
-      tx_type, timestamp, prev: [],
+      tx_type, timestamp,
       data: txData,
       signature,
     }, dag);

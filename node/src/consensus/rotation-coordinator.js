@@ -123,14 +123,11 @@ function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
   const tx = {
     tx_type: TX_TYPES.COMMITTEE_ROTATION,
     timestamp,
-    prev: [],
     data,
   };
   if (dag && typeof dag.prevFor === "function") {
-    tx.prev = dag.prevFor(tx.tx_type, tx.data);
   }
   tx.tx_id = computeTxId(tx);
-  if (dag && typeof dag.noteSealedTx === "function") dag.noteSealedTx(tx.tx_type, tx.data, tx.tx_id);
   return tx;
 }
 

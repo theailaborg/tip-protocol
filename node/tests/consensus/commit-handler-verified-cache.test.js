@@ -47,7 +47,7 @@ function _identityTx() {
     prev: [GENESIS_TX_ID, GENESIS_TX_ID],
     data,
   };
-  tx.tx_id = shake256(canonicalJson({ tx_type: tx.tx_type, data: tx.data, timestamp: tx.timestamp, prev: tx.prev }));
+  tx.tx_id = shake256(canonicalJson({ tx_type: tx.tx_type, data: tx.data, timestamp: tx.timestamp }));
   return tx;
 }
 

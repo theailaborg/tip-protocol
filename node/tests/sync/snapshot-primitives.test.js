@@ -86,23 +86,17 @@ describe("dag.addTx — snapshot-install path", () => {
     expect(all).toHaveLength(1);
   });
 
-  test("auto-fill still fires for submission-style callers (no tx_id, prev:[])", () => {
-    // Regression check on the gating: tests + scheduler/scoring/jury
-    // pass {tx_type, data, timestamp, prev:[]} without tx_id and rely
-    // on auto-fill to populate prev from _prev before computing tx_id.
+  test("submission-style callers (no tx_id) get a computed tx_id", () => {
+    // Scheduler/scoring/jury pass {tx_type, data, timestamp} without a tx_id;
+    // addTx auto-fills timestamp and computes the content-addressed tx_id.
     const dag = initDAG({ dbPath: ":memory:" });
-    const before = dag.getRecentPrev();
-    expect(before).toHaveLength(2);
     const submitted = dag.addTx({
       tx_type: "REGISTER_CONTENT",
       timestamp: 1777248000000,
       data: { ctid: "tip://content/submission" },
-      prev: [],
       signature: "00",
     });
-    // tx_id was computed from auto-filled prev (= before).
     expect(submitted.tx_id).toBeTruthy();
-    expect(submitted.prev).toEqual(before);   // auto-filled
     expect(dag.getTx(submitted.tx_id)).not.toBeNull();
   });
 

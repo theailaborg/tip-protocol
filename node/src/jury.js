@@ -277,7 +277,6 @@ function _buildSummonsTx({ ctid, disputeTxId, jurorTipId, seed, identityCount, c
   return nodeSignedAuto({
     tx_type: TX_TYPES.JURY_SUMMONS,
     timestamp,
-    prev: [],
     data: {
       ctid,
       dispute_tx_id: disputeTxId,
@@ -383,7 +382,6 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     const appealTx = nodeSignedAuto({
       tx_type: TX_TYPES.APPEAL_FILED,
       timestamp,
-      prev: [],
       // author/disputer embedded for activity-feed attribution (#40) — both
       // parties see the appeal in their feed, not just the appellant.
       data: { ctid, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", author_tip_id: authorTipId, disputer_tip_id: disputerTipId, stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
@@ -399,7 +397,6 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     const noQuorumResultTx = nodeSignedAuto({
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
       timestamp,
-      prev: [],
       data: {
         ctid,
         verdict: VERDICT.NO_QUORUM,
@@ -500,7 +497,6 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
   const resultTx = nodeSignedAuto({
     tx_type: TX_TYPES.ADJUDICATION_RESULT,
     timestamp,
-    prev: [],
     data: {
       ctid,
       verdict,
@@ -737,7 +733,6 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
     const resultTx = nodeSignedAuto({
       tx_type: TX_TYPES.APPEAL_RESULT,
       timestamp,
-      prev: [],
       data: {
         ctid, verdict: VERDICT.DISMISSED, overturned: false, defaulted: true,
         tie: appealDeadlock,
@@ -831,7 +826,6 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   const resultTx = nodeSignedAuto({
     tx_type: TX_TYPES.APPEAL_RESULT,
     timestamp,
-    prev: [],
     data: {
       ctid, verdict, overturned,
       stage2_verdict: stage2Verdict,

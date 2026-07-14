@@ -140,17 +140,13 @@ function _buildRotationTx({
   const tx = {
     tx_type: TX_TYPES.COMMITTEE_ROTATION,
     timestamp: 1777507200000,
-    // Owner-chain prev when a dag is supplied (rotation 2+ must reference the
-    // rotation:committee head); genesis-bridged for first rotations.
-    prev: dag ? dag.prevFor(TX_TYPES.COMMITTEE_ROTATION, data) : [GENESIS_TX_ID, GENESIS_TX_ID],
     data,
   };
-  // Compute tx_id deterministically from canonical body
+  // Compute tx_id deterministically from canonical body (prev removed)
   tx.tx_id = shake256(canonicalJson({
     tx_type: tx.tx_type,
     data: tx.data,
     timestamp: tx.timestamp,
-    prev: tx.prev,
   }));
   return tx;
 }
