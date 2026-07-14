@@ -284,6 +284,7 @@ async function embedFoundingVPKey() {
       region: member.region.toUpperCase(),
       public_key: keypair.publicKey,
       dedup_hash: dedupHash,
+      zk_proof: zkProof,
       tip_id_type: tipIdType,
       ...(creatorName ? { creator_name: creatorName } : {}),
       vp_signature: vpSignature,
