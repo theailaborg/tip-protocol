@@ -256,6 +256,11 @@ curl -s http://localhost:$PORT/health | jq -r '.data.p2p.bootstrap_addr'
 The `bootstrap_addr` is what every other node will use as
 `TIP_BOOTSTRAP_PEERS` when it joins.
 
+The full multi-node bring-up (0 to a live, converged federation: git deploy,
+per-node keys, S3 media, observability, validation gates, and the reset order
+for an existing chain) is the runbook in
+[`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md).
+
 ---
 
 #### Development: Generate and Run Additional Nodes Locally
@@ -602,9 +607,11 @@ docker compose up -d
 - Prometheus → http://localhost:9090
 
 Add or remove scrape targets by editing `TIP_NODE_TARGETS` in `.env`,
-no edit of `prometheus.yml` needed. Full setup, configuration, and
-production-hardening notes are in
-[`infra/observability/README.md`](./infra/observability/README.md).
+no edit of `prometheus.yml` needed. Full local setup and configuration are in
+[`infra/observability/README.md`](./infra/observability/README.md). The
+production runbook (one monitoring host + per-node promtail log shipping, TLS,
+auth, and the DNS/permissions gotchas) is
+[`infra/observability/prod/README.md`](./infra/observability/prod/README.md).
 
 ---
 
@@ -775,6 +782,9 @@ tip-protocol/
 ├── docs/                        ← Extended documentation
 │   ├── API.md                   ← Full REST API reference
 │   ├── GETTING_STARTED.md       ← Step-by-step integration guide
+│   ├── DEPLOYMENT.md            ← Node + federation deploy (0 to live)
+│   ├── PROD_S3_SETUP.md         ← Production S3 media backend setup
+│   ├── TESTING_RUNBOOK.md       ← Test suites + live-cluster validation
 │   ├── VP_ACCREDITATION.md      ← How to become a Verification Provider
 │   ├── GDPR_COMPLIANCE.md       ← GDPR and privacy architecture
 │   ├── CRYPTOGRAPHY.md          ← Post-quantum cryptography details
