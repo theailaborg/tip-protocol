@@ -84,6 +84,24 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
     }));
   }
 
+  // Presign one GET URL per media ref → [{media_id, mime, url}] — the
+  // by-reference shape the classifier's files[] contract expects (it
+  // downloads the bytes itself). Throws when the backend cannot presign
+  // (fs), since media prescan needs a fetchable URL (set TIP_MEDIA_BACKEND=s3).
+  async function presignForClassifier(media) {
+    if (!Array.isArray(media) || media.length === 0) return [];
+    return Promise.all(media.map(async (m, i) => {
+      const url = await storage.presignedGet(m.media_id);
+      if (!url) {
+        throw new Error(
+          `media-service: no presigned GET for media[${i}] ${m.media_id} ` +
+          "(backend does not presign — set TIP_MEDIA_BACKEND=s3)",
+        );
+      }
+      return { media_id: m.media_id, mime: m.mime, url };
+    }));
+  }
+
   async function upload(input) {
     if (!dag) throw new Error("media-service.upload: dag required");
     // Schema owns ALL request-level checks: shape, mime family, size
@@ -341,7 +359,7 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
     };
   }
 
-  return { upload, uploadStream, fetchBytes, presignedGet, head, delete: deleteMedia, resolveRefs, fetchForClassifier, fetchForReviewer };
+  return { upload, uploadStream, fetchBytes, presignedGet, head, delete: deleteMedia, resolveRefs, fetchForClassifier, presignForClassifier, fetchForReviewer };
 }
 
 module.exports = { createMediaService };

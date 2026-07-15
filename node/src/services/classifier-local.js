@@ -65,7 +65,7 @@ function _modalityFromMime(mime) {
 }
 
 function createLocalClassifierClient() {
-  async function prescan({ originCode, text, file, creatorClearedCount } = {}) {
+  async function prescan({ originCode, text, files, creatorClearedCount } = {}) {
     if (originCode !== ORIGIN.OH) {
       return _skippedResponse(originCode);
     }
@@ -76,6 +76,7 @@ function createLocalClassifierClient() {
     if (t.length > 0) {
       const ps = preScanContent(t, originCode, { clearedCount: creatorClearedCount || 0 });
       modalityResults.push({
+        media_id: null,
         modality: "text",
         probability: ps.probability,
         weight: 1.0,
@@ -87,9 +88,11 @@ function createLocalClassifierClient() {
       });
     }
 
-    if (file && file.mime) {
+    for (const f of (Array.isArray(files) ? files : [])) {
+      if (!f || !f.mime) continue;
       modalityResults.push({
-        modality: _modalityFromMime(file.mime),
+        media_id: f.media_id ?? null,
+        modality: _modalityFromMime(f.mime),
         probability: MEDIA_STUB_PROBABILITY,
         weight: 1.0,
         provider: "local_fallback_stub",

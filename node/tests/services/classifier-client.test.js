@@ -93,18 +93,20 @@ describe("prescan", () => {
     expect(r.probability).toBe(0.31);
   });
 
-  test("empty text + image file → text='' still sent (API requires the field)", async () => {
+  test("empty text + image file → text='' still sent + files[] by reference", async () => {
     const { client, fetch } = clientWith(() => ({
       body: { flagged: false, probability: 0.42, modalities_analyzed: ["image"], provider_used: "image_detector" },
     }));
     await client.prescan({
       originCode: "OH",
-      file: { base64: "<<<b64>>>", mime: "image/png" },
+      files: [{ media_id: "m1", mime: "image/png", url: "https://bucket.s3.ap-south-1.amazonaws.com/m1?sig" }],
     });
     const body = JSON.parse(fetch.calls[0].init.body);
     expect(body.text).toBe("");
-    expect(body.file_base64).toBe("<<<b64>>>");
-    expect(body.file_mime_type).toBe("image/png");
+    expect(body.file_base64).toBeUndefined();
+    expect(body.files).toEqual([
+      { media_id: "m1", mime: "image/png", url: "https://bucket.s3.ap-south-1.amazonaws.com/m1?sig" },
+    ]);
   });
 
   test("non-OH origin → locally skipped without round-trip (default)", async () => {

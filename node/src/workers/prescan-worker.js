@@ -419,24 +419,14 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       if (!mediaService) {
         throw new Error("prescan-worker: mediaService not wired but payload carries media[]");
       }
-      // Fetch bytes for all refs in parallel — storage IO overlaps before
-      // we issue classifier calls. fetchForClassifier returns the
-      // {base64, mime} shape the classifier-client expects.
-      const files = await mediaService.fetchForClassifier(media);
-      // First call carries the text alongside media[0].
+      // Presign one GET URL per media ref; the classifier downloads the
+      // bytes itself (files[] by-reference contract). One request carries
+      // text + all media — no fan-out, no base64.
+      const files = await mediaService.presignForClassifier(media);
       calls.push(classifierClient.prescan({
-        originCode, text,
-        file: files[0],
+        originCode, text, files,
         creatorClearedCount: cleared, authorTipId: authorTip,
       }));
-      // Remaining media files alone (empty text).
-      for (let i = 1; i < files.length; i++) {
-        calls.push(classifierClient.prescan({
-          originCode, text: "",
-          file: files[i],
-          creatorClearedCount: cleared, authorTipId: authorTip,
-        }));
-      }
     }
 
     const responses = await Promise.all(calls);
@@ -459,9 +449,12 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     const modalityResults = [];
     const mediaResults = [];
     const providers = new Set();
+    // Per-file attribution by the modality result's own media_id (the
+    // classifier echoes files[].media_id back), so it holds whether one
+    // response carries a single media entry or many.
+    const mediaById = new Map(media.map(m => [m.media_id, m]));
     let version;
-    for (let ri = 0; ri < responses.length; ri++) {
-      const r = responses[ri];
+    for (const r of responses) {
       if (!r) continue;
       providers.add(r.provider_used || "unknown");
       version = version || r.classifier_version;
@@ -473,19 +466,21 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
           // aggregator already treats degraded entries as unreliable.
           error: m.error || (heuristicOnly ? "heuristic_only_unreliable" : null),
         });
-        // Per-FILE attribution: call ri carries media[ri] (call 0 also
-        // carries the text, whose entry has modality "text" — skip it).
-        // The aggregator max-collapses same-modality entries for the
-        // verdict, so without this tagging the per-file scores would be
-        // unrecoverable once the bytes are retention-deleted or the
-        // model version moves on.
-        if (m.modality !== "text" && media[ri]) {
-          mediaResults.push({
-            media_id: media[ri].media_id,
-            mime: media[ri].mime,
-            probability: Number.isFinite(m.probability) ? m.probability : null,
-            provider: m.provider || r.provider_used || null,
-          });
+        // Per-FILE attribution: skip the text entry; map other modalities
+        // back to their media ref by media_id. The aggregator max-collapses
+        // same-modality entries for the verdict, so without this tagging the
+        // per-file scores would be unrecoverable once the bytes are
+        // retention-deleted or the model version moves on.
+        if (m.modality !== "text") {
+          const mm = m.media_id != null ? mediaById.get(m.media_id) : null;
+          if (mm) {
+            mediaResults.push({
+              media_id: mm.media_id,
+              mime: mm.mime,
+              probability: Number.isFinite(m.probability) ? m.probability : null,
+              provider: m.provider || r.provider_used || null,
+            });
+          }
         }
       }
     }

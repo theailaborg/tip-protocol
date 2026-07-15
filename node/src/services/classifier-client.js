@@ -159,8 +159,8 @@ function createClassifierClient(opts = {}) {
    * @param {string} args.originCode             Required. {OH, AA, AG, MX}.
    * @param {string} [args.text=""]              Text body. Empty string for
    *   file-only submissions; the API requires the field to be present.
-   * @param {Object} [args.file]                 { base64, mime }. Optional;
-   *   classifier accepts one file per call. v1 rejects video mime types.
+   * @param {Array} [args.files]                 [{media_id, mime, url}] presigned
+   *   GET URLs; the classifier downloads the bytes. v1 rejects video mime types.
    * @param {number} [args.creatorClearedCount]  H for FIX-03 calibration.
    * @param {string} [args.authorTipId]
    * @returns {Promise<Object>} Classifier response or locally-skipped shim.
@@ -191,14 +191,17 @@ function createClassifierClient(opts = {}) {
     };
     if (args.authorTipId) body.author_tip_id = args.authorTipId;
 
-    const hasFile = !!(args.file && args.file.base64);
-    if (hasFile) {
-      _assertFileAllowed(args.file);
-      body.file_base64 = args.file.base64;
-      if (args.file.mime) body.file_mime_type = args.file.mime;
+    // Media delivered by reference: presigned GET URLs in files[]. The
+    // classifier downloads the bytes itself (CLASSIFIER_API_INTERFACE.md).
+    // One request carries text + all media — no base64, no fan-out.
+    const files = Array.isArray(args.files) ? args.files : [];
+    const hasFiles = files.length > 0;
+    if (hasFiles) {
+      for (const f of files) _assertFileAllowed(f);
+      body.files = files.map(f => ({ media_id: f.media_id, mime: f.mime, url: f.url }));
     }
 
-    const timeoutMs = hasFile ? timeouts.file : timeouts.text;
+    const timeoutMs = hasFiles ? timeouts.file : timeouts.text;
     const res = await _post(PATHS.PRESCAN, body, timeoutMs);
     if (res.status < 200 || res.status >= 300) {
       throw {
