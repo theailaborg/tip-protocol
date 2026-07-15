@@ -64,10 +64,11 @@ describe("local classifier — media stubs", () => {
     const client = createLocalClassifierClient();
     const r = await client.prescan({
       originCode: "OH", text: "",
-      file: { base64: "aGk=", mime: "image/png" },
+      files: [{ media_id: "m1", mime: "image/png", url: "https://s3/m1?sig" }],
     });
     expect(r.modality_results).toHaveLength(1);
     expect(r.modality_results[0].modality).toBe("image");
+    expect(r.modality_results[0].media_id).toBe("m1");
     expect(r.modality_results[0].probability).toBe(MEDIA_STUB_PROBABILITY);
     expect(r.modality_results[0].provider).toBe("local_fallback_stub");
   });
@@ -76,7 +77,7 @@ describe("local classifier — media stubs", () => {
     const client = createLocalClassifierClient();
     const r = await client.prescan({
       originCode: "OH", text: "",
-      file: { base64: "aGk=", mime: "audio/mpeg" },
+      files: [{ media_id: "m1", mime: "audio/mpeg", url: "https://s3/m1?sig" }],
     });
     expect(r.modality_results[0].modality).toBe("audio");
   });
@@ -85,7 +86,7 @@ describe("local classifier — media stubs", () => {
     const client = createLocalClassifierClient();
     const r = await client.prescan({
       originCode: "OH", text: LONG_TEXT,
-      file: { base64: "aGk=", mime: "image/png" },
+      files: [{ media_id: "m1", mime: "image/png", url: "https://s3/m1?sig" }],
     });
     const kinds = r.modality_results.map(m => m.modality).sort();
     expect(kinds).toEqual(["image", "text"]);

@@ -51,6 +51,7 @@ function R({ modalities = [], provider = "ensemble(ollama,statistical,heuristic)
     probability: top,
     modalities_analyzed: modalities.map(m => m.modality),
     modality_results: modalities.map(m => ({
+      media_id: m.media_id ?? null,
       modality: m.modality,
       probability: m.probability,
       weight: m.weight ?? 0.5,
@@ -83,6 +84,14 @@ function makeMediaService(filesByMediaId = {}) {
         const f = filesByMediaId[m.media_id];
         if (!f) throw new Error(`fake-media-service: no entry for ${m.media_id}`);
         return { base64: f.base64, mime: m.mime || f.mime };
+      });
+    },
+    async presignForClassifier(media) {
+      if (!Array.isArray(media)) return [];
+      return media.map(m => {
+        const f = filesByMediaId[m.media_id];
+        if (!f) throw new Error(`fake-media-service: no entry for ${m.media_id}`);
+        return { media_id: m.media_id, mime: m.mime || f.mime, url: `https://bucket.s3.ap-south-1.amazonaws.com/${m.media_id}?sig` };
       });
     },
   };
@@ -224,9 +233,10 @@ describe("tick — happy path", () => {
     expect(m).toEqual(["image", "text"]);
   });
 
-  test("N images → N classifier calls + union of modality_results", async () => {
+  test("N images → one files[] call, union of modality_results, per-file by media_id", async () => {
     const clock = makeClock();
     let callCount = 0;
+    let lastArgs = null;
     const MID_A = "a".repeat(64);
     const MID_B = "b".repeat(64);
     const mediaService = makeMediaService({
@@ -238,14 +248,13 @@ describe("tick — happy path", () => {
       mediaService,
       classifierHandler: (args) => {
         callCount += 1;
-        // First call: text + image
-        if (callCount === 1) {
-          return R({ modalities: [
-            { modality: "text", probability: 0.10 },
-            { modality: "image", probability: 0.40 },
-          ] });
-        }
-        return R({ modalities: [{ modality: "image", probability: 0.95 }] });
+        lastArgs = args;
+        // One call carries text + all media; each media result echoes its media_id.
+        return R({ modalities: [
+          { modality: "text", probability: 0.10 },
+          { modality: "image", probability: 0.40, media_id: MID_A },
+          { modality: "image", probability: 0.95, media_id: MID_B },
+        ] });
       },
     });
     jobs.enqueue({
@@ -259,14 +268,18 @@ describe("tick — happy path", () => {
       },
     });
     await worker.tick();
-    expect(callCount).toBe(2);
+    // Single request, both media delivered by reference in files[].
+    expect(callCount).toBe(1);
+    expect(lastArgs.files).toEqual([
+      { media_id: MID_A, mime: "image/png", url: `https://bucket.s3.ap-south-1.amazonaws.com/${MID_A}?sig` },
+      { media_id: MID_B, mime: "image/jpeg", url: `https://bucket.s3.ap-south-1.amazonaws.com/${MID_B}?sig` },
+    ]);
     // After collapseSameModality, the image entry should be the max (0.95).
     const tx = submitter.txs[0];
     const img = tx.data.modality_results.find(m => m.modality === "image");
     expect(img.probability).toBe(0.95);
 
-    // Per-FILE scores survive the collapse, tagged by media_id, in call
-    // order (call 0 = text+media[0], call 1 = media[1]).
+    // Per-FILE scores survive the collapse, tagged by their own media_id.
     expect(tx.data.media_results).toEqual([
       { media_id: MID_A, mime: "image/png", probability: 0.40, provider: "ensemble(ollama,statistical,heuristic)" },
       { media_id: MID_B, mime: "image/jpeg", probability: 0.95, provider: "ensemble(ollama,statistical,heuristic)" },
