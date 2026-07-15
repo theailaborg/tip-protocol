@@ -272,6 +272,14 @@ protocol defaults. Prod values: `NODE_ENV=production`, `TIP_CORS_ORIGINS`
 listing every browser client (the VP app; NOT `*`), a shared `TIP_METRICS_TOKEN`
 identical on all nodes, `TIP_CRYPTO_POOL_SIZE=2` on 4-core hosts.
 
+**Media storage (S3)** , the node writes media bytes to S3 (SSE-KMS) and hands
+the classifier presigned URLs. Provision the bucket + KMS key + IAM role once
+and set `TIP_MEDIA_BACKEND=s3`, `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`,
+`TIP_MEDIA_S3_KMS_KEY_ID` in each node's `.env`. Full step-by-step (Terraform or
+console/CLI, IAM policy, VPC endpoint, smoke tests): **[`PROD_S3_SETUP.md`](PROD_S3_SETUP.md)**.
+Credentials come from the instance role (EC2) / IRSA (EKS), never a long-lived
+`AWS_ACCESS_KEY_ID` in the env.
+
 **4. Log directory permissions (GOTCHA)** , the compose bind-mounts
 `./logs/node-1`, which docker creates root-owned, so the container cannot write
 its per-level log files. Fix before first boot:
@@ -309,6 +317,10 @@ curl -s http://<node1-ip>:4000/health | grep -o '"bootstrap_addr":"[^"]*"'   # -
 identities = genesis ring size, and the same committed tx count (converged).
 
 **8. Observability** (obs host: Prometheus + Grafana + Loki + Caddy)
+
+Full step-by-step , monitoring host, per-node agent, verify, operations , is the
+runbook at **[`infra/observability/prod/README.md`](../infra/observability/prod/README.md)**.
+The load-bearing gotchas to not relearn the hard way:
 
 - **Metrics**: `infra/observability/prod/prometheus.yml` (gitignored) , job
   `tip-federation` (do NOT rename), targets = the nodes' **private** IPs `:4000`,

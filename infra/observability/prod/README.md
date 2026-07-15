@@ -36,7 +36,12 @@ else stays gated.
 - A small EC2 for monitoring (t3.small is plenty). Security group: inbound
   80 + 443 from anywhere, 22 from your IP. Nothing else.
 - Two DNS A records to that instance: `grafana.yourdomain.org` (OBS_DOMAIN)
-  and `logs.yourdomain.org` (LOGS_DOMAIN).
+  and `logs.yourdomain.org` (LOGS_DOMAIN). Both must be **DNS-only (grey
+  cloud), NOT proxied** through Cloudflare or any CDN: Caddy on this host owns
+  the TLS cert (ACME) and, for `logs`, the basic-auth. A proxy in front breaks
+  the ACME challenge and makes the promtail push time out. (A CDN in front of
+  `grafana` merely for the browser UI is tolerable, but keep it grey while
+  bringing the stack up so cert issuance is unambiguous.)
 - One shared metrics token: `openssl rand -hex 32`
 - One log-shipping password, hashed for Caddy:
   `docker run --rm caddy:2 caddy hash-password --plaintext '<password>'`
