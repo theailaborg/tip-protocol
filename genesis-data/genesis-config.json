@@ -239,7 +239,7 @@
       "max_txs_per_certificate": 500,
       "certificate_max_bytes": 2097152,
       "gc_depth": 500,
-      "bft_time_genesis_ms": 1783036800000,
+      "bft_time_genesis_ms": 1783987200000,
       "epoch_duration_ms": 86400000,
       "rotation_activation_lead_rounds": 50,
       "epoch_participation_buckets": 24,
