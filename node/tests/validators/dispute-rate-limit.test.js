@@ -11,6 +11,8 @@
  *   - Auto-cascade CONTENT_DISPUTED (data.auto = true, node-issued)
  *     does NOT count against the disputer's quota — those have node_id
  *     not disputer_tip_id and represent system actions, not user filings
+ *   - Window cutoff derives solely from the caller-supplied `now`
+ *     (determinism regression: no local-clock read at commit)
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -107,7 +109,7 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
     // A fresh dispute on a different ctid should still be allowed.
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: FILER, reason: DISPUTE_REASON.ORIGIN_MISMATCH, claimed_origin: "AG",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(true);
   });
 
@@ -126,7 +128,7 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
 
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: FILER, reason: DISPUTE_REASON.ORIGIN_MISMATCH, claimed_origin: "AG",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(429);
     expect(r.error.message).toMatch(/dispute filing limit/i);
@@ -147,7 +149,7 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
     }
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: FILER, reason: DISPUTE_REASON.ORIGIN_MISMATCH, claimed_origin: "AG",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(true);
   });
 
@@ -169,7 +171,7 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
 
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: FILER, reason: DISPUTE_REASON.ORIGIN_MISMATCH, claimed_origin: "AG",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(true);
   });
 
@@ -196,7 +198,37 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
     }
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: FILER, reason: DISPUTE_REASON.ORIGIN_MISMATCH, claimed_origin: "AG",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(true);
+  });
+
+  test("window cutoff derives from the passed `now`, not the local clock", () => {
+    const fx = _setup();
+    const ctid = "tip://c/OH-hhhhhhhhhhhhhh-0001";
+    _seedContent(fx.dag, ctid);
+
+    // Filer at the cap, every prior filing stamped at T0. With the same
+    // DAG state, the accept/reject decision must flip purely on `now`:
+    // a wall-clock read would make two honest nodes validating the same
+    // tx seconds apart disagree at the window edge and fork state roots.
+    const T0 = nowMs();
+    for (let i = 0; i < DISPUTE.MAX_PER_FILER_PER_WINDOW; i++) {
+      _addDisputeTx(fx.dag, {
+        ctid: `tip://c/OH-edge${i.toString().padStart(9, "0")}-0001`,
+        disputer_tip_id: FILER, timestampMs: T0,
+      });
+    }
+    const args = {
+      ctid, disputer_tip_id: FILER, reason: DISPUTE_REASON.ORIGIN_MISMATCH, claimed_origin: "AG",
+    };
+
+    // now = T0 + W → cutoff = T0 → priors still counted → reject.
+    const inside = rules.canDispute(fx.dag, fx.scoring, args, { now: T0 + DISPUTE.FILER_WINDOW_MS });
+    expect(inside.valid).toBe(false);
+    expect(inside.error.status).toBe(429);
+
+    // now = T0 + W + 1 → cutoff = T0 + 1 → priors aged out → accept.
+    const aged = rules.canDispute(fx.dag, fx.scoring, args, { now: T0 + DISPUTE.FILER_WINDOW_MS + 1 });
+    expect(aged.valid).toBe(true);
   });
 });

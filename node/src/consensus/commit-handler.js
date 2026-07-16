@@ -948,7 +948,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // the disputer-score / state predicates because the issuer is the node
         // itself, not a TIP-ID with a score. They still pass through dedup.
         if (d.auto) return { valid: true };
-        const r = rules.canDispute(dag, scoring, { ctid: d.ctid, disputer_tip_id: d.disputer_tip_id });
+        const r = rules.canDispute(dag, scoring, { ctid: d.ctid, disputer_tip_id: d.disputer_tip_id }, { now });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 

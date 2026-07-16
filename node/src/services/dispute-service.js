@@ -117,7 +117,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
 
     try {
       {
-        const r = rules.canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason, claimed_origin });
+        const r = rules.canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason, claimed_origin }, { now: nowMs() });
         if (!r.valid) throw { status: r.error.status, error: r.error.message };
       }
       const rec = dag.getContent(ctid);
