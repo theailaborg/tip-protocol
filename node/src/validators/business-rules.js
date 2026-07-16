@@ -10,14 +10,16 @@
  *     if (!r.valid) throw r.error;            // 4xx response
  *
  *   commit-handler (DeliverTx role):
- *     const r = rules.canVerify(dag, args, { now: certTimestamp });
+ *     const r = rules.canVerify(dag, args, { now: tx.timestamp });
  *     if (!r.valid) { log.warn(r.error.message); drop; return; }
  *
  * `now` is the only difference between the two call sites:
  *   - API time uses local wall-clock (nowMs()) — fine for early
  *     rejection.
- *   - Commit time uses `cert.timestamp` (BFT-Time median of acks) so the
- *     accept/reject decision is identical on every node.
+ *   - Commit time uses `tx.timestamp` (frozen in the signed payload; see
+ *     _validateBusinessRules in commit-handler) so the accept/reject
+ *     decision is identical on every node. Never read the local clock
+ *     inside a rule.
  *
  * Each rule returns `{ valid: true }` on success or
  * `{ valid: false, error: { status, message } }` on failure. `status` is
@@ -28,8 +30,6 @@
  */
 
 "use strict";
-
-const { nowMs } = require("../../../shared/time");
 
 const {
   TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
@@ -204,8 +204,8 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   // freely change the origin (PRESCAN_COMPLETED will classify against
   // whatever origin is recorded when it lands).
   if (rec.status !== CONTENT_STATUS.REGISTERED
-      && rec.status !== CONTENT_STATUS.PENDING_REVIEW
-      && rec.status !== CONTENT_STATUS.PENDING_PRESCAN) {
+    && rec.status !== CONTENT_STATUS.PENDING_REVIEW
+    && rec.status !== CONTENT_STATUS.PENDING_PRESCAN) {
     return fail(403, `Cannot update origin — content status is '${rec.status}'`);
   }
   if (!ORIGIN_CODES.includes(new_origin_code)) {
@@ -314,7 +314,7 @@ function canRetract(dag, { ctid, author_tip_id }) {
 
 // ─── Dispute / Jury ────────────────────────────────────────────────────────
 
-function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason, claimed_origin }) {
+function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason, claimed_origin }, { now }) {
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
   if (rec.status === CONTENT_STATUS.RETRACTED) return fail(403, "Content has been retracted — dispute not allowed");
@@ -381,8 +381,10 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
   // (excluding auto-cascade txs, which carry node_id, not a user
   // disputer_tip_id). A user-filed dispute that already failed
   // validation never lands as a tx, so this count only sees committed
-  // filings — same value at CheckTx and DeliverTx.
-  const windowCutoffMs = nowMs() - DISPUTE.FILER_WINDOW_MS;
+  // filings — same value at CheckTx and DeliverTx. The cutoff derives
+  // from the caller's `now` (tx.timestamp at commit), never the local
+  // clock: a wall-clock read here forks state at the window edge.
+  const windowCutoffMs = now - DISPUTE.FILER_WINDOW_MS;
   const filerCount = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
     .filter(t => t.data?.disputer_tip_id === disputer_tip_id
       && !t.data?.auto

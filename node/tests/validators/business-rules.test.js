@@ -471,7 +471,7 @@ describe("canDispute", () => {
     const dag = _seedDag();
     const r = rules.canDispute(dag, STUB_SCORING, {
       ctid: "tip://content/x", disputer_tip_id: "tip://id/disputer",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(true);
   });
 
@@ -480,7 +480,7 @@ describe("canDispute", () => {
     const lowScoring = { getScore: () => ({ score: 100 }) };
     const r = rules.canDispute(dag, lowScoring, {
       ctid: "tip://content/x", disputer_tip_id: "tip://id/disputer",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(403);
   });
@@ -494,7 +494,7 @@ describe("canDispute", () => {
     });
     const r = rules.canDispute(dag, STUB_SCORING, {
       ctid: "tip://content/d", disputer_tip_id: "tip://id/disputer",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/already under dispute/i);
   });
@@ -503,7 +503,7 @@ describe("canDispute", () => {
     const dag = _seedDag();
     const r = rules.canDispute(dag, STUB_SCORING, {
       ctid: "tip://content/x", disputer_tip_id: "tip://id/author",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(403);
     expect(r.error.message).toMatch(/your own content/i);
@@ -523,7 +523,7 @@ describe("canDispute", () => {
     });
     const r = rules.canDispute(dag, STUB_SCORING, {
       ctid: "tip://content/x", disputer_tip_id: "tip://id/disputer",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(403);
     expect(r.error.message).toMatch(/content you signed/i);
@@ -543,7 +543,7 @@ describe("canDispute", () => {
     });
     const r = rules.canDispute(dag, STUB_SCORING, {
       ctid: "tip://content/x", disputer_tip_id: "tip://id/disputer",
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(403);
     expect(r.error.message).toMatch(/listed as an author/i);

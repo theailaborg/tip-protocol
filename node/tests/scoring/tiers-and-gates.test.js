@@ -25,6 +25,7 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, shake256 } = require(path.join(SHARED, "crypto"));
+const { nowMs } = require(path.join(SHARED, "time"));
 const { ORIGIN, CONTENT_STATUS } = require(path.join(SHARED, "constants"));
 const { getTier, DISPUTE, JURY, APPEAL } = require(path.join(SHARED, "protocol-constants"));
 const { initDAG } = require(path.join(SRC, "dag"));
@@ -125,7 +126,7 @@ describe("canDispute — score gate (>= 550)", () => {
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: ORIGIN.AG,
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(true);
   });
 
@@ -135,7 +136,7 @@ describe("canDispute — score gate (>= 550)", () => {
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: ORIGIN.AG,
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(403);
     expect(r.error.message).toMatch(/Score must be >= 550/);
@@ -147,7 +148,7 @@ describe("canDispute — score gate (>= 550)", () => {
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: ORIGIN.AG,
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(403);
   });
@@ -158,7 +159,7 @@ describe("canDispute — score gate (>= 550)", () => {
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: ORIGIN.AG,
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
   });
 
@@ -169,7 +170,7 @@ describe("canDispute — score gate (>= 550)", () => {
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: ORIGIN.AG,
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/revoked/i);
   });
