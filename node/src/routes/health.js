@@ -75,6 +75,26 @@ function createRouter({ dag, scoring, config, consensus, network }) {
     res.status(statusCode).json(body);
   });
 
+  // Readiness (vs /health liveness): 200 only when this node serves current
+  // state. LB monitors point here so a syncing/catching-up node is drained
+  // instead of answering stale reads; the Docker healthcheck stays on /health
+  // so catch-up never flags the container unhealthy.
+  router.get("/ready", (req, res) => {
+    let dbOk = true;
+    try { dag.count(); } catch { dbOk = false; }
+
+    const cons = consensus?.current;
+    let halted = false;
+    // fail closed: readiness must not report ready on an unknown halt state
+    try { halted = !!cons?.isConsensusHalted?.()?.halted; } catch { halted = true; }
+
+    let joinState = null;
+    try { joinState = cons?.stats?.()?.narwhal?.joinState ?? null; } catch { /* not ready */ }
+
+    const ready = dbOk && !halted && joinState === "ready";
+    res.status(ready ? 200 : 503).json({ ready, db_ok: dbOk, halted, join_state: joinState });
+  });
+
   router.get("/node/info", (req, res) => {
     res.json({
       node_id: config.nodeId,
