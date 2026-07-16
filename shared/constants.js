@@ -470,6 +470,38 @@ const OAUTH_REQUIRED_PLATFORMS = Object.freeze(new Set([
   "rooverse",
 ]));
 
+// Non-public address space (loopback, RFC1918, CGNAT, link-local/IMDS,
+// multicast/reserved, plus v4-embedding IPv6 transition prefixes). Outbound
+// profile fetches must never connect here (SSRF guard).
+const PRIVATE_NETWORK_CIDRS = Object.freeze([
+  "0.0.0.0/8",
+  "10.0.0.0/8",
+  "100.64.0.0/10",
+  "127.0.0.0/8",
+  "169.254.0.0/16",
+  "172.16.0.0/12",
+  "192.0.0.0/24",
+  "192.0.2.0/24",
+  "192.168.0.0/16",
+  "198.18.0.0/15",
+  "198.51.100.0/24",
+  "203.0.113.0/24",
+  "224.0.0.0/3",
+  "::/128",
+  "::1/128",
+  // v4-mapped (::ffff:0:0/96) is intentionally absent: net.BlockList models
+  // every IPv4 as v4-mapped, so listing it would block ALL v4. Consumers must
+  // unwrap v4-mapped addresses and re-check the embedded IPv4 instead.
+  "64:ff9b::/96",
+  "100::/64",
+  "2001::/32",
+  "2001:db8::/32",
+  "2002::/16",
+  "fc00::/7",
+  "fe80::/10",
+  "ff00::/8",
+]);
+
 const INITIAL_INTERESTS_SEED = Object.freeze([
   // Tech
   { slug: "ai-ml", label: "AI & Machine Learning", category: "tech" },
@@ -949,4 +981,5 @@ module.exports = {
   CLAIM_MAX_AGE_MS,
   ALLOWED_PLATFORMS,
   OAUTH_REQUIRED_PLATFORMS,
+  PRIVATE_NETWORK_CIDRS,
 };
