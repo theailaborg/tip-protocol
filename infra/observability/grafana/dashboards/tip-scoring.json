@@ -988,7 +988,7 @@
     },
     {
       "type": "row",
-      "title": "Scoring rules \u2014 current genesis values",
+      "title": "Scoring rules (current genesis values)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1009,7 +1009,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "### Score composition (max **1000**)\n| Sub-score | Cap | Earned from |\n|---|---|---|\n| Identity | 530 | verification + linked socials |\n| Content | 350 | verified, correctly-labeled work |\n| Longevity | 70 | sustained good standing over time |\n| Reputation | 50 | dispute & jury track record |\n\nA new verified identity starts at **500**.\n\n### Trust tiers\n| Tier | Range |\n|---|---|\n| Highly Trusted | 850 \u2013 1000 |\n| Trusted | 650 \u2013 849 |\n| Verified | 400 \u2013 649 |\n| Caution | 200 \u2013 399 |\n| Not Trusted | 0 \u2013 199 |\n\n### Identity & social linking\n**+5** per verified linked social, up to **6** accounts (cap **+30**)."
+        "content": "### Score composition (max **1000**)\n| Sub-score | Cap | Earned from |\n|---|---|---|\n| Identity | 530 | verification + linked socials |\n| Content | 350 | verified, correctly-labeled work |\n| Longevity | 70 | sustained good standing over time |\n| Reputation | 50 | dispute & jury track record |\n\nA new verified identity starts at **500**.\n\n### Trust tiers\n| Tier | Range |\n|---|---|\n| Highly Trusted | 850-1000 |\n| Trusted | 650-849 |\n| Verified | 400-649 |\n| Caution | 200-399 |\n| Not Trusted | 0-199 |\n\n### Identity & social linking\n**+5** per verified linked social, up to **6** accounts (cap **+30**)."
       }
     },
     {
@@ -1023,7 +1023,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Applied to the **author** when a dispute is upheld. Escalates by prior offense (1st / 2nd / 3rd), and each upheld dispute adds 1 to the offense count.\n\n### Origin misdeclaration\n| Misdeclaration | 1st / 2nd / 3rd |\n|---|---|\n| Original-Human \u2192 AI-Generated | \u2212100 / \u2212200 / \u2212300 |\n| Original-Human \u2192 AI-Assisted | \u221240 / \u221280 / \u2212120 |\n| AI-Assisted \u2192 AI-Generated | \u221225 / \u221250 / \u221275 |\n\n### Other penalties\n| Event | Penalty |\n|---|---|\n| Minor / major falsehood | \u221275 / \u2212300 |\n| Retraction | \u221250 |\n| Device compromise | \u221215 |\n\nAppeal overturn restores **50%** of the author's penalty."
+        "content": "Applied to the **author** when a dispute is upheld. Escalates by prior offense (1st / 2nd / 3rd), and each upheld dispute adds 1 to the offense count.\n\n### Origin misdeclaration\n| Misdeclaration | 1st / 2nd / 3rd |\n|---|---|\n| Original-Human \u2192 AI-Generated | -100 / -200 / -300 |\n| Original-Human \u2192 AI-Assisted | -40 / -80 / -120 |\n| AI-Assisted \u2192 AI-Generated | -25 / -50 / -75 |\n\n### Other penalties\n| Event | Penalty |\n|---|---|\n| Minor / major falsehood | -75 / -300 |\n| Retraction | -50 |\n| Device compromise | -15 |\n\nAppeal overturn restores **50%** of the author's penalty."
       }
     },
     {
@@ -1037,7 +1037,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "### Filing a dispute\nDisputer stakes **15** on filing (needs score \u2265 **550**); rate-limited to **5 per 30 days**.\n- **Win (upheld):** stake back **+15**, plus **+5** bonus \u2192 net **+5**.\n- **Lose (dismissed):** forfeits the **15** stake.\n- **Author cleared (dismissed):** author earns **+5** vindication.\n\n### Jury \u2014 Stage 2\n7 jurors, eligibility \u2265 **700**, stake **10**. Majority **+3**, minority **\u22128**, no-reveal **\u22128**, no-commit **\u22121**. Windows: 72h commit / 12h reveal. Max 3 jurors per country.\n\n### Expert appeal \u2014 Stage 3\n5 experts, eligibility \u2265 **850**, stake **25**. Majority **+7**, minority **\u221210**. Appeal win **+10**. Windows: 48h file / 72h commit / 12h reveal."
+        "content": "### Filing a dispute\nDisputer stakes **15** on filing (needs score \u2265 **550**); rate-limited to **5 per 30 days**.\n- **Win (upheld):** stake back **+15**, plus **+5** bonus \u2192 net **+5**.\n- **Lose (dismissed):** forfeits the **15** stake.\n- **Author cleared (dismissed):** author earns **+5** vindication.\n\n### Jury (Stage 2)\n7 jurors, eligibility \u2265 **700**, stake **10**. Majority **+3**, minority **-8**, no-reveal **-8**, no-commit **-1**. Windows: 72h commit / 12h reveal. Max 3 jurors per country.\n\n### Expert appeal (Stage 3)\n5 experts, eligibility \u2265 **850**, stake **25**. Majority **+7**, minority **-10**. Appeal win **+10**. Windows: 48h file / 72h commit / 12h reveal."
       }
     },
     {

@@ -1,7 +1,7 @@
 apiVersion: 1
 
 # JSON-API datasource for reading node HTTP endpoints (e.g. /v1/stats/scoring)
-# directly into Grafana panels — no DB user, no Prometheus cardinality. Base
+# directly into Grafana panels, no DB user, no Prometheus cardinality. Base
 # URL is a reachable node's API root; queries append the path (/v1/stats/...).
 #   local:  TIP_API_BASE_URL=http://host.docker.internal:4000
 #   prod:   TIP_API_BASE_URL=http://<node-private-ip>:4000  (VPC-internal)
