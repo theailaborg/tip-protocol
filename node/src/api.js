@@ -35,6 +35,7 @@ const { createRevocationService } = require("./services/revocation-service");
 const { createGovernanceService } = require("./services/governance-service");
 const { createDomainService } = require("./services/domain-service");
 const { createReviewService } = require("./services/review-service");
+const { createStatsService } = require("./services/stats-service");
 const { createMediaService } = require("./services/media-service");
 const { createMediaStorage } = require("./services/media-storage");
 
@@ -82,6 +83,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   const governanceService = createGovernanceService(ctx);
   const domainService = createDomainService(ctx);
   const reviewService = createReviewService(ctx);
+  const statsService = createStatsService(ctx);
 
   // ── Build Express app ──────────────────────────────────────────────────────
   const app = express();
@@ -166,7 +168,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
 
   // Observability endpoints — detailed stats for dashboards (heavy-ish
   // payload; not on the /health path so load-balancer probes stay fast).
-  app.use(API_VERSION, statsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef }));
+  app.use(API_VERSION, statsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef, statsService }));
 
   // Prometheus /metrics — top-level (NOT under /v1) per Prometheus scraper
   // convention. Mounted before the consensus gate so the endpoint is

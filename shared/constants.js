@@ -881,6 +881,10 @@ const MLDSA65_PRIVKEY_BYTES = 4032;
 const CLASSIFIER_BREAK_AFTER = 3;
 const CLASSIFIER_COOLDOWN_MS = 60000;
 
+// GET /v1/stats/scoring recomputes an O(identities) aggregate; memoize it so
+// repeated dashboard scrapes don't recompute on every hit.
+const STATS_SCORING_CACHE_MS = 15000;
+
 // Fail-open PRESCAN_COMPLETED re-emission cooldown per ctid: a dropped
 // fail-open leaves the content stuck, and re-emitting on every anchor turned
 // recovery into a cluster-wide signing self-flood (2026-07-10).
@@ -890,6 +894,7 @@ module.exports = {
   LOCALLY_VERIFIED_TX_CACHE_CAP,
   CLASSIFIER_BREAK_AFTER,
   CLASSIFIER_COOLDOWN_MS,
+  STATS_SCORING_CACHE_MS,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
   MLDSA65_PUBKEY_BYTES,
