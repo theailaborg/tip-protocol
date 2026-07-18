@@ -13,7 +13,7 @@
 
 const { shake256 } = require("../../shared/crypto");
 const { nowMs, nowPlusMs } = require("../../shared/time");
-const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
+const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES, PRESCAN_REVIEW_STATES, REGISTER_CREDIT } = require("../../shared/constants");
 const { JURY, APPEAL, DISPUTE, REVIEWER } = require("../../shared/protocol-constants");
 const { nodeSignedAuto } = require("./services/helpers");
 const { getLogger } = require("./logger");
@@ -530,6 +530,24 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       reason: `Author penalty: UPHELD on ${ctid}`,
       ctid, relatedTxId: resultTx.tx_id, timestamp, config,
     }));
+  }
+
+  // Reverse the author's registration credit for this content on UPHELD:
+  // reclaim exactly what was awarded (0 or +1), once (idempotent via the
+  // reversal marker), floored so it never double-claws.
+  if (verdict === VERDICT.UPHELD && authorTipId) {
+    const su = dag.getTxsByTypeAndCtid(TX_TYPES.SCORE_UPDATE, ctid);
+    const awarded = su
+      .filter(t => t.data?.tip_id === authorTipId && String(t.data?.reason || "").startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX))
+      .reduce((s, t) => s + (t.data?.delta || 0), 0);
+    const alreadyReversed = su.some(t => String(t.data?.reason || "").startsWith(REGISTER_CREDIT.REVERSAL_REASON_PREFIX));
+    if (awarded > 0 && !alreadyReversed) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: authorTipId, delta: -awarded,
+        reason: `${REGISTER_CREDIT.REVERSAL_REASON_PREFIX}${ctid}`,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
+      }));
+    }
   }
 
   // ── Juror score effects ───────────────────────────────────────────────────

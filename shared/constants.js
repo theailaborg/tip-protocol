@@ -885,6 +885,25 @@ const CLASSIFIER_COOLDOWN_MS = 60000;
 // repeated dashboard scrapes don't recompute on every hit.
 const STATS_SCORING_CACHE_MS = 15000;
 
+// Author reward for registering content: +1 per REGISTER_CONTENT, clamped by
+// the smallest remaining headroom of per-day / per-month / lifetime-total (the
+// content sub-score ceiling), so it can't be farmed. Delta is computed once at
+// emission and frozen into the paired SCORE_UPDATE (reason `reg_credit:<ctid>`);
+// reversed (`reg_credit_rev:<ctid>`) when a dispute is upheld against the author.
+// Lives in code (not genesis) until PROTOCOL_PARAM_UPDATE governance ships;
+// changing genesis on the live chain is not an option. ACTIVATION_MS gates the
+// award on so the fleet turns it on together after all nodes are upgraded (set
+// to a future epoch-ms at deploy; 0 = active immediately, e.g. for tests).
+const REGISTER_CREDIT = Object.freeze({
+  BASE: 1,
+  PER_DAY: 3,
+  PER_MONTH: 15,
+  TOTAL: 350,
+  ACTIVATION_MS: 0,
+  AWARD_REASON_PREFIX: "reg_credit:",
+  REVERSAL_REASON_PREFIX: "reg_credit_rev:",
+});
+
 // Fail-open PRESCAN_COMPLETED re-emission cooldown per ctid: a dropped
 // fail-open leaves the content stuck, and re-emitting on every anchor turned
 // recovery into a cluster-wide signing self-flood (2026-07-10).
@@ -895,6 +914,7 @@ module.exports = {
   CLASSIFIER_BREAK_AFTER,
   CLASSIFIER_COOLDOWN_MS,
   STATS_SCORING_CACHE_MS,
+  REGISTER_CREDIT,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
   MLDSA65_PUBKEY_BYTES,

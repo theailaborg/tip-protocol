@@ -5,7 +5,7 @@ const {
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
-const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const contentRegisterSchema = require("../schemas/content-register");
 const contentListSchema = require("../schemas/content-list");
@@ -217,6 +217,41 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return null;
   }
 
+  // Author reward for registering content: +REGISTER_CREDIT.BASE, clamped by the
+  // smallest remaining headroom of per-day / per-month / lifetime-total. The
+  // running sums come from past SCORE_UPDATEs (award reason `reg_credit:`; the
+  // net total also nets out `reg_credit_rev:` reversals so clawed-back content
+  // frees its headroom). Delta is frozen into the paired SCORE_UPDATE so every
+  // node applies the same number (single-channel). Mirrors the verify caps.
+  function _emitRegistrationCredit(authorTipId, ctid, relatedTxId) {
+    const now = nowMs();
+    if (!authorTipId || now < REGISTER_CREDIT.ACTIVATION_MS) return;
+
+    const MS_PER_DAY = 86_400_000;
+    const dayStart = now - (now % MS_PER_DAY);
+    const monthStart = dayStart - (Number(toIso(now).slice(8, 10)) - 1) * MS_PER_DAY;
+
+    const mine = dag.getTxsByType(TX_TYPES.SCORE_UPDATE).filter(t => t.data?.tip_id === authorTipId);
+    const awards = mine.filter(t => String(t.data?.reason || "").startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX));
+    const netTotal = mine.filter(t => String(t.data?.reason || "").startsWith("reg_credit")).reduce((s, t) => s + (t.data?.delta || 0), 0);
+    const dailySum = awards.filter(t => t.timestamp >= dayStart).reduce((s, t) => s + (t.data?.delta || 0), 0);
+    const monthlySum = awards.filter(t => t.timestamp >= monthStart).reduce((s, t) => s + (t.data?.delta || 0), 0);
+
+    const delta = Math.min(
+      REGISTER_CREDIT.BASE,
+      Math.max(0, REGISTER_CREDIT.TOTAL - netTotal),
+      Math.max(0, REGISTER_CREDIT.PER_DAY - dailySum),
+      Math.max(0, REGISTER_CREDIT.PER_MONTH - monthlySum),
+    );
+    if (delta <= 0) return;
+
+    submitTx(scoring.buildScoreUpdateTx({
+      tipId: authorTipId, delta,
+      reason: `${REGISTER_CREDIT.AWARD_REASON_PREFIX}${ctid}`,
+      ctid, relatedTxId, timestamp: now, config,
+    }));
+  }
+
   async function register(body) {
     contentRegisterSchema.validateRequest(body, { mediaLimits: config.mediaLimits, dag });
 
@@ -367,6 +402,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
     submitTx(signedTx);
+
+    // Paired registration reward (single-channel): capped +1 to the author.
+    _emitRegistrationCredit(signer_tip_id, ctid, signedTx.tx_id);
 
     // Near-dup advisory rides the register response; computed before this
     // registration's own ingest, so only pre-existing content can surface.
