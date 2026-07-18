@@ -30,41 +30,15 @@ const { asyncHandler } = require("../middleware/error-handler");
 const { computeQuorum } = require("../consensus/certificate");
 const { nowIso } = require("../../../shared/time");
 
-function createRouter({ dag, config, consensus, network }) {
+function createRouter({ dag, config, consensus, network, statsService }) {
   const router = express.Router();
 
-  function _snapshot() {
-    const net = network?.current;
-    const cons = consensus?.current;
-    const mem = process.memoryUsage();
-
-    return {
-      node: {
-        node_id: config.nodeRegisteredId || config.nodeId,
-        node_type: config.nodeType,
-        version: config.nodeVersion,
-        uptime_seconds: Math.floor(process.uptime()),
-      },
-      network: net ? {
-        peer_id: net.peerId,
-        peers_connected: net.peerCount(),
-        peer_ids: net.peers().map(p => p.toString()),
-      } : null,
-      consensus: cons ? cons.stats() : null,
-      dag: {
-        tx_count: (() => { try { return dag.count(); } catch { return null; } })(),
-      },
-      memory_mb: {
-        rss: Math.round(mem.rss / 1048576),
-        heap_used: Math.round(mem.heapUsed / 1048576),
-        heap_total: Math.round(mem.heapTotal / 1048576),
-      },
-      timestamp: nowIso(),
-    };
-  }
-
   router.get("/stats", (_req, res) => {
-    res.json(_snapshot());
+    res.json(statsService.nodeSnapshot());
+  });
+
+  router.get("/stats/scoring", (_req, res) => {
+    res.json(statsService.scoringSnapshot());
   });
 
   router.get("/stats/consensus", (_req, res) => {

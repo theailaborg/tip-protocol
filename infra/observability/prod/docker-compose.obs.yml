@@ -53,6 +53,8 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/tip-home.json
+      GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource
+      TIP_API_BASE_URL: ${TIP_API_BASE_URL}
     volumes:
       - ../grafana/provisioning:/etc/grafana/provisioning:ro
       - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
