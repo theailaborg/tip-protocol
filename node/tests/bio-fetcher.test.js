@@ -155,7 +155,7 @@ describe("fetchProfileHtml error mapping", () => {
   });
 });
 
-describe("fetchProfileHtml SSRF guard (security audit S-1)", () => {
+describe("fetchProfileHtml SSRF guard", () => {
   // The mastodon platform pattern accepts any host, so the fetcher itself must
   // refuse to connect to non-public address space, and must connect only to
   // the address it validated (DNS-rebinding pin).

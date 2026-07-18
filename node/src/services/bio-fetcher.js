@@ -135,7 +135,7 @@ function fetchProfileHtml(profileUrl) {
         });
         res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
         // Opaque outbound-failure messages: err.message would differentiate
-        // refused/reset/unreachable, a recon signal (security audit S-1).
+        // refused/reset/unreachable, a recon signal.
         res.on("error", () => reject({ status: 422, error: "Profile fetch failed. Please try again.", code: "profile_fetch_failed" }));
       });
 

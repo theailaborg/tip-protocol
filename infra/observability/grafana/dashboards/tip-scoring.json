@@ -7,7 +7,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 4,
   "editable": true,
   "refresh": "30s",
   "time": {
@@ -62,7 +62,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "identities",
+          "root_selector": "data.identities",
           "filters": [],
           "columns": [
             {
@@ -135,7 +135,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "identities",
+          "root_selector": "data.identities",
           "filters": [],
           "columns": [
             {
@@ -208,7 +208,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "identities",
+          "root_selector": "data.identities",
           "filters": [],
           "columns": [
             {
@@ -281,7 +281,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "identities.score",
+          "root_selector": "data.identities.score",
           "filters": [],
           "columns": [
             {
@@ -354,7 +354,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "identities.score",
+          "root_selector": "data.identities.score",
           "filters": [],
           "columns": [
             {
@@ -439,9 +439,35 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "identities.by_tier",
+          "root_selector": "data.identities.by_tier",
           "filters": [],
-          "columns": []
+          "columns": [
+            {
+              "selector": "HIGHLY_TRUSTED",
+              "text": "Highly Trusted",
+              "type": "number"
+            },
+            {
+              "selector": "TRUSTED",
+              "text": "Trusted",
+              "type": "number"
+            },
+            {
+              "selector": "VERIFIED",
+              "text": "Verified",
+              "type": "number"
+            },
+            {
+              "selector": "CAUTION",
+              "text": "Caution",
+              "type": "number"
+            },
+            {
+              "selector": "NOT_TRUSTED",
+              "text": "Not Trusted",
+              "type": "number"
+            }
+          ]
         }
       ],
       "fieldConfig": {
@@ -480,7 +506,7 @@
     },
     {
       "type": "bargauge",
-      "title": "Score range (min / mean / median / max)",
+      "title": "Score range",
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
         "uid": "infinity-tip"
@@ -507,9 +533,30 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "identities.score",
+          "root_selector": "data.identities.score",
           "filters": [],
-          "columns": []
+          "columns": [
+            {
+              "selector": "min",
+              "text": "Min",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "Mean",
+              "type": "number"
+            },
+            {
+              "selector": "median",
+              "text": "Median",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "Max",
+              "type": "number"
+            }
+          ]
         }
       ],
       "fieldConfig": {
@@ -587,7 +634,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "disputes",
+          "root_selector": "data.disputes",
           "filters": [],
           "columns": [
             {
@@ -660,7 +707,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "content",
+          "root_selector": "data.content",
           "filters": [],
           "columns": [
             {
@@ -733,7 +780,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "disputes",
+          "root_selector": "data.disputes",
           "filters": [],
           "columns": [
             {
@@ -806,7 +853,7 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "content",
+          "root_selector": "data.content",
           "filters": [],
           "columns": [
             {
@@ -879,9 +926,30 @@
             "method": "GET",
             "data": ""
           },
-          "root_selector": "disputes.resolved",
+          "root_selector": "data.disputes.resolved",
           "filters": [],
-          "columns": []
+          "columns": [
+            {
+              "selector": "UPHELD",
+              "text": "Upheld",
+              "type": "number"
+            },
+            {
+              "selector": "DISMISSED",
+              "text": "Dismissed",
+              "type": "number"
+            },
+            {
+              "selector": "CONSERVATIVE_LABEL",
+              "text": "Conservative label",
+              "type": "number"
+            },
+            {
+              "selector": "NO_QUORUM",
+              "text": "No quorum",
+              "type": "number"
+            }
+          ]
         }
       ],
       "fieldConfig": {
@@ -916,6 +984,74 @@
         "showUnfilled": true,
         "minVizHeight": 10,
         "minVizWidth": 0
+      }
+    },
+    {
+      "type": "row",
+      "title": "Scoring rules (current genesis values)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "title": "Score composition, tiers & identity",
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Score composition (max **1000**)\n| Sub-score | Cap | Earned from |\n|---|---|---|\n| Identity | 530 | verification + linked socials |\n| Content | 350 | verified, correctly-labeled work |\n| Longevity | 70 | sustained good standing over time |\n| Reputation | 50 | dispute & jury track record |\n\nA new verified identity starts at **500**.\n\n### Trust tiers\n| Tier | Range |\n|---|---|\n| Highly Trusted | 850-1000 |\n| Trusted | 650-849 |\n| Verified | 400-649 |\n| Caution | 200-399 |\n| Not Trusted | 0-199 |\n\n### Identity & social linking\n**+5** per verified linked social, up to **6** accounts (cap **+30**)."
+      }
+    },
+    {
+      "type": "text",
+      "title": "Penalties",
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Applied to the **author** when a dispute is upheld. Escalates by prior offense (1st / 2nd / 3rd), and each upheld dispute adds 1 to the offense count.\n\n### Origin misdeclaration\n| Misdeclaration | 1st / 2nd / 3rd |\n|---|---|\n| Original-Human \u2192 AI-Generated | -100 / -200 / -300 |\n| Original-Human \u2192 AI-Assisted | -40 / -80 / -120 |\n| AI-Assisted \u2192 AI-Generated | -25 / -50 / -75 |\n\n### Other penalties\n| Event | Penalty |\n|---|---|\n| Minor / major falsehood | -75 / -300 |\n| Retraction | -50 |\n| Device compromise | -15 |\n\nAppeal overturn restores **50%** of the author's penalty."
+      }
+    },
+    {
+      "type": "text",
+      "title": "Dispute & jury economics",
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Filing a dispute\nDisputer stakes **15** on filing (needs score \u2265 **550**); rate-limited to **5 per 30 days**.\n- **Win (upheld):** stake back **+15**, plus **+5** bonus \u2192 net **+5**.\n- **Lose (dismissed):** forfeits the **15** stake.\n- **Author cleared (dismissed):** author earns **+5** vindication.\n\n### Jury (Stage 2)\n7 jurors, eligibility \u2265 **700**, stake **10**. Majority **+3**, minority **-8**, no-reveal **-8**, no-commit **-1**. Windows: 72h commit / 12h reveal. Max 3 jurors per country.\n\n### Expert appeal (Stage 3)\n5 experts, eligibility \u2265 **850**, stake **25**. Majority **+7**, minority **-10**. Appeal win **+10**. Windows: 48h file / 72h commit / 12h reveal."
+      }
+    },
+    {
+      "type": "text",
+      "title": "Reputation recovery & AI thresholds",
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Reputation recovery\n- 90 consecutive days with no offense \u2192 **+10**\n- Dispute against the account cleared \u2192 **+5**\n\n### AI pre-screen thresholds\nThe classifier auto-handles a dispute before it reaches a jury:\n- confidence **< 0.30** \u2192 auto-dismiss\n- confidence **> 0.90** \u2192 auto-escalate\n- in between \u2192 full jury \u00b7 classifier timeout **60s**\n\n---\n*Values are genesis-anchored, live source `GET /v1/constants`. Changing any of them is a governance / genesis action, not a code deploy.*"
       }
     }
   ]

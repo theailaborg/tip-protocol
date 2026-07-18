@@ -75,10 +75,8 @@ function createRouter({ dag, scoring, config, consensus, network }) {
     res.status(statusCode).json(body);
   });
 
-  // Readiness (vs /health liveness): 200 only when this node serves current
-  // state. LB monitors point here so a syncing/catching-up node is drained
-  // instead of answering stale reads; the Docker healthcheck stays on /health
-  // so catch-up never flags the container unhealthy.
+  // Readiness (vs /health liveness): 200 only when caught-up, so an LB drains a
+  // syncing node. Kept off /health so Docker doesn't flag catch-up as unhealthy.
   router.get("/ready", (req, res) => {
     let dbOk = true;
     try { dag.count(); } catch { dbOk = false; }

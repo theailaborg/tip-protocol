@@ -2,9 +2,9 @@
  * @file @tip-protocol/node/src/services/stats-service.js
  * @description Builds the JSON payloads for the /v1/stats endpoints.
  *
- *   nodeSnapshot()     — node + network + consensus + dag + memory (GET /stats).
- *                        Cheap live counters; computed per call.
- *   scoringSnapshot()  — app-level scoring aggregate (GET /stats/scoring):
+ *   nodeSnapshot():     node + network + consensus + dag + memory (GET /stats).
+ *                       Cheap live counters; computed per call.
+ *   scoringSnapshot():  app-level scoring aggregate (GET /stats/scoring):
  *                        tier distribution, score summary, dispute outcomes.
  *                        Aggregate-only (no per-identity rows) so it stays cheap
  *                        and leaks no account-level data; memoized for
