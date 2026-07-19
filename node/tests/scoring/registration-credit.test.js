@@ -22,12 +22,12 @@ const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, shake256, tipNormalize, computeTxId } = require(path.join(SHARED, "crypto"));
 const { TX_TYPES, REGISTER_CREDIT, ORIGIN, VOTE, VERDICT, CONTENT_STATUS } = require(path.join(SHARED, "constants"));
-const { DISPUTE, JURY } = require(path.join(SHARED, "protocol-constants"));
+const { DISPUTE, JURY, APPEAL } = require(path.join(SHARED, "protocol-constants"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createContentService } = require(path.join(SRC, "services", "content-service"));
-const { buildAdjudicationBatch } = require(path.join(SRC, "jury"));
+const { buildAdjudicationBatch, buildAppealBatch } = require(path.join(SRC, "jury"));
 const schema = require(path.join(SRC, "schemas", "content-register"));
 
 beforeAll(async () => { await initCrypto(); });
@@ -184,6 +184,59 @@ function _seedRegCredit(dag, scoring, config, tipId, ctid, delta = REGISTER_CRED
 }
 
 const reversals = (txs) => txs.filter(t => String(t.data?.reason || "").startsWith(REGISTER_CREDIT.REVERSAL_REASON_PREFIX));
+const restores = (txs) => txs.filter(t => String(t.data?.reason || "").startsWith(REGISTER_CREDIT.RESTORE_REASON_PREFIX));
+
+const EXPERTS = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2"];
+
+function _expertSummons(dag, experts) {
+  return experts.map((e, i) => _addTx(dag, {
+    tx_type: TX_TYPES.JURY_SUMMONS,
+    timestamp: `2026-04-05T00:00:0${i}.000Z`,
+    data: {
+      ctid: CTID, juror_tip_id: e, is_appeal: true, stake: JURY.JUROR_STAKE,
+      commit_deadline: 1893456000000, reveal_deadline: 1893456000000,
+      seed: shake256("expert-seed"), identity_count: experts.length,
+    },
+  }));
+}
+
+function _expertReveals(experts, vote) {
+  return experts.map((e, i) => ({
+    tx_id: shake256(`exr-${i}-${vote}`),
+    tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775433600000,
+    data: { ctid: CTID, juror_tip_id: e, vote, salt: shake256(`es${i}`), confirmed_origin: ORIGIN.AG, is_appeal: true },
+  }));
+}
+
+// Seed a Stage-2 ADJUDICATION_RESULT (+ its reg_credit reclaim on UPHELD) and an
+// APPEAL_FILED, so buildAppealBatch has a prior verdict to reconcile against.
+function _seedStage2AndAppeal(dag, scoring, config, ids, stage2Verdict) {
+  const adj = _addTx(dag, {
+    tx_type: TX_TYPES.ADJUDICATION_RESULT, timestamp: 1775090000000,
+    data: {
+      ctid: CTID, verdict: stage2Verdict, declared_origin: ORIGIN.OH,
+      confirmed_origin: stage2Verdict === VERDICT.UPHELD ? ORIGIN.AG : null,
+      author_tip_id: ids.authorTipId, disputer_tip_id: ids.disputerTipId,
+      author_score_delta: stage2Verdict === VERDICT.UPHELD ? -100 : 0,
+      pre_dispute_status: CONTENT_STATUS.REGISTERED,
+    },
+  });
+  if (stage2Verdict === VERDICT.UPHELD) {
+    dag.addTx(scoring.buildScoreUpdateTx({
+      tipId: ids.authorTipId, delta: -REGISTER_CREDIT.BASE,
+      reason: `${REGISTER_CREDIT.REVERSAL_REASON_PREFIX}${CTID}`,
+      ctid: CTID, relatedTxId: adj.tx_id, timestamp: 1775090000000, config,
+    }));
+  }
+  _addTx(dag, {
+    tx_type: TX_TYPES.APPEAL_FILED, timestamp: 1775095000000,
+    data: {
+      ctid: CTID,
+      appellant_tip_id: stage2Verdict === VERDICT.UPHELD ? ids.authorTipId : ids.disputerTipId,
+      stage2_verdict: stage2Verdict, stake: APPEAL.APPELLANT_STAKE,
+    },
+  });
+}
 
 describe("registration credit — clawback on dispute upheld", () => {
   test("UPHELD reverses the author's registration credit exactly once (-1)", () => {
@@ -216,5 +269,54 @@ describe("registration credit — clawback on dispute upheld", () => {
     const out = buildAdjudicationBatch(CTID, _buildReveals(ids.jurors, DISMISS_VOTES), ids.summons, fx.dag, fx.scoring, fx.config);
     expect(out.verdict).toBe(VERDICT.DISMISSED);
     expect(reversals(out.txs)).toHaveLength(0);
+  });
+});
+
+describe("registration credit — appeal reconciliation (overturn)", () => {
+  function _appeal(stage2Verdict, expertVote) {
+    const fx = _setup();
+    const ids = _seedDisputeFixture(fx.dag);
+    _seedRegCredit(fx.dag, fx.scoring, fx.config, ids.authorTipId, CTID);
+    _seedStage2AndAppeal(fx.dag, fx.scoring, fx.config, ids, stage2Verdict);
+    for (const e of EXPERTS) _seedIdentity(fx.dag, e, null, 900);
+    const summons = _expertSummons(fx.dag, EXPERTS);
+    const out = buildAppealBatch(CTID, _expertReveals(EXPERTS, expertVote), summons, fx.dag, fx.scoring, fx.config);
+    return { ids, out };
+  }
+
+  test("overturn UPHELD->DISMISSED restores the author's +1", () => {
+    const { ids, out } = _appeal(VERDICT.UPHELD, VOTE.MATCH);
+    expect(out.verdict).toBe(VERDICT.DISMISSED);
+    expect(out.overturned).toBe(true);
+    const r = restores(out.txs);
+    expect(r).toHaveLength(1);
+    expect(r[0].data.tip_id).toBe(ids.authorTipId);
+    expect(r[0].data.delta).toBe(REGISTER_CREDIT.BASE);
+    expect(reversals(out.txs)).toHaveLength(0);
+  });
+
+  test("overturn DISMISSED->UPHELD claws back the author's +1", () => {
+    const { ids, out } = _appeal(VERDICT.DISMISSED, VOTE.MISMATCH);
+    expect(out.verdict).toBe(VERDICT.UPHELD);
+    expect(out.overturned).toBe(true);
+    const rev = reversals(out.txs);
+    expect(rev).toHaveLength(1);
+    expect(rev[0].data.tip_id).toBe(ids.authorTipId);
+    expect(rev[0].data.delta).toBe(-REGISTER_CREDIT.BASE);
+    expect(restores(out.txs)).toHaveLength(0);
+  });
+
+  test("confirm UPHELD->UPHELD does not double-reclaim (already reversed at Stage 2)", () => {
+    const { out } = _appeal(VERDICT.UPHELD, VOTE.MISMATCH);
+    expect(out.verdict).toBe(VERDICT.UPHELD);
+    expect(reversals(out.txs)).toHaveLength(0);
+    expect(restores(out.txs)).toHaveLength(0);
+  });
+
+  test("confirm DISMISSED->DISMISSED leaves the +1 untouched", () => {
+    const { out } = _appeal(VERDICT.DISMISSED, VOTE.MATCH);
+    expect(out.verdict).toBe(VERDICT.DISMISSED);
+    expect(reversals(out.txs)).toHaveLength(0);
+    expect(restores(out.txs)).toHaveLength(0);
   });
 });

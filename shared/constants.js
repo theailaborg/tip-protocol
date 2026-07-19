@@ -902,6 +902,7 @@ const REGISTER_CREDIT = Object.freeze({
   ACTIVATION_MS: 0,
   AWARD_REASON_PREFIX: "reg_credit:",
   REVERSAL_REASON_PREFIX: "reg_credit_rev:",
+  RESTORE_REASON_PREFIX: "reg_credit_restore:",
 });
 
 // Fail-open PRESCAN_COMPLETED re-emission cooldown per ctid: a dropped

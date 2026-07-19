@@ -863,6 +863,33 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   }, config, dag);
   txs.push(resultTx);
 
+  // Registration credit follows the FINAL verdict. Stage-2 reclaims the +1
+  // only on UPHELD, so a Stage-3 flip (or a NO_QUORUM→UPHELD escalation, which
+  // is not "overturned") must reconcile: reclaim outstanding credit when the
+  // final verdict is UPHELD, restore it otherwise. Idempotent — emits only on a
+  // real delta, so a confirm or a re-run is a no-op.
+  if (authorTipId) {
+    const su = dag.getTxsByTypeAndCtid(TX_TYPES.SCORE_UPDATE, ctid)
+      .filter(t => t.data?.tip_id === authorTipId);
+    const isCredit = (r) => r.startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX)
+      || r.startsWith(REGISTER_CREDIT.REVERSAL_REASON_PREFIX)
+      || r.startsWith(REGISTER_CREDIT.RESTORE_REASON_PREFIX);
+    const awarded = su
+      .filter(t => String(t.data?.reason || "").startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX))
+      .reduce((s, t) => s + (t.data?.delta || 0), 0);
+    const net = su
+      .filter(t => isCredit(String(t.data?.reason || "")))
+      .reduce((s, t) => s + (t.data?.delta || 0), 0);
+    const delta = (verdict === VERDICT.UPHELD ? 0 : awarded) - net;
+    if (delta !== 0) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: authorTipId, delta,
+        reason: `${delta < 0 ? REGISTER_CREDIT.REVERSAL_REASON_PREFIX : REGISTER_CREDIT.RESTORE_REASON_PREFIX}${ctid}`,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
+      }));
+    }
+  }
+
   // ── Appellant outcome ─────────────────────────────────────────────────────
   // Stake-on-file model: APPELLANT_STAKE was deducted at fileAppeal time
   // (the SCORE_UPDATE rides alongside APPEAL_FILED). Here we settle:
