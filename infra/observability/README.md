@@ -2,11 +2,12 @@
 
 > Production (multi-EC2, TLS, login-gated): see [`prod/README.md`](prod/README.md).
 
-Local Prometheus + Grafana for the TIP dev federation. Scrapes each
-node's `/metrics` endpoint and provisions six dashboards out of the box
-(`tip-home` is the landing page). See the
+Local Prometheus + Grafana + Loki for the TIP dev federation. Scrapes each
+node's `/metrics` endpoint, ships each node's logs via promtail, and provisions
+six dashboards out of the box (`tip-home` is the landing page). See the
 [Dashboards & panels reference](#dashboards--panels-reference) below for what
-every panel means.
+every panel means, and [Logs (Loki + promtail)](#logs-loki--promtail) for log
+queries.
 
 ## Run
 
@@ -20,6 +21,32 @@ docker compose up -d
 - Prometheus → http://localhost:9090  (`Status > Targets` shows scrape health)
 
 Stop with `docker compose down`. Add `-v` to wipe stored time series.
+
+## Logs (Loki + promtail)
+
+The same `docker compose up -d` also brings up **Loki** and **promtail**, so
+Grafana is one pane for metrics *and* logs. Promtail (`promtail-local.yml`) tails
+each node's `TIP_LOG_DIR` files (`node/logs/`) and ships them to Loki.
+
+In Grafana → **Explore** → the **Loki** datasource:
+
+- `{job="tip-node"}` , all nodes
+- `{node="node2"}` , one node
+- `{job="tip-node"} |= "ERROR"` , error lines across the fleet
+
+A metric spike on a dashboard, then the same-minute logs in Explore, is the core
+workflow.
+
+Nodes log to files at `TIP_LOG_LEVEL` and to the console at `TIP_CONSOLE_LEVEL`
+(`warn` is the intended default). The files carry every level regardless of the
+console setting, so promtail ships complete logs even when the console is quiet.
+If `node/logs/` is empty, the node cannot write there: the log dir must be
+writable by the node's runtime user (uid `1001` when running the container image).
+
+For the production topology (per-node promtail agent, Loki behind Caddy with TLS
++ basic auth, DNS, retention, password rotation) see
+[`prod/README.md`](prod/README.md); its "Try it locally first" section maps these
+local steps to AWS.
 
 ## Configuration (`.env`)
 
