@@ -97,6 +97,15 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     return "none";
   }
 
+  // A leaked in_progress marker with no attested commit ("no_commit", e.g. a
+  // wiped node whose failed install left the marker) has no trusted baseline to
+  // reconcile against — like "inconsistent", the only safe recovery is a full
+  // resync, never a fake-ready exitSyncMode (which the marker gate blocks
+  // anyway, wedging the node forever, 2026-07-19).
+  function _markerNeedsResync(resolved) {
+    return resolved === "inconsistent" || resolved === "no_commit";
+  }
+
   // "inconsistent" recurs every AE tick while wedged; without a cooldown the
   // retries stack on the peers' single serve slot (self-DoS loop, 2026-07-10).
   let _lastInconsistentResyncAt = 0;
@@ -1137,7 +1146,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         );
         if (narwhal && typeof narwhal.exitSyncMode === "function") {
           const resolved = await _resolveStaleInstallMarker();
-          if (resolved === "inconsistent") {
+          if (_markerNeedsResync(resolved)) {
             return await _escalateInconsistent(selfCommitted);
           }
           narwhal.exitSyncMode(selfCommitted);
@@ -1432,9 +1441,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         } else if (state === "syncing" && typeof narwhal.exitSyncMode === "function") {
           _log.info(`anti-entropy: caught up while in syncing (no install needed), peer ${peerStatus.node_id || peerId.slice(0, 12)} at round=${selfCommitted}, exiting via override`);
           const resolved = await _resolveStaleInstallMarker();
-          if (resolved === "inconsistent" && !_snapshotResyncInFlight) {
+          if (_markerNeedsResync(resolved) && !_snapshotResyncInFlight) {
             await _escalateInconsistent(selfCommitted);
-          } else if (resolved !== "inconsistent") {
+          } else if (!_markerNeedsResync(resolved)) {
             narwhal.exitSyncMode(selfCommitted);
           }
         }
@@ -1459,7 +1468,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         `${selfState.attested_head_round} , exiting sync mode`
       );
       const resolvedMarker = await _resolveStaleInstallMarker();
-      if (resolvedMarker !== "inconsistent") narwhal.exitSyncMode(selfCommitted);
+      if (!_markerNeedsResync(resolvedMarker)) narwhal.exitSyncMode(selfCommitted);
       return "equal";
     }
 
@@ -1489,12 +1498,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           `peer ${peerStatus.node_id || peerId.slice(0, 12)} at ${peerCommitted}); exiting syncing to resume production`
         );
         const resolved = await _resolveStaleInstallMarker();
-        if (resolved === "inconsistent" && !_snapshotResyncInFlight) {
+        if (_markerNeedsResync(resolved) && !_snapshotResyncInFlight) {
           // Regress-then-replay: even a behind peer's snapshot heals a mixed
           // state , install lands us at its attested round, then our own log
           // replays forward.
           await _escalateInconsistent(selfCommitted);
-        } else if (resolved !== "inconsistent") {
+        } else if (!_markerNeedsResync(resolved)) {
           narwhal.exitSyncMode(selfCommitted);
         }
       }
