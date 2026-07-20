@@ -654,6 +654,12 @@ class MemoryStore {
     const rec = this._content.get(ctid);
     if (rec) this._content.set(ctid, { ...rec, origin_code: originCode, status });
   }
+  // Read-model only (never hashed): CONTENT_VERIFIED/CONTENT_DISPUTED volume per ctid.
+  incrementContentCounter(ctid, field) {
+    if (field !== "verification_count" && field !== "dispute_count") return;
+    const rec = this._content.get(ctid);
+    if (rec) this._content.set(ctid, { ...rec, [field]: (rec[field] || 0) + 1 });
+  }
   getContentByStatus(status) {
     return [...this._content.values()].filter(c => c.status === status);
   }
@@ -2338,6 +2344,8 @@ class SQLiteStore {
       contentCount: this.db.prepare("SELECT COUNT(*) AS n FROM content"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE tip_ctid=?"),
       updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE tip_ctid=?"),
+      incVerificationCount: this.db.prepare("UPDATE content SET verification_count = verification_count + 1 WHERE tip_ctid=?"),
+      incDisputeCount: this.db.prepare("UPDATE content SET dispute_count = dispute_count + 1 WHERE tip_ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
       contentByStatus: this.db.prepare("SELECT * FROM content WHERE status=?"),
       // Register-time near-duplicate warning (exact normalized match).
@@ -3079,6 +3087,11 @@ class SQLiteStore {
   contentCount() { return this._stmts.contentCount.get().n; }
   updateContentStatus(ctid, status) { this._stmts.updateContentStatus.run(status, ctid); }
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
+  incrementContentCounter(ctid, field) {
+    const stmt = field === "verification_count" ? this._stmts.incVerificationCount
+      : field === "dispute_count" ? this._stmts.incDisputeCount : null;
+    if (stmt) stmt.run(ctid);
+  }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
   getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
   getContentByHash(contentHash) {
@@ -4283,6 +4296,7 @@ function _buildDagHandle(store, config) {
     contentCount: () => store.contentCount(),
     updateContentStatus: (ctid, s) => store.updateContentStatus(ctid, s),
     updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
+    incrementContentCounter: (ctid, f) => store.incrementContentCounter(ctid, f),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
     getContentByStatus: (s) => store.getContentByStatus(s),
     // Register-time near-duplicate warning (exact normalized content_hash).
