@@ -899,7 +899,8 @@ const REGISTER_CREDIT = Object.freeze({
   PER_DAY: 3,
   PER_MONTH: 15,
   TOTAL: 350,
-  ACTIVATION_MS: 0,
+  ACTIVATION_MS: 1784522400000, // 2026-07-20 04:40:00 UTC mainnet activation
+
   AWARD_REASON_PREFIX: "reg_credit:",
   REVERSAL_REASON_PREFIX: "reg_credit_rev:",
   RESTORE_REASON_PREFIX: "reg_credit_restore:",
