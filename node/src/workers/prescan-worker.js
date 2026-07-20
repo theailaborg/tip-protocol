@@ -44,6 +44,12 @@ const { isSkipped, isHeuristicOnly } = require("../services/classifier-client");
 const POLL_IDLE_MS = 500;        // how long to sleep when queue is empty
 const POLL_BUSY_MS = 50;         // brief breather between claim attempts when pool isn't full
 const DEFAULT_CONCURRENCY = 1;   // sequential by default; bump via run({ concurrency }) or env
+// Wait-for-real backpressure: below this pending-backlog depth the worker keeps
+// retrying the external classifier (with backoff) instead of committing a
+// local/fail-open verdict; at/above it, overflow to the local fallback. Default
+// ~130k ≈ 12h buffer at ~3 verdicts/s; retry backoff paces a down classifier.
+const PRESCAN_MAX_BACKLOG = parseInt(process.env.TIP_PRESCAN_MAX_BACKLOG || "130000", 10);
+const PRESCAN_RETRY_WAIT_MS = parseInt(process.env.TIP_PRESCAN_RETRY_WAIT_MS || "5000", 10);
 const STAGE_TEXT = "text";
 const STAGE_IMAGE = "image";
 const STAGE_AUDIO = "audio";
@@ -76,6 +82,8 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
   const baseId = config.nodeRegisteredId || config.nodeId || `worker_${process.pid}`;
   const workerId = `${baseId}${workerTag}`;
   const now = typeof nowFn === "function" ? nowFn : nowMs;
+  // Backlog cap for wait-for-real backpressure: config override (tests) else the env default.
+  const maxBacklog = Number.isInteger(config.prescanMaxBacklog) ? config.prescanMaxBacklog : PRESCAN_MAX_BACKLOG;
   const sleep = typeof sleepFn === "function"
     ? sleepFn
     : (ms) => new Promise(r => setTimeout(r, ms));
@@ -282,10 +290,17 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // signal came from local fallback (retrying a down classifier is futile).
     if (agg.overall_hard_degraded) {
       if (!isLocalFallback && job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED) {
-        jobs.releaseForRetry(job.job_id, "hard_degraded_signal");
+        jobs.releaseForRetry(job.job_id, "hard_degraded_signal", now() + PRESCAN_RETRY_WAIT_MS);
         return;
       }
-      // Exhausted — fail-open. Preserve whatever the aggregator produced
+      // Prefer the real verdict: while the backlog has room, keep waiting for the
+      // external classifier (re-queue with backoff) rather than committing a
+      // local/fail-open verdict. Overflow to fail-open only when the buffer fills.
+      if (dag.countPendingPrescanJobs() < maxBacklog) {
+        jobs.releaseForRetry(job.job_id, "awaiting_real_classifier", now() + PRESCAN_RETRY_WAIT_MS);
+        return;
+      }
+      // Buffer full — fail-open. Preserve whatever the aggregator produced
       // (a non-hard modality may have given a usable number); only fall
       // back to the no-signal neutral when the aggregator itself has no
       // probability to share.
@@ -328,7 +343,13 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     const msg = err?.message || String(err);
     if (job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_ERROR) {
       logger.warn?.(`prescan-worker: classifier call failed on ${job.job_id} (retry ${job.retries + 1}): ${msg}`);
-      jobs.releaseForRetry(job.job_id, msg);
+      jobs.releaseForRetry(job.job_id, msg, now() + PRESCAN_RETRY_WAIT_MS);
+      return;
+    }
+    // Prefer the real verdict: wait (re-queue with backoff) while the backlog has
+    // room; overflow to local fail-open only when the buffer is full.
+    if (dag.countPendingPrescanJobs() < maxBacklog) {
+      jobs.releaseForRetry(job.job_id, "awaiting_real_classifier", now() + PRESCAN_RETRY_WAIT_MS);
       return;
     }
     logger.warn?.(`prescan-worker: classifier exhausted retries on ${job.job_id}; failing open: ${msg}`);
