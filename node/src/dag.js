@@ -2002,6 +2002,16 @@ class MemoryStore {
     }
     return null;
   }
+  // Backlog depth = jobs still awaiting a real verdict (done rows are deleted).
+  // Gates the prescan-worker's fail-open: below the cap it waits for the real
+  // classifier, at/above it overflows to the local fallback.
+  countPendingPrescanJobs() {
+    let n = 0;
+    for (const row of this._prescanJobs.values()) {
+      if (row.status === "queued" || row.status === "claimed") n++;
+    }
+    return n;
+  }
   // Atomic claim: prefer queued jobs (oldest first), then recover stuck
   // claimed jobs whose claimed_at is past the timeout. Returns the
   // claimed row or null if no work is available.
@@ -2013,8 +2023,10 @@ class MemoryStore {
       // the content row exists no-ops at apply and the real verdict is lost
       // to the 1h fail-open valve.
       if (!this._content.get(row.ctid)) continue;
-      if (row.status === "queued") queued.push(row);
-      else if (row.status === "claimed" && row.claimed_at < now - claimTimeoutMs) stuck.push(row);
+      if (row.status === "queued") {
+        if (row.retry_after && row.retry_after > now) continue; // retry backoff not yet elapsed
+        queued.push(row);
+      } else if (row.status === "claimed" && row.claimed_at < now - claimTimeoutMs) stuck.push(row);
     }
     queued.sort((a, b) => a.created_at - b.created_at);
     stuck.sort((a, b) => a.created_at - b.created_at);
@@ -2040,7 +2052,7 @@ class MemoryStore {
     row.completed_at = completedAt;
     return true;
   }
-  releasePrescanJobForRetry(jobId, { lastError }) {
+  releasePrescanJobForRetry(jobId, { lastError, retryAfter }) {
     const row = this._prescanJobs.get(jobId);
     if (!row) return false;
     row.status = "queued";
@@ -2048,6 +2060,7 @@ class MemoryStore {
     row.claimed_by = null;
     row.last_error = lastError || null;
     row.retries = (row.retries || 0) + 1;
+    row.retry_after = retryAfter || 0;
     return true;
   }
 
@@ -2887,6 +2900,9 @@ class SQLiteStore {
             SET status='queued', claimed_at=NULL, claimed_by=NULL,
                 last_error=?, retries=retries+1
           WHERE job_id=?`
+      ),
+      countPendingPrescanJobs: this.db.prepare(
+        "SELECT COUNT(*) AS n FROM prescan_jobs WHERE status IN ('queued','claimed')"
       ),
       // Perceptual index (off-DAG, advisory).
       savePerceptualFingerprint: this.db.prepare(
@@ -4025,6 +4041,9 @@ class SQLiteStore {
   getPrescanJobByCtid(ctid) {
     return this._hydratePrescanJob(this._stmts.getPrescanJobByCtid.get(ctid));
   }
+  countPendingPrescanJobs() {
+    return this._stmts.countPendingPrescanJobs.get().n;
+  }
   // ── Perceptual index writes (off-DAG, advisory) ───────────────────────────
   savePerceptualFingerprint(rec) {
     this._stmts.savePerceptualFingerprint.run(
@@ -4540,6 +4559,7 @@ function _buildDagHandle(store, config) {
     getAudioClip: (clipId) => store.getAudioClip(clipId),
     getPrescanJob: (jobId) => store.getPrescanJob(jobId),
     getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
+    countPendingPrescanJobs: () => store.countPendingPrescanJobs(),
     claimPrescanJob: (opts) => store.claimPrescanJob(opts),
     markPrescanJobDone: (jobId, opts) => store.markPrescanJobDone(jobId, opts),
     markPrescanJobFailed: (jobId, opts) => store.markPrescanJobFailed(jobId, opts),

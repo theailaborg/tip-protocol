@@ -97,7 +97,7 @@ function makeMediaService(filesByMediaId = {}) {
   };
 }
 
-async function setup({ now, classifierHandler, mediaService }) {
+async function setup({ now, classifierHandler, mediaService, maxBacklog }) {
   await initCrypto();
   const kp = generateMLDSAKeypair();
   const dag = initDAG({ dbPath: ":memory-test:" });
@@ -112,6 +112,10 @@ async function setup({ now, classifierHandler, mediaService }) {
   const config = {
     nodeRegisteredId: "tip://node/efbe3707224fb785",
     nodePrivateKey: kp.privateKey,
+    // Wait-for-real backpressure. Suites here assert the fail-open path, so
+    // default the cap to 0 (buffer always "full" → overflow to fail-open). The
+    // wait-below-cap test passes a positive maxBacklog to get the retry/wait path.
+    prescanMaxBacklog: maxBacklog ?? 0,
   };
   const jobs = createPrescanJobs({ dag, now });
   // Claims are gated on the content row existing (REGISTER_CONTENT
@@ -343,6 +347,29 @@ describe("tick — degraded signal handling", () => {
     // No retry was consumed — committed on the first tick (retries=0).
     const job = jobs.getByCtid(CTID);
     expect(job.retries).toBe(0);
+  });
+
+  test("below backlog cap: down classifier re-queues to wait for the real verdict, does NOT fail-open", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      maxBacklog: 1000, // buffer has room → wait for the real classifier, no fake verdict
+      classifierHandler: () => R({
+        modalities: [{ modality: "image", probability: 0.5 }],
+        provider: "local_fallback",
+      }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "", origin_code: "OH", content_type: "image" },
+    });
+    await worker.tick();
+    // No verdict committed — the job is held (re-queued) awaiting the real classifier.
+    expect(submitter.txs).toHaveLength(0);
+    const job = jobs.getByCtid(CTID);
+    expect(job).not.toBeNull();
+    expect(job.status).toBe("queued");
+    expect(job.retries).toBeGreaterThan(0);
   });
 
   test("hard-degraded + retries exhausted → fail-open with overall_degraded=true", async () => {

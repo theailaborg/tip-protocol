@@ -1103,6 +1103,7 @@ class KnexAdapter {
   }
   getPrescanJob(jobId) { return this.mirror.getPrescanJob(jobId); }
   getPrescanJobByCtid(ctid) { return this.mirror.getPrescanJobByCtid(ctid); }
+  countPendingPrescanJobs() { return this.mirror.countPendingPrescanJobs(); }
   claimPrescanJob(opts) {
     const claimed = this.mirror.claimPrescanJob(opts);
     if (claimed) {
