@@ -155,4 +155,17 @@ describe("materialized content counters — equal the live count, dedup, per-cti
     expect(fx.dag.getContent(CTID_B).dispute_count).toBe(1);
     expect(fx.dag.getContent(CTID_B).verification_count || 0).toBe(0);
   });
+
+  test("saveContent re-save preserves the counter (SQLite persistence, matches Knex)", () => {
+    const fx = _setup();
+    fx.handler.commitOrderedTxs([
+      _verifyTx(fx, { ctid: CTID_A, verifierTipId: V1_TIP, verifierKp: fx.v1Kp, timestamp: T1 }),
+    ], 1);
+    expect(fx.dag.getContent(CTID_A).verification_count).toBe(1);
+    // Mirrors the PRESCAN_COMPLETED re-save (spreads ...existing) and snapshot install
+    // (raw row): the counter must survive an INSERT OR REPLACE, not reset to 0.
+    const existing = fx.dag.getContent(CTID_A);
+    fx.dag.saveContent({ ...existing, prescan_status: "completed" });
+    expect(fx.dag.getContent(CTID_A).verification_count).toBe(1);
+  });
 });

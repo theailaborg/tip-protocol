@@ -2330,6 +2330,10 @@ class SQLiteStore {
       ),
       identityCount: this.db.prepare("SELECT COUNT(*) AS n FROM identities"),
 
+      // verification_count/dispute_count (read-model counters) persisted here so a
+      // re-save/snapshot-install preserves them, matching Knex. Callers pass the full
+      // record (registration = fresh 0; prescan re-save spreads ...existing; install
+      // ships the raw row), so `|| 0` never clobbers a live count.
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
            (tip_ctid,origin_code,content_hash,author_tip_id,signer_tip_id,
@@ -2337,8 +2341,9 @@ class SQLiteStore {
             status,prescan_flagged,prescan_probability,prescan_tier,
             prescan_status,prescan_completed_at,prescan_assigned_node_id,
             prescan_content_type,prescan_overall_degraded,content_type_hint,
-            override,registered_at,registered_urls,media,media_canonical_hash,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            override,registered_at,registered_urls,media,media_canonical_hash,tx_id,
+            verification_count,dispute_count)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE tip_ctid=?"),
       contentCount: this.db.prepare("SELECT COUNT(*) AS n FROM content"),
@@ -3061,7 +3066,9 @@ class SQLiteStore {
       rec.registered_at, JSON.stringify(urls),
       JSON.stringify(media),
       typeof rec.media_canonical_hash === "string" ? rec.media_canonical_hash : null,
-      rec.tx_id || null
+      rec.tx_id || null,
+      rec.verification_count || 0,
+      rec.dispute_count || 0
     );
   }
   // SQL returns array/object columns as JSON-encoded TEXT. Decode all
