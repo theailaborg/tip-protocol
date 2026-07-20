@@ -1469,6 +1469,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           if (content && content.status === CONTENT_STATUS.REGISTERED) {
             dag.updateContentStatus(d.ctid, CONTENT_STATUS.VERIFIED);
           }
+          // Read-model counter (unhashed): distinct verifiers, already deduped in _dedupCheck.
+          dag.incrementContentCounter(d.ctid, "verification_count");
         }
         break;
 
@@ -1476,6 +1478,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       case TX_TYPES.CONTENT_DISPUTED:
         if (d.ctid) {
           dag.updateContentStatus(d.ctid, CONTENT_STATUS.DISPUTED);
+          // Read-model counter (unhashed): one dispute per ctid per batch via _dedupCheck.
+          dag.incrementContentCounter(d.ctid, "dispute_count");
           // Phase 2.5: if this dispute lands while a review is in
           // state=confirmed (the creator's 24h decision window), the
           // review is now resolved by auto-escalation. Flip its state

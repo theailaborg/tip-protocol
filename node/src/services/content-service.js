@@ -545,8 +545,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const authorValid = !!author && author.status === "active" && !revocation;
     const authorRevocation = _buildAuthorRevocation(revocation);
 
-    const verifyCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_VERIFIED, ctid).length;
-    const disputeCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid).length;
+    // Materialized read-model columns (maintained in commit-handler, rebuildable
+    // from the DAG). O(1) vs an O(n) tx scan per content-detail read.
+    const verifyCount = rec.verification_count || 0;
+    const disputeCount = rec.dispute_count || 0;
 
     // The ctid embeds the original origin_code at registration time
     // (see crypto.generateCTID). That's an immutable record of what

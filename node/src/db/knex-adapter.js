@@ -1160,6 +1160,12 @@ class KnexAdapter {
     this._ff(() => this._k("content").where("tip_ctid", ctid).update({ origin_code: originCode, status }));
   }
 
+  incrementContentCounter(ctid, field) {
+    if (field !== "verification_count" && field !== "dispute_count") return;
+    this.mirror.incrementContentCounter(ctid, field);
+    this._ff(() => this._k("content").where("tip_ctid", ctid).increment(field, 1));
+  }
+
   // ── Scores ─────────────────────────────────────────────────────────────────
 
   setScore(tipId, score, offenseCount, lastUpdatedISO) {
