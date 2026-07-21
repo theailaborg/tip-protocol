@@ -38,6 +38,8 @@ const { createReviewService } = require("./services/review-service");
 const { createStatsService } = require("./services/stats-service");
 const { createMediaService } = require("./services/media-service");
 const { createMediaStorage } = require("./services/media-storage");
+const { InMemoryUploadSessionStore, PostgresUploadSessionStore } = require("./services/chunked-upload-session-store");
+const { createChunkedUploadService } = require("./services/chunked-upload-service");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -62,9 +64,32 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // the worker uses fetchForClassifier(); content-service uses
   // resolveRefs(); routes use upload/fetchBytes/head.
   const mediaStorage = createMediaStorage(config.mediaStorage || {});
+
+  // Shared crypto-pool ref for off-thread ML-DSA verify. The pool is
+  // created later by consensus/index.js; services that need it set
+  // ref.current once consensus starts.
+  const cryptoPoolRef = { current: null };
+
+  // Chunked upload session store: Postgres when the node uses a server DB,
+  // in-memory fallback for SQLite/dev. Sessions are node-local ephemeral state.
+  const knex = dag && dag._store && dag._store.knex ? dag._store.knex : null;
+  const sessionStore = knex
+    ? new PostgresUploadSessionStore({ knex, logger: getLogger("tip.media.chunked") })
+    : new InMemoryUploadSessionStore({ logger: getLogger("tip.media.chunked") });
+
+  const chunkedUploadService = createChunkedUploadService({
+    storage: mediaStorage,
+    dag,
+    sessionStore,
+    cryptoPoolRef,
+    log: getLogger("tip.media.chunked"),
+  });
+
   const mediaService = createMediaService({
     storage: mediaStorage, dag,
     selfNodeId: config.nodeRegisteredId || config.nodeId || null,
+    cryptoPoolRef,
+    chunkedUploadService,
   });
 
   const ctx = {
@@ -191,7 +216,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, governanceRoutes.createRouter({ governanceService }));
   app.use(API_VERSION, domainRoutes.createRouter({ domainService }));
   app.use(API_VERSION, reviewRoutes.createRouter({ reviewService }));
-  app.use(API_VERSION, mediaRoutes.createRouter({ mediaService }));
+  app.use(API_VERSION, mediaRoutes.createRouter({ mediaService, chunkedUploadService }));
   app.use(API_VERSION, dagRoutes.createRouter(ctx));
 
   // ── 404 catch-all (after all routes, before error handler) ─────────────────
@@ -218,6 +243,8 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.locals.mediaService = mediaService;
   app.locals.mediaStorage = mediaStorage;
   app.locals.governanceService = governanceService;
+  app.locals.chunkedUploadService = chunkedUploadService;
+  app.locals.cryptoPoolRef = cryptoPoolRef;
 
   return app;
 }

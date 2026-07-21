@@ -3,6 +3,9 @@
  * @description Media upload + reviewer-access HTTP routes.
  *
  *   POST /v1/media/upload                  — author-attested upload, returns media_id
+ *   POST /v1/media/upload-init             — start chunked upload, returns session_id
+ *   POST /v1/media/upload-chunk/:session   — upload one chunk
+ *   POST /v1/media/upload-complete/:session— finalize chunked upload
  *   GET  /v1/content/:ctid/media/:idx      — auth-gated reviewer/juror/disputer fetch
  *
  * Upload challenge (signed by uploader):
@@ -29,7 +32,25 @@
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
 
-function createRouter({ mediaService }) {
+function _readBuffer(stream, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    stream.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        stream.destroy();
+        reject(new Error("chunk exceeds max size"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    stream.on("end", () => resolve(Buffer.concat(chunks, size)));
+    stream.on("error", reject);
+  });
+}
+
+function createRouter({ mediaService, chunkedUploadService }) {
   const router = express.Router();
 
   // Streaming upload — NO body parser. The raw request stream flows
@@ -57,6 +78,40 @@ function createRouter({ mediaService }) {
       if (!res.headersSent) res.setHeader("Connection", "close");
       throw err;
     }
+  }));
+
+  // Chunked upload: init
+  router.post("/media/upload-init", express.json(), asyncHandler(async (req, res) => {
+    const result = await chunkedUploadService.init({
+      mime: req.body.mime,
+      size: req.body.size,
+      content_hash: req.body.content_hash,
+      signer_tip_id: req.body.signer_tip_id,
+      signature: req.body.signature,
+      timestamp: req.body.timestamp,
+    });
+    res.status(201).json(result);
+  }));
+
+  // Chunked upload: chunk upload (raw bytes).
+  router.post("/media/upload-chunk/:sessionId", asyncHandler(async (req, res) => {
+    const chunkIndex = parseInt(req.query.chunk_index || req.get("X-Chunk-Index") || "0", 10);
+    const totalChunks = parseInt(req.query.total_chunks || req.get("X-Total-Chunks") || "0", 10);
+    const maxChunk = chunkedUploadService.chunkSize || (10 * 1024 * 1024);
+    const chunkBytes = await _readBuffer(req, maxChunk);
+
+    const result = await chunkedUploadService.uploadChunk(req.params.sessionId, {
+      chunkIndex,
+      chunkBytes,
+      totalChunks,
+    });
+    res.status(200).json(result);
+  }));
+
+  // Chunked upload: complete
+  router.post("/media/upload-complete/:sessionId", asyncHandler(async (req, res) => {
+    const result = await chunkedUploadService.complete(req.params.sessionId);
+    res.status(201).json(result);
   }));
 
   // Reviewer / juror / disputer / author fetch path. All authz happens

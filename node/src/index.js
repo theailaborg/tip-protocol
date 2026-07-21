@@ -39,6 +39,7 @@ const { resolveDriver } = require("./db/index");
 const { createPrescanJobs } = require("./services/prescan-jobs");
 const { initPrescanWorker } = require("./init-prescan-worker");
 const { initMediaRetention } = require("./init-media-retention");
+const { initChunkedUploadCleanup } = require("./init-chunked-upload-cleanup");
 const { initEndpointAnnounce } = require("./init-endpoint-announce");
 const { createMediaStorage } = require("./services/media-storage");
 const processErrors = require("./process-error-handler");
@@ -140,6 +141,9 @@ async function main() {
   const { network, consensus } = await initNetworkAndConsensus({ dag, scoring, config });
   networkRef.current = network;
   consensusRef.current = consensus;
+  if (consensus && consensus.cryptoPool && app.locals.mediaService) {
+    app.locals.mediaService.setCryptoPool(consensus.cryptoPool);
+  }
 
   // 8. Scheduled tasks (score recomputation, peer health). Verdict-check
   // and clean-record migrated to commit-handler post-round triggers —
@@ -165,6 +169,12 @@ async function main() {
     mediaStorage: app.locals.mediaStorage,
   });
 
+  // 8b-2. Chunked upload session cleanup — removes expired Postgres/in-memory
+  // sessions and abandoned S3 multipart uploads.
+  const chunkedUploadCleanup = initChunkedUploadCleanup({
+    chunkedUploadService: app.locals.chunkedUploadService,
+  });
+
   // 8c. One-shot api_endpoint reconcile — announces TIP_API_ENDPOINT on
   // chain when the nodes row disagrees. No-op when unconfigured.
   initEndpointAnnounce({ dag, config, governanceService: app.locals.governanceService });
@@ -183,6 +193,7 @@ async function main() {
     server.close(async () => {
       try { scheduler.stop(); } catch { }
       try { mediaRetention.stop(); } catch { }
+      try { chunkedUploadCleanup.stop(); } catch { }
       // Await prescan worker drain so in-flight classifier calls finish
       // before the process exits. Without this, the safety net is the
       // queue's claim-timeout (60s) — recovers correctness, costs latency.

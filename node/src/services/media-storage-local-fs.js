@@ -194,7 +194,21 @@ function createLocalFsBackend(config = {}) {
     }
   }
 
-  return { put, get, head, presignedGet, delete: deleteMedia, list, stagingDir, promoteTmpFile, cleanStaging, backend: "fs" };
+  // Multipart upload is an S3-only optimization; the fs backend has no
+  // practical file-size limit, so chunked uploads are not needed here.
+  function notSupported() {
+    throw new Error("media-storage(fs): multipart upload not supported; use regular upload");
+  }
+  const createMultipartUpload = notSupported;
+  const uploadPart = notSupported;
+  const completeMultipartUpload = notSupported;
+  const abortMultipartUpload = notSupported;
+
+  return {
+    put, get, head, presignedGet, delete: deleteMedia, list, stagingDir,
+    promoteTmpFile, cleanStaging, createMultipartUpload, uploadPart,
+    completeMultipartUpload, abortMultipartUpload, backend: "fs",
+  };
 }
 
 module.exports = { createLocalFsBackend };

@@ -35,6 +35,10 @@ const {
   HeadObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { Upload } = require("@aws-sdk/lib-storage");
@@ -268,7 +272,63 @@ function createS3Backend(config = {}) {
     return { media_id: contentHash, size };
   }
 
-  return { put, get, head, presignedGet, delete: deleteMedia, list, stagingDir, promoteTmpFile, cleanStaging, backend: "s3" };
+  async function createMultipartUpload(contentHash, mime) {
+    const key = _objectKey(contentHash);
+    const res = await client.send(new CreateMultipartUploadCommand({
+      Bucket: bucket,
+      Key: key,
+      ContentType: mime,
+      Metadata: {
+        mime,
+        "created-at": String(nowMs()),
+        "content-hash": contentHash,
+      },
+      ...(_encryptionArgs()),
+    }));
+    return { upload_id: res.UploadId, key };
+  }
+
+  async function uploadPart(uploadId, key, partNumber, body) {
+    const res = await client.send(new UploadPartCommand({
+      Bucket: bucket,
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+      Body: body,
+    }));
+    return { etag: res.ETag };
+  }
+
+  async function completeMultipartUpload(uploadId, key, parts) {
+    await client.send(new CompleteMultipartUploadCommand({
+      Bucket: bucket,
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: parts.map(p => ({ PartNumber: p.part_number, ETag: p.etag })),
+      },
+    }));
+    return { completed: true };
+  }
+
+  async function abortMultipartUpload(uploadId, key) {
+    try {
+      await client.send(new AbortMultipartUploadCommand({
+        Bucket: bucket,
+        Key: key,
+        UploadId: uploadId,
+      }));
+    } catch (err) {
+      if (err.name !== "NoSuchUpload") throw err;
+    }
+    return { aborted: true };
+  }
+
+  return {
+    put, get, head, presignedGet, delete: deleteMedia, list, stagingDir,
+    promoteTmpFile, cleanStaging, createMultipartUpload, uploadPart,
+    completeMultipartUpload, abortMultipartUpload, backend: "s3",
+  };
 }
 
 module.exports = { createS3Backend };

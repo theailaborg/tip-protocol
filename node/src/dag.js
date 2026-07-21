@@ -4254,6 +4254,10 @@ function _buildDagHandle(store, config) {
 
   // ── Public DAG API ────────────────────────────────────────────────────────
   const dag = {
+    // Expose the underlying store so services (e.g. chunked upload session
+    // store) can reuse the same Knex connection without opening a second pool.
+    _store: store,
+
     // ── Core transaction ops ───────────────────────────────────────────────
     addTx(tx) {
       // Order matters:
