@@ -38,7 +38,7 @@ const { createReviewService } = require("./services/review-service");
 const { createStatsService } = require("./services/stats-service");
 const { createMediaService } = require("./services/media-service");
 const { createMediaStorage } = require("./services/media-storage");
-const { InMemoryUploadSessionStore, PostgresUploadSessionStore } = require("./services/chunked-upload-session-store");
+const { createInMemoryUploadSessionStore, createPostgresUploadSessionStore } = require("./services/chunked-upload-session-store");
 const { createChunkedUploadService } = require("./services/chunked-upload-service");
 
 // Routes
@@ -74,8 +74,8 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // in-memory fallback for SQLite/dev. Sessions are node-local ephemeral state.
   const knex = dag && dag._store && dag._store.knex ? dag._store.knex : null;
   const sessionStore = knex
-    ? new PostgresUploadSessionStore({ knex, logger: getLogger("tip.media.chunked") })
-    : new InMemoryUploadSessionStore({ logger: getLogger("tip.media.chunked") });
+    ? createPostgresUploadSessionStore({ knex, logger: getLogger("tip.media.chunked") })
+    : createInMemoryUploadSessionStore({ logger: getLogger("tip.media.chunked") });
 
   const chunkedUploadService = createChunkedUploadService({
     storage: mediaStorage,

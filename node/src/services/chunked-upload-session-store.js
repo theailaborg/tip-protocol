@@ -7,6 +7,9 @@
  * a multi-request chunked upload so the node can verify the final full-file
  * hash before completing the S3 multipart upload.
  *
+ * Follows the project's service factory pattern (see createS3Backend,
+ * createMediaService, createChunkedUploadService).
+ *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
  */
@@ -55,31 +58,27 @@ function _rowFromSession(s) {
   };
 }
 
-class InMemoryUploadSessionStore {
-  constructor({ ttlMs = 24 * 60 * 60 * 1000, logger = null } = {}) {
-    this._sessions = new Map();
-    this._ttlMs = ttlMs;
-    this._logger = logger;
-  }
+function createInMemoryUploadSessionStore({ ttlMs = 24 * 60 * 60 * 1000, logger = null } = {}) {
+  const sessions = new Map();
 
-  async create(session) {
+  async function create(session) {
     const row = _rowFromSession(session);
-    this._sessions.set(session.session_id, row);
+    sessions.set(session.session_id, row);
     return session;
   }
 
-  async get(sessionId) {
-    const row = this._sessions.get(sessionId);
+  async function get(sessionId) {
+    const row = sessions.get(sessionId);
     if (!row) return null;
     if (row.expires_at < nowMs()) {
-      this._sessions.delete(sessionId);
+      sessions.delete(sessionId);
       return null;
     }
     return _sessionFromRow(row);
   }
 
-  async update(sessionId, patch) {
-    const row = this._sessions.get(sessionId);
+  async function update(sessionId, patch) {
+    const row = sessions.get(sessionId);
     if (!row) return null;
     for (const key of Object.keys(patch)) {
       if (key === "parts") {
@@ -91,51 +90,55 @@ class InMemoryUploadSessionStore {
     return _sessionFromRow(row);
   }
 
-  async delete(sessionId) {
-    this._sessions.delete(sessionId);
+  async function deleteSession(sessionId) {
+    sessions.delete(sessionId);
   }
 
-  async cleanupExpired(beforeMs = nowMs()) {
+  async function cleanupExpired(beforeMs = nowMs()) {
     let removed = 0;
-    for (const [id, row] of this._sessions) {
+    for (const [id, row] of sessions) {
       if (row.expires_at < beforeMs) {
-        this._sessions.delete(id);
+        sessions.delete(id);
         removed++;
       }
     }
     return removed;
   }
 
-  generateId() {
+  function generateId() {
     return randomUUID().replace(/-/g, "");
   }
+
+  return {
+    create,
+    get,
+    update,
+    delete: deleteSession,
+    cleanupExpired,
+    generateId,
+  };
 }
 
-class PostgresUploadSessionStore {
-  constructor({ knex, ttlMs = 24 * 60 * 60 * 1000, logger = null }) {
-    if (!knex) throw new Error("PostgresUploadSessionStore: knex required");
-    this._knex = knex;
-    this._ttlMs = ttlMs;
-    this._logger = logger;
-  }
+function createPostgresUploadSessionStore({ knex, ttlMs = 24 * 60 * 60 * 1000, logger = null }) {
+  if (!knex) throw new Error("PostgresUploadSessionStore: knex required");
 
-  async create(session) {
+  async function create(session) {
     const row = _rowFromSession(session);
-    await this._knex(TABLE_NAME).insert(row);
+    await knex(TABLE_NAME).insert(row);
     return session;
   }
 
-  async get(sessionId) {
-    const row = await this._knex(TABLE_NAME).where({ session_id: sessionId }).first();
+  async function get(sessionId) {
+    const row = await knex(TABLE_NAME).where({ session_id: sessionId }).first();
     if (!row) return null;
     if (row.expires_at < nowMs()) {
-      await this.delete(sessionId);
+      await deleteSession(sessionId);
       return null;
     }
     return _sessionFromRow(row);
   }
 
-  async update(sessionId, patch) {
+  async function update(sessionId, patch) {
     const updates = {};
     for (const key of Object.keys(patch)) {
       if (key === "parts") {
@@ -145,30 +148,39 @@ class PostgresUploadSessionStore {
       }
     }
     if (Object.keys(updates).length === 0) {
-      return this.get(sessionId);
+      return get(sessionId);
     }
-    const rows = await this._knex(TABLE_NAME)
+    const rows = await knex(TABLE_NAME)
       .where({ session_id: sessionId })
       .update(updates)
       .returning("*");
     return _sessionFromRow(rows && rows[0]);
   }
 
-  async delete(sessionId) {
-    await this._knex(TABLE_NAME).where({ session_id: sessionId }).del();
+  async function deleteSession(sessionId) {
+    await knex(TABLE_NAME).where({ session_id: sessionId }).del();
   }
 
-  async cleanupExpired(beforeMs = nowMs()) {
-    const removed = await this._knex(TABLE_NAME).where("expires_at", "<", beforeMs).del();
+  async function cleanupExpired(beforeMs = nowMs()) {
+    const removed = await knex(TABLE_NAME).where("expires_at", "<", beforeMs).del();
     return removed;
   }
 
-  generateId() {
+  function generateId() {
     return randomUUID().replace(/-/g, "");
   }
+
+  return {
+    create,
+    get,
+    update,
+    delete: deleteSession,
+    cleanupExpired,
+    generateId,
+  };
 }
 
 module.exports = {
-  InMemoryUploadSessionStore,
-  PostgresUploadSessionStore,
+  createInMemoryUploadSessionStore,
+  createPostgresUploadSessionStore,
 };
