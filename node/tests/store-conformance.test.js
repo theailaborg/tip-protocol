@@ -16,16 +16,17 @@
  *   7.  Prescan jobs — lifecycle transitions, oldest-first claim, stuck-claim
  *       recovery, single-winner claim (pins the contract any future async
  *       store implementation must preserve)
- *   8.  Certificates / commits / votes_seen — idempotency, GC cutoffs,
+ *   8.  Upload sessions — node-local ephemeral chunked-upload state
+ *   9.  Certificates / commits / votes_seen — idempotency, GC cutoffs,
  *       first-wins equivocation defense
- *   9.  Committee history — replace-by-rotation_number, effective_round
+ *   10. Committee history — replace-by-rotation_number, effective_round
  *       boundary semantics
- *   10. Domain bindings + platform links — round-trip, partial update merge
- *   11. Canonical state — clearCanonicalState completeness (incl. the dedup
+ *   11. Domain bindings + platform links — round-trip, partial update merge
+ *   12. Canonical state — clearCanonicalState completeness (incl. the dedup
  *       tip_id registry), reconcile primitives (deleteCanonicalRow /
  *       pruneCanonicalStateExcept exactness + root sync), cross-store
  *       deterministic iteration
- *   12. runInTransaction — rollback-on-throw. Implementations that are
+ *   13. runInTransaction — rollback-on-throw. Implementations that are
  *       known no-ops are pinned with test.failing so the gap stays visible
  *       in CI output and flips to a hard failure the moment a fix lands
  *       (the failing-marker must then be removed).
@@ -128,6 +129,26 @@ function contentRec(ctid, authorTipId, overrides = {}) {
 
 function prescanJob(jobId, createdAt) {
   return { job_id: jobId, ctid: uniq("ct"), payload: JSON.stringify({ kind: "text" }), created_at: createdAt };
+}
+
+function uploadSession(sessionId, overrides = {}) {
+  const createdAt = nowMs();
+  return {
+    session_id: sessionId,
+    upload_id: `up-${sessionId}`,
+    s3_key: `media/${sessionId.slice(0, 2)}/${sessionId.slice(2)}.bin`,
+    content_hash: "a".repeat(64),
+    mime: "video/mp4",
+    size: 12345,
+    signer_tip_id: uniq("id"),
+    timestamp: T0,
+    signature: "ab",
+    parts: [],
+    completed_size: 0,
+    created_at: createdAt,
+    expires_at: createdAt + 86400000,
+    ...overrides,
+  };
 }
 
 function certRec(round, author, overrides = {}) {
@@ -396,7 +417,74 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(winners[0].job_id).toBe(job.job_id);
   });
 
-  // ── 8. Certificates / commits / votes_seen ──────────────────────────────
+  // ── 8. Upload sessions (node-local ephemeral chunked-upload state) ───────
+
+  test("createUploadSession / getUploadSession round-trip", async () => {
+    const dag = await makeDag();
+    const s = uploadSession(uniq("session"));
+    dag.createUploadSession(s);
+
+    const got = dag.getUploadSession(s.session_id);
+    expect(got.session_id).toBe(s.session_id);
+    expect(got.upload_id).toBe(s.upload_id);
+    expect(got.content_hash).toBe(s.content_hash);
+    expect(got.parts).toEqual([]);
+    expect(got.completed_size).toBe(0);
+  });
+
+  test("updateUploadSession merges parts and completed_size", async () => {
+    const dag = await makeDag();
+    const s = uploadSession(uniq("session"));
+    dag.createUploadSession(s);
+
+    const updated = dag.updateUploadSession(s.session_id, {
+      parts: [{ part_number: 1, etag: "e1" }],
+      completed_size: 1024,
+    });
+    expect(updated.parts).toEqual([{ part_number: 1, etag: "e1" }]);
+    expect(updated.completed_size).toBe(1024);
+
+    const got = dag.getUploadSession(s.session_id);
+    expect(got.completed_size).toBe(1024);
+  });
+
+  test("deleteUploadSession removes the session", async () => {
+    const dag = await makeDag();
+    const s = uploadSession(uniq("session"));
+    dag.createUploadSession(s);
+    expect(dag.getUploadSession(s.session_id)).not.toBeNull();
+
+    dag.deleteUploadSession(s.session_id);
+    expect(dag.getUploadSession(s.session_id)).toBeNull();
+  });
+
+  test("getUploadSession returns null and deletes an expired session", async () => {
+    const dag = await makeDag();
+    const s = uploadSession(uniq("session"), { expires_at: nowMs() - 1000 });
+    dag.createUploadSession(s);
+    expect(dag.getUploadSession(s.session_id)).toBeNull();
+  });
+
+  test("cleanupExpiredUploadSessions removes only expired rows", async () => {
+    const dag = await makeDag();
+    const expired = uploadSession(uniq("session"), { expires_at: nowMs() - 1000 });
+    const live = uploadSession(uniq("session"), { expires_at: nowMs() + 3600000 });
+    dag.createUploadSession(expired);
+    dag.createUploadSession(live);
+
+    expect(dag.cleanupExpiredUploadSessions(nowMs())).toBe(1);
+    expect(dag.getUploadSession(expired.session_id)).toBeNull();
+    expect(dag.getUploadSession(live.session_id)).not.toBeNull();
+  });
+
+  test("generateUploadSessionId returns 32-char lowercase hex", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    track(dag);
+    const id = dag.generateUploadSessionId();
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  // ── 9. Certificates / commits / votes_seen ──────────────────────────────
 
   test("certificates round-trip and pruneCertificatesBefore removes only rounds below the cutoff", async () => {
     const dag = await makeDag();
@@ -443,7 +531,7 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getSeenVote(8, "node-a")).not.toBeNull();
   });
 
-  // ── 9. Committee history ─────────────────────────────────────────────────
+  // ── 10. Committee history ─────────────────────────────────────────────────
 
   test("committee rotations replace by rotation_number and resolve by effective_round boundary", async () => {
     const dag = await makeDag();
@@ -465,7 +553,7 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(rotations).toEqual([...rotations].sort((a, b) => a - b));
   });
 
-  // ── 10. Domain bindings + platform links ────────────────────────────────
+  // ── 11. Domain bindings + platform links ────────────────────────────────
 
   test("domain bindings and platform links round-trip; link status update merges", async () => {
     const dag = await makeDag();
@@ -493,7 +581,7 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(updated.handle).toBe("@x");
   });
 
-  // ── 11. Canonical state ──────────────────────────────────────────────────
+  // ── 12. Canonical state ──────────────────────────────────────────────────
 
   test("clearCanonicalState leaves zero canonical rows", async () => {
     const dag = await makeDag();
@@ -574,7 +662,7 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(computeStateMerkleRoot(dag)).toBe(baselineRoot);
   });
 
-  // ── 12. runInTransaction ─────────────────────────────────────────────────
+  // ── 13. runInTransaction ─────────────────────────────────────────────────
 
   atomic("runInTransaction rolls back every write when the callback throws", async () => {
     const dag = await makeDag();

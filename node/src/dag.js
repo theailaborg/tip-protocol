@@ -4187,12 +4187,12 @@ class SQLiteStore {
     const completedSize = patch.completed_size !== undefined ? patch.completed_size : session.completed_size;
     const expiresAt = patch.expires_at !== undefined ? patch.expires_at : session.expires_at;
     this._stmts.updateUploadSession.run(partsJson, completedSize, expiresAt, sessionId);
-    return this._hydrateUploadSession({
+    return {
       ...session,
       parts: JSON.parse(partsJson),
       completed_size: completedSize,
       expires_at: expiresAt,
-    });
+    };
   }
   deleteUploadSession(sessionId) {
     this._stmts.deleteUploadSession.run(sessionId);
