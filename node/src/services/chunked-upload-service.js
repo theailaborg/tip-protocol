@@ -35,13 +35,18 @@ const mediaUploadSchema = require("../schemas/media-upload");
 const DEFAULT_CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
 const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 
+function _resolveSessionTtlMs() {
+  const raw = parseInt(process.env.TIP_CHUNKED_UPLOAD_SESSION_TTL_MS || "", 10);
+  return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_SESSION_TTL_MS;
+}
+
 function createChunkedUploadService({
   storage,
   dag,
   cryptoPoolRef = { current: null },
   log = console,
   chunkSize = DEFAULT_CHUNK_SIZE,
-  sessionTtlMs = DEFAULT_SESSION_TTL_MS,
+  sessionTtlMs = _resolveSessionTtlMs(),
 }) {
   if (!storage) throw new Error("chunked-upload-service: storage required");
   if (!dag) throw new Error("chunked-upload-service: dag required");

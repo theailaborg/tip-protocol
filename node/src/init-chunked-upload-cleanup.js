@@ -39,7 +39,7 @@ function initChunkedUploadCleanup({ chunkedUploadService }) {
     try {
       const result = await chunkedUploadService.cleanupExpired();
       if (result && result.removed > 0) {
-        log.info(`Chunked upload cleanup: removed ${result.removed} expired sessions`);
+        log.notice(`Chunked upload cleanup: removed ${result.removed} expired sessions`);
       }
       return result;
     } catch (err) {
