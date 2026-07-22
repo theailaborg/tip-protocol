@@ -57,3 +57,7 @@ data/
 # Node development artifacts
 node/node_modules/
 node/.eslintrc*
+
+# macOS resource forks (can break Knex migrations if they end up under node/src/db/migrations)
+**/.DS_Store
+**/._*
