@@ -502,6 +502,27 @@ class KnexAdapter {
       });
     }
 
+    // Upload sessions — node-local ephemeral chunked-upload state.
+    // Hydrating the mirror lets reads stay sync while writes are async.
+    const uploadSessionRows = await this.knex("upload_sessions").select("*");
+    for (const row of uploadSessionRows) {
+      this.mirror._uploadSessions.set(row.session_id, {
+        session_id: row.session_id,
+        upload_id: row.upload_id,
+        s3_key: row.s3_key,
+        content_hash: row.content_hash,
+        mime: row.mime,
+        size: row.size,
+        signer_tip_id: row.signer_tip_id,
+        timestamp: row.timestamp,
+        signature: row.signature,
+        parts_json: row.parts_json,
+        completed_size: row.completed_size,
+        created_at: row.created_at,
+        expires_at: row.expires_at,
+      });
+    }
+
     // Dedup registry
     const dedupRows = await this.knex("dedup_registry").select("*");
     if (!this.mirror._dedupCreated) this.mirror._dedupCreated = new Map();
@@ -1149,6 +1170,56 @@ class KnexAdapter {
           .increment("retries", 1)));
     }
     return changed;
+  }
+
+  // ── Upload sessions (node-local ephemeral chunked-upload state) ───────────
+  createUploadSession(session) {
+    const row = {
+      session_id: session.session_id,
+      upload_id: session.upload_id,
+      s3_key: session.s3_key,
+      content_hash: session.content_hash,
+      mime: session.mime,
+      size: session.size,
+      signer_tip_id: session.signer_tip_id,
+      timestamp: session.timestamp,
+      signature: session.signature,
+      parts_json: JSON.stringify(session.parts || []),
+      completed_size: session.completed_size || 0,
+      created_at: session.created_at,
+      expires_at: session.expires_at,
+    };
+    this.mirror.createUploadSession(session);
+    this._ff(() => this._k("upload_sessions").insert(row));
+    return session;
+  }
+  getUploadSession(sessionId) {
+    return this.mirror.getUploadSession(sessionId);
+  }
+  updateUploadSession(sessionId, patch) {
+    const updated = this.mirror.updateUploadSession(sessionId, patch);
+    if (updated) {
+      const updates = {};
+      if (patch.parts !== undefined) updates.parts_json = JSON.stringify(patch.parts || []);
+      if (patch.completed_size !== undefined) updates.completed_size = patch.completed_size;
+      if (patch.expires_at !== undefined) updates.expires_at = patch.expires_at;
+      if (Object.keys(updates).length > 0) {
+        this._ff(() => this._k("upload_sessions").where("session_id", sessionId).update(updates));
+      }
+    }
+    return updated;
+  }
+  deleteUploadSession(sessionId) {
+    this.mirror.deleteUploadSession(sessionId);
+    this._ff(() => this._k("upload_sessions").where("session_id", sessionId).del());
+  }
+  cleanupExpiredUploadSessions(beforeMs = nowMs()) {
+    const removed = this.mirror.cleanupExpiredUploadSessions(beforeMs);
+    this._ff(() => this._k("upload_sessions").where("expires_at", "<", beforeMs).del());
+    return removed;
+  }
+  generateUploadSessionId() {
+    return this.mirror.generateUploadSessionId();
   }
 
   updateContentStatus(ctid, status) {

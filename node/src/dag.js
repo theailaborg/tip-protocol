@@ -24,6 +24,7 @@
 
 const path = require("path");
 const fs = require("fs");
+const { randomUUID } = require("crypto");
 const { computeTxId, verifyTxId, canonicalJson } = require("../../shared/crypto");
 const { shake256 } = require("../../shared/crypto");
 const { createSMT } = require("../../shared/smt");
@@ -530,6 +531,7 @@ class MemoryStore {
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
     this._prescanJobs = new Map();     // job_id -> prescan-job row (node-local async classifier queue, NOT consensus state)
+    this._uploadSessions = new Map();  // session_id -> upload session row (node-local ephemeral, NOT consensus state)
     this._domainBindings = new SmtMap(this, "domain_bindings");  // domain
     this._ownerHeads = new SmtMap(this, "owner_heads");  // entity_key -> tx_id (owner-chain heads, canonical) -> binding record (canonical, in state_merkle_root)
     // Off-DAG perceptual similarity index (advisory; NOT consensus state, NOT in
@@ -2064,6 +2066,77 @@ class MemoryStore {
     return true;
   }
 
+  // ── Upload sessions (node-local ephemeral chunked-upload state) ───────
+  createUploadSession(session) {
+    this._uploadSessions.set(session.session_id, {
+      session_id: session.session_id,
+      upload_id: session.upload_id,
+      s3_key: session.s3_key,
+      content_hash: session.content_hash,
+      mime: session.mime,
+      size: session.size,
+      signer_tip_id: session.signer_tip_id,
+      timestamp: session.timestamp,
+      signature: session.signature,
+      parts_json: JSON.stringify(session.parts || []),
+      completed_size: session.completed_size || 0,
+      created_at: session.created_at,
+      expires_at: session.expires_at,
+    });
+    return session;
+  }
+  getUploadSession(sessionId) {
+    const row = this._uploadSessions.get(sessionId);
+    if (!row) return null;
+    if (row.expires_at < nowMs()) {
+      this._uploadSessions.delete(sessionId);
+      return null;
+    }
+    return {
+      session_id: row.session_id,
+      upload_id: row.upload_id,
+      s3_key: row.s3_key,
+      content_hash: row.content_hash,
+      mime: row.mime,
+      size: row.size,
+      signer_tip_id: row.signer_tip_id,
+      timestamp: row.timestamp,
+      signature: row.signature,
+      parts: JSON.parse(row.parts_json || "[]"),
+      completed_size: row.completed_size,
+      created_at: row.created_at,
+      expires_at: row.expires_at,
+    };
+  }
+  updateUploadSession(sessionId, patch) {
+    const row = this._uploadSessions.get(sessionId);
+    if (!row) return null;
+    for (const key of Object.keys(patch)) {
+      if (key === "parts") {
+        row.parts_json = JSON.stringify(patch.parts || []);
+      } else if (row[key] !== undefined) {
+        row[key] = patch[key];
+      }
+    }
+    return this.getUploadSession(sessionId);
+  }
+  deleteUploadSession(sessionId) {
+    this._uploadSessions.delete(sessionId);
+  }
+  cleanupExpiredUploadSessions(beforeMs = nowMs()) {
+    let removed = 0;
+    for (const [id, row] of this._uploadSessions) {
+      if (row.expires_at < beforeMs) {
+        this._uploadSessions.delete(id);
+        removed++;
+      }
+    }
+    return removed;
+  }
+  generateUploadSessionId() {
+    return randomUUID().replace(/-/g, "");
+  }
+
   // No-op for parity with SQLiteStore.backfillSubjectTipId. MemoryStore
   // writes always populate the column at save time; nothing to retrofit.
   backfillSubjectTipId(_subjectTipId) {
@@ -2904,6 +2977,30 @@ class SQLiteStore {
       countPendingPrescanJobs: this.db.prepare(
         "SELECT COUNT(*) AS n FROM prescan_jobs WHERE status IN ('queued','claimed')"
       ),
+
+      // Upload sessions (node-local ephemeral chunked-upload state).
+      createUploadSession: this.db.prepare(
+        `INSERT OR REPLACE INTO upload_sessions
+           (session_id, upload_id, s3_key, content_hash, mime, size,
+            signer_tip_id, timestamp, signature, parts_json, completed_size,
+            created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ),
+      getUploadSession: this.db.prepare(
+        "SELECT * FROM upload_sessions WHERE session_id=?"
+      ),
+      updateUploadSession: this.db.prepare(
+        `UPDATE upload_sessions
+            SET parts_json=?, completed_size=?, expires_at=?
+          WHERE session_id=?`
+      ),
+      deleteUploadSession: this.db.prepare(
+        "DELETE FROM upload_sessions WHERE session_id=?"
+      ),
+      cleanupExpiredUploadSessions: this.db.prepare(
+        "DELETE FROM upload_sessions WHERE expires_at<?"
+      ),
+
       // Perceptual index (off-DAG, advisory).
       savePerceptualFingerprint: this.db.prepare(
         `INSERT OR REPLACE INTO perceptual_fingerprint
@@ -4044,6 +4141,69 @@ class SQLiteStore {
   countPendingPrescanJobs() {
     return this._stmts.countPendingPrescanJobs.get().n;
   }
+
+  // ── Upload sessions (node-local ephemeral chunked-upload state) ─────────
+  _hydrateUploadSession(row) {
+    if (!row) return null;
+    return {
+      session_id: row.session_id,
+      upload_id: row.upload_id,
+      s3_key: row.s3_key,
+      content_hash: row.content_hash,
+      mime: row.mime,
+      size: row.size,
+      signer_tip_id: row.signer_tip_id,
+      timestamp: row.timestamp,
+      signature: row.signature,
+      parts: JSON.parse(row.parts_json || "[]"),
+      completed_size: row.completed_size,
+      created_at: row.created_at,
+      expires_at: row.expires_at,
+    };
+  }
+  createUploadSession(session) {
+    this._stmts.createUploadSession.run(
+      session.session_id, session.upload_id, session.s3_key,
+      session.content_hash, session.mime, session.size,
+      session.signer_tip_id, session.timestamp, session.signature,
+      JSON.stringify(session.parts || []), session.completed_size || 0,
+      session.created_at, session.expires_at,
+    );
+    return session;
+  }
+  getUploadSession(sessionId) {
+    const row = this._stmts.getUploadSession.get(sessionId);
+    if (!row) return null;
+    if (row.expires_at < nowMs()) {
+      this._stmts.deleteUploadSession.run(sessionId);
+      return null;
+    }
+    return this._hydrateUploadSession(row);
+  }
+  updateUploadSession(sessionId, patch) {
+    const session = this.getUploadSession(sessionId);
+    if (!session) return null;
+    const partsJson = patch.parts !== undefined ? JSON.stringify(patch.parts || []) : JSON.stringify(session.parts);
+    const completedSize = patch.completed_size !== undefined ? patch.completed_size : session.completed_size;
+    const expiresAt = patch.expires_at !== undefined ? patch.expires_at : session.expires_at;
+    this._stmts.updateUploadSession.run(partsJson, completedSize, expiresAt, sessionId);
+    return this._hydrateUploadSession({
+      ...session,
+      parts: JSON.parse(partsJson),
+      completed_size: completedSize,
+      expires_at: expiresAt,
+    });
+  }
+  deleteUploadSession(sessionId) {
+    this._stmts.deleteUploadSession.run(sessionId);
+  }
+  cleanupExpiredUploadSessions(beforeMs = nowMs()) {
+    return this._stmts.cleanupExpiredUploadSessions.run(beforeMs).changes;
+  }
+  generateUploadSessionId() {
+    return randomUUID().replace(/-/g, "");
+  }
+
   // ── Perceptual index writes (off-DAG, advisory) ───────────────────────────
   savePerceptualFingerprint(rec) {
     this._stmts.savePerceptualFingerprint.run(
@@ -4568,6 +4728,14 @@ function _buildDagHandle(store, config) {
     markPrescanJobDone: (jobId, opts) => store.markPrescanJobDone(jobId, opts),
     markPrescanJobFailed: (jobId, opts) => store.markPrescanJobFailed(jobId, opts),
     releasePrescanJobForRetry: (jobId, opts) => store.releasePrescanJobForRetry(jobId, opts),
+
+    // ── Upload sessions (node-local ephemeral chunked-upload state) ─────
+    createUploadSession: (session) => store.createUploadSession(session),
+    getUploadSession: (sessionId) => store.getUploadSession(sessionId),
+    updateUploadSession: (sessionId, patch) => store.updateUploadSession(sessionId, patch),
+    deleteUploadSession: (sessionId) => store.deleteUploadSession(sessionId),
+    cleanupExpiredUploadSessions: (beforeMs) => store.cleanupExpiredUploadSessions(beforeMs),
+    generateUploadSessionId: () => store.generateUploadSessionId(),
 
     // ── DB Transactions ──────────────────────────────────────────────────
     runInTransaction: (fn) => store.runInTransaction(fn),

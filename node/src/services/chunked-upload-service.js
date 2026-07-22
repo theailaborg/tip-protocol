@@ -38,7 +38,6 @@ const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 function createChunkedUploadService({
   storage,
   dag,
-  sessionStore,
   cryptoPoolRef = { current: null },
   log = console,
   chunkSize = DEFAULT_CHUNK_SIZE,
@@ -46,7 +45,6 @@ function createChunkedUploadService({
 }) {
   if (!storage) throw new Error("chunked-upload-service: storage required");
   if (!dag) throw new Error("chunked-upload-service: dag required");
-  if (!sessionStore) throw new Error("chunked-upload-service: sessionStore required");
 
   // In-memory hasher state per session. Cannot be serialized to Postgres,
   // so a node restart aborts in-progress uploads. Clients retry via Resumable.js.
@@ -112,7 +110,7 @@ function createChunkedUploadService({
 
     const { upload_id: uploadId, key: s3Key } = await storage.createMultipartUpload(contentHash, mime);
 
-    const sessionId = sessionStore.generateId();
+    const sessionId = dag.generateUploadSessionId();
     const now = nowMs();
     const session = {
       session_id: sessionId,
@@ -130,7 +128,7 @@ function createChunkedUploadService({
       expires_at: now + sessionTtlMs,
     };
 
-    await sessionStore.create(session);
+    await dag.createUploadSession(session);
 
     const hasher = shake256Incremental(32);
     let detectedMime = null;
@@ -149,7 +147,7 @@ function createChunkedUploadService({
   }
 
   async function uploadChunk(sessionId, { chunkIndex, chunkBytes, totalChunks }) {
-    const session = await sessionStore.get(sessionId);
+    const session = await dag.getUploadSession(sessionId);
     if (!session) {
       throw schemaError(404, "Upload session not found or expired", "session_not_found");
     }
@@ -157,7 +155,7 @@ function createChunkedUploadService({
     const state = _hashers.get(sessionId);
     if (!state) {
       // Session exists in DB but hasher was lost (node restart). Expire it.
-      await sessionStore.delete(sessionId);
+      await dag.deleteUploadSession(sessionId);
       throw schemaError(410, "Upload session state lost; please restart upload", "session_state_lost");
     }
 
@@ -186,7 +184,7 @@ function createChunkedUploadService({
 
     session.parts.push({ part_number: partNumber, etag });
     session.completed_size = newCompletedSize;
-    await sessionStore.update(sessionId, {
+    await dag.updateUploadSession(sessionId, {
       parts: session.parts,
       completed_size: newCompletedSize,
     });
@@ -196,14 +194,14 @@ function createChunkedUploadService({
   }
 
   async function complete(sessionId) {
-    const session = await sessionStore.get(sessionId);
+    const session = await dag.getUploadSession(sessionId);
     if (!session) {
       throw schemaError(404, "Upload session not found or expired", "session_not_found");
     }
 
     const state = _hashers.get(sessionId);
     if (!state) {
-      await sessionStore.delete(sessionId);
+      await dag.deleteUploadSession(sessionId);
       throw schemaError(410, "Upload session state lost; please restart upload", "session_state_lost");
     }
 
@@ -225,7 +223,7 @@ function createChunkedUploadService({
     // Signature was verified at init; re-checking the hash binding is enough.
     await storage.completeMultipartUpload(session.upload_id, session.s3_key, session.parts);
 
-    await sessionStore.delete(sessionId);
+    await dag.deleteUploadSession(sessionId);
     _hashers.delete(sessionId);
 
     log.info?.(`chunked-upload complete: ${session.signer_tip_id} session=${sessionId} media_id=${contentHash} size=${session.size}`);
@@ -247,13 +245,13 @@ function createChunkedUploadService({
       log.warn?.(`chunked-upload abort failed: ${err.message}`);
     }
     if (session && session.session_id) {
-      await sessionStore.delete(session.session_id);
+      await dag.deleteUploadSession(session.session_id);
       _hashers.delete(session.session_id);
     }
   }
 
   async function abort(sessionId) {
-    const session = await sessionStore.get(sessionId);
+    const session = await dag.getUploadSession(sessionId);
     if (!session) return { aborted: false };
     await _abort(session);
     return { aborted: true };
@@ -261,10 +259,10 @@ function createChunkedUploadService({
 
   async function cleanupExpired() {
     const before = nowMs();
-    const removed = await sessionStore.cleanupExpired(before);
+    const removed = await dag.cleanupExpiredUploadSessions(before);
     // Also drop lost hasher state for sessions already gone from DB.
     for (const sessionId of _hashers.keys()) {
-      const session = await sessionStore.get(sessionId);
+      const session = await dag.getUploadSession(sessionId);
       if (!session) {
         _hashers.delete(sessionId);
       }
