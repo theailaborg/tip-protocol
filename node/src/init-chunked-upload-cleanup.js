@@ -1,7 +1,6 @@
 /**
  * @file @tip-protocol/node/src/init-chunked-upload-cleanup.js
- * @description Periodic cleanup of expired chunked upload sessions and
- * abandoned S3 multipart uploads.
+ * @description Periodic cleanup of expired chunked upload sessions.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
