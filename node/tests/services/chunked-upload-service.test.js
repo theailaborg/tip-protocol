@@ -168,6 +168,37 @@ describe("presigned chunked upload — init", () => {
       signer_tip_id: TIP, signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey), timestamp: ts,
     })).rejects.toMatchObject({ status: 413 });
   });
+
+  test("part size scales adaptively for large files (bounded part count)", async () => {
+    const fx = _setup();
+    const contentHash = "a".repeat(64);
+    const size = 1024 * 1024 * 1024; // 1 GB video
+    const ts = nowMs();
+    const init = await fx.svc.init({
+      mime: "video/mp4", size, content_hash: contentHash, signer_tip_id: TIP,
+      signature: _signInit({ contentHash, mime: "video/mp4", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey), timestamp: ts,
+    });
+    expect(init.part_size).toBeGreaterThan(10 * 1024 * 1024); // bigger than the old fixed 10MB
+    expect(init.part_count).toBeLessThanOrEqual(128);          // ~100, not hundreds
+    expect(init.parts.length).toBe(init.part_count);
+    // a tiny file stays at the adaptive floor -> 1 part
+    const small = await fx.svc.init({
+      mime: "image/png", size: 100000, content_hash: "b".repeat(64), signer_tip_id: TIP,
+      signature: _signInit({ contentHash: "b".repeat(64), mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey), timestamp: ts,
+    });
+    expect(small.part_count).toBe(1);
+  });
+
+  test("client part_size override wins (clamped to S3's 5MB min)", async () => {
+    const fx = _setup();
+    const contentHash = "c".repeat(64);
+    const ts = nowMs();
+    const init = await fx.svc.init({
+      mime: "video/mp4", size: 200 * 1024 * 1024, content_hash: contentHash, signer_tip_id: TIP, part_size: 50 * 1024 * 1024,
+      signature: _signInit({ contentHash, mime: "video/mp4", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey), timestamp: ts,
+    });
+    expect(init.part_size).toBe(50 * 1024 * 1024);
+  });
 });
 
 describe("presigned chunked upload — complete", () => {

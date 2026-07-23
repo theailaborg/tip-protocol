@@ -28,11 +28,15 @@ const { nowMs } = require("../../../shared/time");
 const { schemaError } = require("../schemas/_common");
 const mediaUploadSchema = require("../schemas/media-upload");
 
-const DEFAULT_PART_SIZE = 10 * 1024 * 1024; // 10 MB
-const MIN_PART_SIZE = 5 * 1024 * 1024;      // S3 minimum for every non-final part
-const MAX_PARTS = 10000;                    // S3 multipart hard limit
+const DEFAULT_PART_SIZE = 10 * 1024 * 1024;   // status() fallback only
+const MIN_PART_SIZE = 5 * 1024 * 1024;        // S3 hard minimum for every non-final part
+const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // S3 hard maximum per part (5 GB)
+const ADAPTIVE_FLOOR = 8 * 1024 * 1024;       // adaptive lower bound (above the S3 min)
+const ADAPTIVE_CAP = 128 * 1024 * 1024;       // adaptive upper bound (keeps a failed-part retry cheap)
+const ADAPTIVE_TARGET_PARTS = 100;            // adaptive scales part size to ~this many parts
+const MAX_PARTS = 10000;                      // S3 multipart hard limit
 const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-const COMPLETE_DRIFT_MS = 5 * 60 * 1000;    // ±5min on the completion/abort timestamp
+const COMPLETE_DRIFT_MS = 5 * 60 * 1000;      // ±5min on the completion/abort timestamp
 
 function _resolveSessionTtlMs() {
   const raw = parseInt(process.env.TIP_CHUNKED_UPLOAD_SESSION_TTL_MS || "", 10);
@@ -44,7 +48,7 @@ function createChunkedUploadService({
   dag,
   cryptoPoolRef = { current: null },
   log = console,
-  partSize = DEFAULT_PART_SIZE,
+  partSize = null,      // optional fixed override; null => adaptive (default)
   sessionTtlMs = _resolveSessionTtlMs(),
 }) {
   if (!storage) throw new Error("chunked-upload-service: storage required");
@@ -60,9 +64,19 @@ function createChunkedUploadService({
     return mldsaVerify(challenge, signature, publicKey);
   }
 
-  function _resolvePartSize(requested) {
-    const p = Number.isInteger(requested) && requested > 0 ? requested : partSize;
-    return Math.max(p, MIN_PART_SIZE);
+  // Adaptive part sizing. With the Cloudflare cap gone (parts go direct to S3),
+  // scale the part SIZE so the part COUNT stays ~ADAPTIVE_TARGET_PARTS regardless
+  // of file size: keeps init cheap (few presigned URLs) and supports multi-TB
+  // files without hitting S3's 10k-part limit. A client-supplied part_size (or a
+  // configured fixed override) wins, clamped to S3's [5MB, 5GB] per-part bounds.
+  function _resolvePartSize(requested, size) {
+    const override = (Number.isInteger(requested) && requested > 0) ? requested
+      : (Number.isInteger(partSize) && partSize > 0) ? partSize : null;
+    if (override != null) return Math.min(Math.max(override, MIN_PART_SIZE), MAX_PART_SIZE);
+    const MB = 1024 * 1024;
+    const raw = Math.ceil(size / ADAPTIVE_TARGET_PARTS);
+    const clamped = Math.min(Math.max(raw, ADAPTIVE_FLOOR), ADAPTIVE_CAP);
+    return Math.ceil(clamped / MB) * MB; // round up to a whole MB
   }
 
   // Auth for complete/abort: caller must be the session owner and present a fresh
@@ -112,7 +126,7 @@ function createChunkedUploadService({
       throw schemaError(400, "Chunked upload requires s3 media backend", "backend_not_supported");
     }
 
-    const resolvedPartSize = _resolvePartSize(reqPartSize);
+    const resolvedPartSize = _resolvePartSize(reqPartSize, size);
     const partCount = Math.ceil(size / resolvedPartSize);
     if (partCount > MAX_PARTS) {
       throw schemaError(413, `Too many parts (${partCount}); use a larger part_size`, "too_many_parts");
