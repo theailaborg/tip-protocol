@@ -157,9 +157,59 @@ describe("presigned chunked upload — init", () => {
       signer_tip_id: TIP, signature: "00", timestamp: ts,
     })).rejects.toMatchObject({ status: 403 });
   });
+
+  test("init rejects a file over the family size cap (413)", async () => {
+    const fx = _setup();
+    const contentHash = "a".repeat(64);
+    const size = mediaUploadSchema.limitForDetectedMime("image/png") + 1;
+    const ts = nowMs();
+    await expect(fx.svc.init({
+      mime: "image/png", size, content_hash: contentHash,
+      signer_tip_id: TIP, signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey), timestamp: ts,
+    })).rejects.toMatchObject({ status: 413 });
+  });
 });
 
 describe("presigned chunked upload — complete", () => {
+  test("rejects a short/incomplete assembly (size mismatch) and drops the tmp", async () => {
+    const fx = _setup();
+    const file = _png(2048);
+    const contentHash = shake256(file);
+    const ts = nowMs();
+    const init = await fx.svc.init({
+      mime: "image/png", size: file.length, content_hash: contentHash,
+      signer_tip_id: TIP, signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey), timestamp: ts,
+    });
+    const session = fx.dag.getUploadSession(init.session_id);
+    // upload only half the declared bytes
+    const parts = [{ part_number: 1, etag: fx.storage._put(session.upload_id, 1, file.subarray(0, 1024)) }];
+    const cts = nowMs();
+    await expect(fx.svc.complete(init.session_id, {
+      signer_tip_id: TIP, timestamp: cts, parts,
+      signature: _signAction("MEDIA_UPLOAD_COMPLETE", init.session_id, cts, TIP, fx.kp.privateKey),
+    })).rejects.toMatchObject({ status: 400, code: "size_mismatch" });
+    expect(fx.storage._objects.has(session.s3_key)).toBe(false);
+  });
+
+  test("complete rejects a stale timestamp (replay window)", async () => {
+    const fx = _setup();
+    const { init, parts } = await _upload(fx, _png(1024), "image/png");
+    const stale = nowMs() - 10 * 60 * 1000; // 10min ago, past ±5min
+    await expect(fx.svc.complete(init.session_id, {
+      signer_tip_id: TIP, timestamp: stale, parts,
+      signature: _signAction("MEDIA_UPLOAD_COMPLETE", init.session_id, stale, TIP, fx.kp.privateKey),
+    })).rejects.toMatchObject({ status: 400, code: "timestamp_invalid" });
+  });
+
+  test("complete on an unknown session -> 404", async () => {
+    const fx = _setup();
+    const ts = nowMs();
+    await expect(fx.svc.complete("deadbeefdeadbeef", {
+      signer_tip_id: TIP, timestamp: ts, parts: [{ part_number: 1, etag: "x" }],
+      signature: _signAction("MEDIA_UPLOAD_COMPLETE", "deadbeefdeadbeef", ts, TIP, fx.kp.privateKey),
+    })).rejects.toMatchObject({ status: 404 });
+  });
+
   test("happy path: assembles, verifies, promotes to the content-addressed key", async () => {
     const fx = _setup();
     const file = _png(1024);
