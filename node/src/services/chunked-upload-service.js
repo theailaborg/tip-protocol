@@ -119,7 +119,7 @@ function createChunkedUploadService({
     }
 
     const sessionId = dag.generateUploadSessionId();
-    const { upload_id: uploadId, key: tmpKey } = await storage.createMultipartUpload(sessionId, mime);
+    const { upload_id: uploadId, key: tmpKey } = await storage.createMultipartUpload(sessionId, mime, contentHash);
     const now = nowMs();
     const session = {
       session_id: sessionId,
