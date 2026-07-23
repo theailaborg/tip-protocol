@@ -43,6 +43,12 @@ MODE=$(awk -F'"' '/^trust_mode/ {print $2}' terraform.tfvars)
 [ -n "$REGION" ] && [ -n "$BUCKET" ] && [ -n "$MODE" ] || die "terraform.tfvars must set bucket_name, region and trust_mode."
 case "$BUCKET" in *CHANGEME*) die "bucket_name still contains CHANGEME: pick a globally unique name." ;; esac
 
+# CORS origins: ONE source of truth for both the S3 bucket CORS (terraform, below)
+# and the node's API CORS (printed in the env block). Set TIP_CORS_ORIGINS to your
+# web app origin(s), comma-separated, in prod; defaults to "*" for dev.
+CORS_ORIGINS="${TIP_CORS_ORIGINS:-*}"
+CORS_JSON=$(printf '%s' "$CORS_ORIGINS" | awk -F, '{out="["; for(i=1;i<=NF;i++){gsub(/^[ \t]+|[ \t]+$/,"",$i); out=out (i>1?",":"") "\"" $i "\""} print out "]"}')
+
 # == 1. AWS login (operator credentials, used by terraform only) ==============
 PROFILE="${AWS_PROFILE:-default}"
 if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
@@ -102,7 +108,7 @@ fi
 # == 3. provision (idempotent; re-running is safe) ============================
 say "terraform init/apply (bucket=$BUCKET region=$REGION mode=$MODE)"
 AWS_PROFILE="$PROFILE" AWS_REGION="$REGION" terraform init -input=false >/dev/null
-AWS_PROFILE="$PROFILE" AWS_REGION="$REGION" terraform apply -input=false -auto-approve "${EXTRA_VARS[@]+"${EXTRA_VARS[@]}"}"
+AWS_PROFILE="$PROFILE" AWS_REGION="$REGION" terraform apply -input=false -auto-approve -var "cors_allowed_origins=$CORS_JSON" "${EXTRA_VARS[@]+"${EXTRA_VARS[@]}"}"
 
 ROLE_ARN=$(terraform output -raw node_role_arn)
 KMS_ARN=$(terraform output -raw kms_key_arn)
@@ -178,6 +184,7 @@ echo  "TIP_MEDIA_BACKEND=s3"
 echo  "TIP_MEDIA_S3_BUCKET=$BUCKET"
 echo  "TIP_MEDIA_S3_REGION=$REGION"
 echo  "TIP_MEDIA_S3_KMS_KEY_ID=$KMS_ARN"
+echo  "TIP_CORS_ORIGINS=$CORS_ORIGINS"
 case "$MODE" in
   dev|external) echo "AWS_PROFILE=$NODE_PROFILE" ;;
   keys)
