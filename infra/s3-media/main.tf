@@ -84,15 +84,16 @@ resource "aws_s3_bucket_versioning" "media" {
 # Browsers fetch media via presigned GET URLs, and a cross-origin fetch
 # is blocked by the browser unless the bucket answers CORS preflight.
 # The presigned signature is the authorization; CORS here is browser
-# plumbing, not a security boundary, so GET/HEAD from any origin is the
-# correct default (restrict via cors_allowed_origins when the consuming
-# web app's origin is fixed).
+# plumbing, not a security boundary. GET/HEAD serve presigned media
+# downloads; PUT serves direct-to-S3 chunked-upload parts (ETag is exposed so
+# the browser can read it back for CompleteMultipartUpload). Any origin by
+# default; restrict via cors_allowed_origins when the web app's origin is fixed.
 resource "aws_s3_bucket_cors_configuration" "media" {
   bucket = aws_s3_bucket.media.id
 
   cors_rule {
     allowed_origins = var.cors_allowed_origins
-    allowed_methods = ["GET", "HEAD"]
+    allowed_methods = ["GET", "HEAD", "PUT"]
     allowed_headers = ["*"]
     expose_headers  = ["Content-Type", "Content-Length", "ETag"]
     max_age_seconds = 3600
