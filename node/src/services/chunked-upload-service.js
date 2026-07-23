@@ -11,11 +11,9 @@
  *                 verify it matches the signed content_hash, enforce the real MIME,
  *                 then promote tmp -> the content-addressed key.
  *
- * Security is equivalent to single-shot upload: the node hashes the ACTUAL bytes
- * (streamed from S3) and only promotes to the final key on a match. Unverified
- * bytes only ever live at the tmp key, never at media/<hash>, and are dropped on
- * mismatch. No streaming hasher / no per-chunk node traffic, so retries and
- * out-of-order parts are handled by S3, not by fragile server-side state.
+ * Security equals single-shot upload: the node re-hashes the actual S3 bytes and
+ * only promotes to the final key on a match; unverified bytes live only at the tmp
+ * key. No server-side streaming hasher, so S3 handles retries/out-of-order parts.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -64,11 +62,9 @@ function createChunkedUploadService({
     return mldsaVerify(challenge, signature, publicKey);
   }
 
-  // Adaptive part sizing. With the Cloudflare cap gone (parts go direct to S3),
-  // scale the part SIZE so the part COUNT stays ~ADAPTIVE_TARGET_PARTS regardless
-  // of file size: keeps init cheap (few presigned URLs) and supports multi-TB
-  // files without hitting S3's 10k-part limit. A client-supplied part_size (or a
-  // configured fixed override) wins, clamped to S3's [5MB, 5GB] per-part bounds.
+  // Scale part size so the part COUNT stays ~ADAPTIVE_TARGET_PARTS: bounds init
+  // cost (one presigned URL per part) and keeps huge files under S3's 10k-part cap.
+  // Client/config override wins, clamped to S3's [5MB, 5GB] per-part bounds.
   function _resolvePartSize(requested, size) {
     const override = (Number.isInteger(requested) && requested > 0) ? requested
       : (Number.isInteger(partSize) && partSize > 0) ? partSize : null;
@@ -79,10 +75,9 @@ function createChunkedUploadService({
     return Math.ceil(clamped / MB) * MB; // round up to a whole MB
   }
 
-  // Auth for complete/abort: caller must be the session owner and present a fresh
-  // signature over `${verb}:${sessionId}:${timestamp}:${signer_tip_id}`. Closes the
-  // "session_id is a bearer token" gap — chunk bytes go to S3, but finalizing the
-  // upload requires proving ownership.
+  // complete/abort require the session owner's fresh signature over
+  // `${verb}:${sessionId}:${timestamp}:${signer_tip_id}` — the session_id alone is
+  // not a bearer token for finalizing.
   async function _verifyOwnerAction(verb, sessionId, session, { signer_tip_id, signature, timestamp }) {
     if (signer_tip_id !== session.signer_tip_id) {
       throw schemaError(403, "Signer does not own this upload session", "signer_mismatch");
@@ -226,11 +221,9 @@ function createChunkedUploadService({
       await _dropAssembled(session);
       throw schemaError(400, "Hash mismatch: uploaded bytes do not match signed content_hash", "hash_mismatch");
     }
-    // Gate + LABEL on the DETECTED type (a pure function of the bytes), exactly
-    // like single-shot validateRequest: a disabled or unrecognized type has cap 0
-    // and is rejected here; otherwise the object is stored under its TRUE mime, so
-    // a declared-image/actual-video is stored as video (or rejected if video is
-    // off), never mislabeled. No fallback to the declared mime.
+    // Gate + label on the DETECTED type (like single-shot validateRequest): a
+    // disabled/unrecognized type has cap 0 and is rejected; else it's stored under
+    // its true mime, never the declared one, so a mislabel can't dodge a cap.
     const detected = detectedMime;
     const cap = mediaUploadSchema.limitForDetectedMime(detected);
     if (actualSize > cap) {

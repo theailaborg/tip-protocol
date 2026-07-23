@@ -279,10 +279,8 @@ function createS3Backend(config = {}) {
   // means the retention sweep's media/<hex2>/<hex62>.bin regex skips it.
   const _tmpKey = (sessionId, contentHash) => `media/${contentHash.slice(0, 2)}/tmp-${sessionId}.bin`;
 
-  // Multipart to a TMP key, never the final media/<hash> key: the client PUTs
-  // unverified parts here, and we promote to the content-addressed key only
-  // after re-hashing + verifying at complete. So the final key never holds
-  // unverified bytes.
+  // Opens the multipart at the tmp key: the final media/<hash> key gets the object
+  // only after complete's re-hash passes, so it never holds unverified bytes.
   async function createMultipartUpload(sessionId, mime, contentHash) {
     const key = _tmpKey(sessionId, contentHash);
     const res = await client.send(new CreateMultipartUploadCommand({

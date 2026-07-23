@@ -63,9 +63,8 @@ function createRouter({ mediaService, chunkedUploadService }) {
     }
   }));
 
-  // Large-media upload (Phase 1: presigned S3 multipart). Init verifies the
-  // signer and returns presigned part URLs; the client PUTs parts DIRECTLY to S3
-  // in parallel; complete re-hashes the assembled bytes before promoting.
+  // Presigned S3 multipart: init verifies the signer + returns part URLs; client
+  // PUTs parts direct to S3; complete re-hashes from S3 before promoting.
   router.post("/media/upload-init", express.json(), asyncHandler(async (req, res) => {
     const result = await chunkedUploadService.init({
       mime: req.body.mime,
