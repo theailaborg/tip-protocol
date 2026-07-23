@@ -477,6 +477,24 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getUploadSession(live.session_id)).not.toBeNull();
   });
 
+  test("listExpiredUploadSessions returns expired rows (with upload_id/s3_key) without deleting", async () => {
+    const dag = await makeDag();
+    const expired = uploadSession(uniq("session"), { expires_at: nowMs() - 1000 });
+    const live = uploadSession(uniq("session"), { expires_at: nowMs() + 3600000 });
+    dag.createUploadSession(expired);
+    dag.createUploadSession(live);
+
+    const rows = dag.listExpiredUploadSessions(nowMs());
+    const ids = rows.map(r => r.session_id);
+    expect(ids).toContain(expired.session_id);
+    expect(ids).not.toContain(live.session_id);
+    const row = rows.find(r => r.session_id === expired.session_id);
+    expect(row.upload_id).toBe(expired.upload_id); // fields cleanup needs to abort S3
+    expect(row.s3_key).toBe(expired.s3_key);
+    // read-only: a second call still returns it (unlike cleanup, which deletes)
+    expect(dag.listExpiredUploadSessions(nowMs()).map(r => r.session_id)).toContain(expired.session_id);
+  });
+
   test("generateUploadSessionId returns 32-char lowercase hex", () => {
     const dag = initDAG({ dbPath: ":memory:" });
     track(dag);

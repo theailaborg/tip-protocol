@@ -1218,6 +1218,10 @@ class KnexAdapter {
     this._ff(() => this._k("upload_sessions").where("expires_at", "<", beforeMs).del());
     return removed;
   }
+  listExpiredUploadSessions(beforeMs = nowMs()) {
+    // Read-only: caller deletes each row via deleteUploadSession after aborting S3.
+    return this.mirror.listExpiredUploadSessions(beforeMs);
+  }
   generateUploadSessionId() {
     return this.mirror.generateUploadSessionId();
   }

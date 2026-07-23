@@ -2,10 +2,11 @@
  * @file @tip-protocol/node/src/routes/media.js
  * @description Media upload + reviewer-access HTTP routes.
  *
- *   POST /v1/media/upload                  — author-attested upload, returns media_id
- *   POST /v1/media/upload-init             — start chunked upload, returns session_id
- *   POST /v1/media/upload-chunk/:session   — upload one chunk
- *   POST /v1/media/upload-complete/:session— finalize chunked upload
+ *   POST /v1/media/upload                  — author-attested single-shot upload
+ *   POST /v1/media/upload-init             — start presigned multipart, returns part URLs
+ *   GET  /v1/media/upload-status/:session  — resume: uploaded/missing parts + fresh URLs
+ *   POST /v1/media/upload-complete/:session— finalize (signed): assemble + re-hash + promote
+ *   POST /v1/media/upload-abort/:session   — cancel (signed): abort multipart
  *   GET  /v1/content/:ctid/media/:idx      — auth-gated reviewer/juror/disputer fetch
  *
  * Upload challenge (signed by uploader):
@@ -31,24 +32,6 @@
 
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
-
-function _readBuffer(stream, maxBytes) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    stream.on("data", (chunk) => {
-      size += chunk.length;
-      if (size > maxBytes) {
-        stream.destroy();
-        reject(new Error("chunk exceeds max size"));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    stream.on("end", () => resolve(Buffer.concat(chunks, size)));
-    stream.on("error", reject);
-  });
-}
 
 function createRouter({ mediaService, chunkedUploadService }) {
   const router = express.Router();
@@ -80,7 +63,9 @@ function createRouter({ mediaService, chunkedUploadService }) {
     }
   }));
 
-  // Chunked upload: init
+  // Large-media upload (Phase 1: presigned S3 multipart). Init verifies the
+  // signer and returns presigned part URLs; the client PUTs parts DIRECTLY to S3
+  // in parallel; complete re-hashes the assembled bytes before promoting.
   router.post("/media/upload-init", express.json(), asyncHandler(async (req, res) => {
     const result = await chunkedUploadService.init({
       mime: req.body.mime,
@@ -89,29 +74,37 @@ function createRouter({ mediaService, chunkedUploadService }) {
       signer_tip_id: req.body.signer_tip_id,
       signature: req.body.signature,
       timestamp: req.body.timestamp,
+      part_size: req.body.part_size,
     });
     res.status(201).json(result);
   }));
 
-  // Chunked upload: chunk upload (raw bytes).
-  router.post("/media/upload-chunk/:sessionId", asyncHandler(async (req, res) => {
-    const chunkIndex = parseInt(req.query.chunk_index || req.get("X-Chunk-Index") || "0", 10);
-    const totalChunks = parseInt(req.query.total_chunks || req.get("X-Total-Chunks") || "0", 10);
-    const maxChunk = chunkedUploadService.chunkSize || (10 * 1024 * 1024);
-    const chunkBytes = await _readBuffer(req, maxChunk);
-
-    const result = await chunkedUploadService.uploadChunk(req.params.sessionId, {
-      chunkIndex,
-      chunkBytes,
-      totalChunks,
-    });
+  // Resume: which parts S3 already has + fresh presigned URLs for the missing ones.
+  router.get("/media/upload-status/:sessionId", asyncHandler(async (req, res) => {
+    const result = await chunkedUploadService.status(req.params.sessionId);
     res.status(200).json(result);
   }));
 
-  // Chunked upload: complete
-  router.post("/media/upload-complete/:sessionId", asyncHandler(async (req, res) => {
-    const result = await chunkedUploadService.complete(req.params.sessionId);
+  // Finalize — authenticated (signer signs MEDIA_UPLOAD_COMPLETE:{session}:{ts}:{tip}).
+  // Body carries the S3 part ETags; node assembles, re-hashes, verifies, promotes.
+  router.post("/media/upload-complete/:sessionId", express.json(), asyncHandler(async (req, res) => {
+    const result = await chunkedUploadService.complete(req.params.sessionId, {
+      signer_tip_id: req.body.signer_tip_id,
+      signature: req.body.signature,
+      timestamp: req.body.timestamp,
+      parts: req.body.parts,
+    });
     res.status(201).json(result);
+  }));
+
+  // Cancel an in-flight upload — authenticated (MEDIA_UPLOAD_ABORT:{session}:{ts}:{tip}).
+  router.post("/media/upload-abort/:sessionId", express.json(), asyncHandler(async (req, res) => {
+    const result = await chunkedUploadService.abort(req.params.sessionId, {
+      signer_tip_id: req.body.signer_tip_id,
+      signature: req.body.signature,
+      timestamp: req.body.timestamp,
+    });
+    res.status(200).json(result);
   }));
 
   // Reviewer / juror / disputer / author fetch path. All authz happens

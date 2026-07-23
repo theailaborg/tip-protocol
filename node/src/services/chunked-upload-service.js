@@ -1,25 +1,21 @@
 /**
  * @file @tip-protocol/node/src/services/chunked-upload-service.js
- * @description Chunked media upload service using S3 multipart uploads.
+ * @description Large media upload via presigned S3 multipart (Phase 1).
  *
- * Security model is identical to the single-shot upload:
- *   - Client signs MEDIA_UPLOAD:{content_hash}:{mime}:{timestamp}:{tip_id}
- *     where content_hash is the SHAKE-256 of the full file.
- *   - Server verifies the signature at session init.
- *   - Server hashes chunks incrementally as they arrive.
- *   - Server verifies the final hash matches the signed challenge before
- *     completing the S3 multipart upload.
+ * Flow:
+ *   1. init     — verify the signer's MEDIA_UPLOAD signature, open an S3 multipart
+ *                 to a TMP key, and hand back presigned UploadPart URLs.
+ *   2. (client)   PUTs parts DIRECTLY to S3 in parallel (bypasses Cloudflare + node).
+ *   3. complete — verify a signed completion challenge, assemble the multipart,
+ *                 re-read the assembled bytes from S3 and recompute SHAKE-256,
+ *                 verify it matches the signed content_hash, enforce the real MIME,
+ *                 then promote tmp -> the content-addressed key.
  *
- * Design choices:
- *   - Chunks are processed sequentially in file order. This keeps the
- *     incremental hasher state simple and avoids temporary reassembly storage.
- *   - Each chunk is streamed directly to S3 as a multipart part; no local
- *     disk is used for staging or reassembly.
- *   - Signature verification is offloaded to the crypto worker pool when
- *     available, so uploads do not block consensus crypto.
- *
- * Trade-off: if the node process restarts, in-flight hasher state is lost.
- * The client can simply restart the upload (Resumable.js handles this).
+ * Security is equivalent to single-shot upload: the node hashes the ACTUAL bytes
+ * (streamed from S3) and only promotes to the final key on a match. Unverified
+ * bytes only ever live at the tmp key, never at media/<hash>, and are dropped on
+ * mismatch. No streaming hasher / no per-chunk node traffic, so retries and
+ * out-of-order parts are handled by S3, not by fragile server-side state.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -32,8 +28,11 @@ const { nowMs } = require("../../../shared/time");
 const { schemaError } = require("../schemas/_common");
 const mediaUploadSchema = require("../schemas/media-upload");
 
-const DEFAULT_CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
-const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+const DEFAULT_PART_SIZE = 10 * 1024 * 1024; // 10 MB
+const MIN_PART_SIZE = 5 * 1024 * 1024;      // S3 minimum for every non-final part
+const MAX_PARTS = 10000;                    // S3 multipart hard limit
+const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const COMPLETE_DRIFT_MS = 5 * 60 * 1000;    // ±5min on the completion/abort timestamp
 
 function _resolveSessionTtlMs() {
   const raw = parseInt(process.env.TIP_CHUNKED_UPLOAD_SESSION_TTL_MS || "", 10);
@@ -45,44 +44,48 @@ function createChunkedUploadService({
   dag,
   cryptoPoolRef = { current: null },
   log = console,
-  chunkSize = DEFAULT_CHUNK_SIZE,
+  partSize = DEFAULT_PART_SIZE,
   sessionTtlMs = _resolveSessionTtlMs(),
 }) {
   if (!storage) throw new Error("chunked-upload-service: storage required");
   if (!dag) throw new Error("chunked-upload-service: dag required");
 
-  // In-memory hasher state per session. Cannot be serialized to Postgres,
-  // so a node restart aborts in-progress uploads. Clients retry via Resumable.js.
-  const _hashers = new Map();
-
-  function _objectKey(contentHash) {
-    return `media/${contentHash.slice(0, 2)}/${contentHash.slice(2)}.bin`;
-  }
-
   async function _verifySignature({ challenge, signature, publicKey }) {
-    // Prefer crypto worker pool when available; fall back to sync verify.
     const pool = cryptoPoolRef && cryptoPoolRef.current ? cryptoPoolRef.current : null;
     if (pool && typeof pool.verifyRaw === "function") {
-      const ok = await pool.verifyRaw([{
-        message: challenge,
-        signature,
-        publicKey,
-        algorithm: "ML-DSA-65",
-      }]);
+      const ok = await pool.verifyRaw([{ message: challenge, signature, publicKey, algorithm: "ML-DSA-65" }]);
       if (ok) return true;
-      // If worker returns false, fall through to sync verify to rule out
-      // pool bugs. A bad signature will still return false.
+      // Worker said false — fall through to a sync verify to rule out pool bugs.
     }
     return mldsaVerify(challenge, signature, publicKey);
   }
 
+  function _resolvePartSize(requested) {
+    const p = Number.isInteger(requested) && requested > 0 ? requested : partSize;
+    return Math.max(p, MIN_PART_SIZE);
+  }
+
+  // Auth for complete/abort: caller must be the session owner and present a fresh
+  // signature over `${verb}:${sessionId}:${timestamp}:${signer_tip_id}`. Closes the
+  // "session_id is a bearer token" gap — chunk bytes go to S3, but finalizing the
+  // upload requires proving ownership.
+  async function _verifyOwnerAction(verb, sessionId, session, { signer_tip_id, signature, timestamp }) {
+    if (signer_tip_id !== session.signer_tip_id) {
+      throw schemaError(403, "Signer does not own this upload session", "signer_mismatch");
+    }
+    if (!Number.isInteger(timestamp) || Math.abs(nowMs() - timestamp) > COMPLETE_DRIFT_MS) {
+      throw schemaError(400, "timestamp missing or out of range", "timestamp_invalid");
+    }
+    const identity = dag.getIdentity(signer_tip_id);
+    if (!identity) throw schemaError(404, "Signer identity not found", "identity_not_found");
+    const challenge = `${verb}:${sessionId}:${timestamp}:${signer_tip_id}`;
+    const ok = await _verifySignature({ challenge, signature, publicKey: identity.public_key });
+    if (!ok) throw schemaError(403, "Signature verification failed", "signature_invalid");
+  }
+
   async function init({
-    mime,
-    size,
-    content_hash: contentHash,
-    signer_tip_id: signerTipId,
-    signature,
-    timestamp,
+    mime, size, content_hash: contentHash, signer_tip_id: signerTipId,
+    signature, timestamp, part_size: reqPartSize,
   }) {
     if (!contentHash || !/^[0-9a-f]{64}$/.test(contentHash)) {
       throw schemaError(400, "content_hash must be 64-char lowercase hex", "content_hash_invalid");
@@ -91,11 +94,9 @@ function createChunkedUploadService({
       throw schemaError(400, "size must be a positive integer", "size_invalid");
     }
 
-    // Schema validates mime family, signer shape, timestamp drift, identity.
     const sizeLimit = mediaUploadSchema.validateStreamRequest({
       mime, signer_tip_id: signerTipId, signature, timestamp,
     }, { dag });
-
     if (size > sizeLimit) {
       throw schemaError(413, `File size ${size} exceeds ${sizeLimit} bytes`, "file_too_large");
     }
@@ -105,22 +106,25 @@ function createChunkedUploadService({
       content_hash: contentHash, mime, timestamp, signer_tip_id: signerTipId,
     });
     const ok = await _verifySignature({ challenge, signature, publicKey: identity.public_key });
-    if (!ok) {
-      throw schemaError(403, "Upload signature verification failed", "signature_invalid");
-    }
+    if (!ok) throw schemaError(403, "Upload signature verification failed", "signature_invalid");
 
     if (storage.backend !== "s3") {
       throw schemaError(400, "Chunked upload requires s3 media backend", "backend_not_supported");
     }
 
-    const { upload_id: uploadId, key: s3Key } = await storage.createMultipartUpload(contentHash, mime);
+    const resolvedPartSize = _resolvePartSize(reqPartSize);
+    const partCount = Math.ceil(size / resolvedPartSize);
+    if (partCount > MAX_PARTS) {
+      throw schemaError(413, `Too many parts (${partCount}); use a larger part_size`, "too_many_parts");
+    }
 
     const sessionId = dag.generateUploadSessionId();
+    const { upload_id: uploadId, key: tmpKey } = await storage.createMultipartUpload(sessionId, mime);
     const now = nowMs();
     const session = {
       session_id: sessionId,
       upload_id: uploadId,
-      s3_key: s3Key,
+      s3_key: tmpKey,
       content_hash: contentHash,
       mime,
       size,
@@ -128,154 +132,172 @@ function createChunkedUploadService({
       timestamp,
       signature,
       parts: [],
-      completed_size: 0,
+      completed_size: resolvedPartSize, // reuse: holds part_size (node-local, no schema change)
       created_at: now,
       expires_at: now + sessionTtlMs,
     };
-
     await dag.createUploadSession(session);
 
-    const hasher = shake256Incremental(32);
-    let detectedMime = null;
-    _hashers.set(sessionId, { hasher, detectedMime });
+    const parts = [];
+    for (let n = 1; n <= partCount; n++) {
+      parts.push({ part_number: n, url: await storage.presignUploadPart(uploadId, tmpKey, n) });
+    }
 
-    const totalChunks = Math.ceil(size / chunkSize);
-    log.info?.(`chunked-upload init: ${signerTipId} session=${sessionId} size=${size} chunks=${totalChunks} mime=${mime}`);
-
+    log.info?.(`chunked-upload init: ${signerTipId} session=${sessionId} size=${size} parts=${partCount} mime=${mime}`);
     return {
       session_id: sessionId,
-      upload_id: uploadId,
-      chunk_size: chunkSize,
-      total_chunks: totalChunks,
+      part_size: resolvedPartSize,
+      part_count: partCount,
+      parts,
       expires_at: session.expires_at,
     };
   }
 
-  async function uploadChunk(sessionId, { chunkIndex, chunkBytes, totalChunks }) {
+  async function status(sessionId) {
     const session = await dag.getUploadSession(sessionId);
-    if (!session) {
-      throw schemaError(404, "Upload session not found or expired", "session_not_found");
+    if (!session) throw schemaError(404, "Upload session not found or expired", "session_not_found");
+    const psize = session.completed_size || DEFAULT_PART_SIZE;
+    const partCount = Math.ceil(session.size / psize);
+    const uploaded = await storage.listUploadedParts(session.upload_id, session.s3_key);
+    const uploadedNums = uploaded.map(p => p.part_number).sort((a, b) => a - b);
+    const have = new Set(uploadedNums);
+    const missing = [];
+    for (let n = 1; n <= partCount; n++) if (!have.has(n)) missing.push(n);
+    const parts = [];
+    for (const n of missing) {
+      parts.push({ part_number: n, url: await storage.presignUploadPart(session.upload_id, session.s3_key, n) });
     }
-
-    const state = _hashers.get(sessionId);
-    if (!state) {
-      // Session exists in DB but hasher was lost (node restart). Expire it.
-      await dag.deleteUploadSession(sessionId);
-      throw schemaError(410, "Upload session state lost; please restart upload", "session_state_lost");
-    }
-
-    const expectedIndex = session.parts.length;
-    if (chunkIndex !== expectedIndex) {
-      throw schemaError(409, `Expected chunk ${expectedIndex}, got ${chunkIndex}`, "chunk_out_of_order");
-    }
-
-    const newCompletedSize = session.completed_size + chunkBytes.length;
-    if (newCompletedSize > session.size) {
-      await _abort(session);
-      throw schemaError(413, "Chunk exceeds declared file size", "size_exceeded");
-    }
-
-    // Detect MIME from first chunk if not already detected.
-    if (state.detectedMime === null && chunkBytes.length >= 16) {
-      state.detectedMime = mediaUploadSchema.detectMime(chunkBytes);
-    }
-
-    // Update incremental hash and size before S3 call so a stream error still
-    // leaves consistent state (the client will retry the same chunk).
-    state.hasher.update(chunkBytes);
-
-    const partNumber = chunkIndex + 1; // S3 part numbers are 1-based.
-    const { etag } = await storage.uploadPart(session.upload_id, session.s3_key, partNumber, chunkBytes);
-
-    session.parts.push({ part_number: partNumber, etag });
-    session.completed_size = newCompletedSize;
-    await dag.updateUploadSession(sessionId, {
-      parts: session.parts,
-      completed_size: newCompletedSize,
-    });
-
-    log.debug?.(`chunked-upload chunk: session=${sessionId} idx=${chunkIndex} size=${chunkBytes.length}`);
-    return { received: true, completed_size: newCompletedSize };
+    return {
+      part_count: partCount,
+      uploaded_parts: uploadedNums,
+      missing_parts: missing,
+      parts,
+      expires_at: session.expires_at,
+    };
   }
 
-  async function complete(sessionId) {
+  async function complete(sessionId, { signer_tip_id, signature, timestamp, parts }) {
     const session = await dag.getUploadSession(sessionId);
-    if (!session) {
-      throw schemaError(404, "Upload session not found or expired", "session_not_found");
+    if (!session) throw schemaError(404, "Upload session not found or expired", "session_not_found");
+    await _verifyOwnerAction("MEDIA_UPLOAD_COMPLETE", sessionId, session, { signer_tip_id, signature, timestamp });
+
+    if (!Array.isArray(parts) || parts.length === 0) {
+      throw schemaError(400, "parts (ETags) required to complete", "parts_required");
+    }
+    const normParts = parts
+      .map(p => ({ part_number: Number(p.part_number), etag: p.etag }))
+      .filter(p => Number.isInteger(p.part_number) && typeof p.etag === "string")
+      .sort((a, b) => a.part_number - b.part_number);
+    if (normParts.length === 0) throw schemaError(400, "parts malformed", "parts_invalid");
+
+    // Assemble the multipart at the tmp key.
+    await storage.completeMultipartUpload(session.upload_id, session.s3_key, normParts);
+
+    // Re-read the assembled object from S3 and hash it ourselves — never trust the
+    // client's claimed hash. Streamed, so memory stays flat for large files.
+    let result;
+    try {
+      result = await _hashS3Object(session.s3_key);
+    } catch (err) {
+      await _dropAssembled(session);
+      throw schemaError(400, `Failed to read assembled object: ${err.message}`, "assemble_failed");
+    }
+    const { hashHex, detectedMime, actualSize } = result;
+
+    if (actualSize !== session.size) {
+      await _dropAssembled(session);
+      throw schemaError(400, `Assembled size ${actualSize} != declared ${session.size}`, "size_mismatch");
+    }
+    if (hashHex !== session.content_hash) {
+      await _dropAssembled(session);
+      throw schemaError(400, "Hash mismatch: uploaded bytes do not match signed content_hash", "hash_mismatch");
+    }
+    // Gate + LABEL on the DETECTED type (a pure function of the bytes), exactly
+    // like single-shot validateRequest: a disabled or unrecognized type has cap 0
+    // and is rejected here; otherwise the object is stored under its TRUE mime, so
+    // a declared-image/actual-video is stored as video (or rejected if video is
+    // off), never mislabeled. No fallback to the declared mime.
+    const detected = detectedMime;
+    const cap = mediaUploadSchema.limitForDetectedMime(detected);
+    if (actualSize > cap) {
+      await _dropAssembled(session);
+      throw schemaError(415, `Detected type ${detected || "unknown"} is disabled or exceeds its cap`, "mime_disabled");
     }
 
-    const state = _hashers.get(sessionId);
-    if (!state) {
-      await dag.deleteUploadSession(sessionId);
-      throw schemaError(410, "Upload session state lost; please restart upload", "session_state_lost");
-    }
-
-    if (session.completed_size !== session.size) {
-      throw schemaError(400, `Upload incomplete: ${session.completed_size}/${session.size}`, "upload_incomplete");
-    }
-
-    // Final MIME detection for very small files where the first chunk was < 16 bytes.
-    if (state.detectedMime === null) {
-      state.detectedMime = "application/octet-stream";
-    }
-
-    const contentHash = state.hasher.digest("hex");
-    if (contentHash !== session.content_hash) {
-      await _abort(session);
-      throw schemaError(400, "Hash mismatch: received bytes do not match signed content_hash", "hash_mismatch");
-    }
-
-    // Signature was verified at init; re-checking the hash binding is enough.
-    await storage.completeMultipartUpload(session.upload_id, session.s3_key, session.parts);
-
+    const { media_id } = await storage.copyToFinal(session.s3_key, session.content_hash, detected);
     await dag.deleteUploadSession(sessionId);
-    _hashers.delete(sessionId);
 
-    log.info?.(`chunked-upload complete: ${session.signer_tip_id} session=${sessionId} media_id=${contentHash} size=${session.size}`);
-
+    log.info?.(`chunked-upload complete: ${session.signer_tip_id} session=${sessionId} media_id=${media_id} size=${actualSize} mime=${detected}`);
     return {
-      media_id: contentHash,
-      content_hash: contentHash,
-      mime: state.detectedMime,
-      size: session.size,
+      media_id,
+      content_hash: session.content_hash,
+      mime: detected,
+      size: actualSize,
       uploaded_at: nowMs(),
       signer_tip_id: session.signer_tip_id,
     };
   }
 
-  async function _abort(session) {
-    try {
-      await storage.abortMultipartUpload(session.upload_id, session.s3_key);
-    } catch (err) {
-      log.warn?.(`chunked-upload abort failed: ${err.message}`);
+  // Stream the assembled tmp object from S3: SHAKE-256 over the whole thing plus
+  // the first 64 bytes for MIME sniffing, without buffering the file in RAM.
+  async function _hashS3Object(key) {
+    const { stream } = await storage.getObjectStream(key);
+    const hasher = shake256Incremental(32);
+    let size = 0;
+    let head = Buffer.alloc(0);
+    for await (const chunk of stream) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      hasher.update(buf);
+      size += buf.length;
+      if (head.length < 64) head = Buffer.concat([head, buf.subarray(0, 64 - head.length)]);
     }
-    if (session && session.session_id) {
-      await dag.deleteUploadSession(session.session_id);
-      _hashers.delete(session.session_id);
-    }
+    const detectedMime = head.length >= 16 ? mediaUploadSchema.detectMime(head) : "application/octet-stream";
+    return { hashHex: hasher.digest("hex"), detectedMime, actualSize: size };
   }
 
-  async function abort(sessionId) {
+  // Assembled object exists at the tmp key but failed verification: delete it +
+  // the session. (Multipart is already completed, so Abort no longer applies.)
+  async function _dropAssembled(session) {
+    try { await storage.deleteObjectByKey(session.s3_key); }
+    catch (e) { log.warn?.(`chunked-upload drop-assembled failed: ${e.message}`); }
+    await dag.deleteUploadSession(session.session_id);
+  }
+
+  // Still in-progress (not completed): abort the multipart (drops the parts), and
+  // best-effort delete any object in case it was completed elsewhere.
+  async function _abortSession(session) {
+    try { await storage.abortMultipartUpload(session.upload_id, session.s3_key); }
+    catch (e) { log.warn?.(`chunked-upload abort failed: ${e.message}`); }
+    try { await storage.deleteObjectByKey(session.s3_key); } catch { /* best effort */ }
+    await dag.deleteUploadSession(session.session_id);
+  }
+
+  async function abort(sessionId, auth = {}) {
     const session = await dag.getUploadSession(sessionId);
     if (!session) return { aborted: false };
-    await _abort(session);
+    await _verifyOwnerAction("MEDIA_UPLOAD_ABORT", sessionId, session, auth);
+    await _abortSession(session);
     return { aborted: true };
   }
 
+  // Expiry sweep: for every expired session, ABORT the S3 multipart (releasing the
+  // parts) BEFORE deleting the row — otherwise abandoned multipart parts orphan in
+  // S3 and bill forever.
   async function cleanupExpired() {
     const before = nowMs();
-    const removed = await dag.cleanupExpiredUploadSessions(before);
-    // Also drop lost hasher state for sessions already gone from DB.
-    for (const sessionId of _hashers.keys()) {
-      const session = await dag.getUploadSession(sessionId);
-      if (!session) {
-        _hashers.delete(sessionId);
-      }
+    const expired = await dag.listExpiredUploadSessions(before);
+    let removed = 0;
+    for (const session of expired) {
+      try { await storage.abortMultipartUpload(session.upload_id, session.s3_key); }
+      catch (e) { log.warn?.(`chunked-upload cleanup abort failed session=${session.session_id}: ${e.message}`); }
+      try { await storage.deleteObjectByKey(session.s3_key); } catch { /* best effort */ }
+      await dag.deleteUploadSession(session.session_id);
+      removed += 1;
     }
     return { removed };
   }
 
-  return { init, uploadChunk, complete, abort, cleanupExpired };
+  return { init, status, complete, abort, cleanupExpired };
 }
 
 module.exports = { createChunkedUploadService };

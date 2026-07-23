@@ -2133,6 +2133,15 @@ class MemoryStore {
     }
     return removed;
   }
+  // Return (without deleting) expired sessions so the caller can abort their S3
+  // multipart before dropping the row — prevents orphaned, billable S3 parts.
+  listExpiredUploadSessions(beforeMs = nowMs()) {
+    const out = [];
+    for (const row of this._uploadSessions.values()) {
+      if (row.expires_at < beforeMs) out.push({ ...row });
+    }
+    return out;
+  }
   generateUploadSessionId() {
     return randomUUID().replace(/-/g, "");
   }
@@ -2999,6 +3008,9 @@ class SQLiteStore {
       ),
       cleanupExpiredUploadSessions: this.db.prepare(
         "DELETE FROM upload_sessions WHERE expires_at<?"
+      ),
+      listExpiredUploadSessions: this.db.prepare(
+        "SELECT * FROM upload_sessions WHERE expires_at<?"
       ),
 
       // Perceptual index (off-DAG, advisory).
@@ -4200,6 +4212,9 @@ class SQLiteStore {
   cleanupExpiredUploadSessions(beforeMs = nowMs()) {
     return this._stmts.cleanupExpiredUploadSessions.run(beforeMs).changes;
   }
+  listExpiredUploadSessions(beforeMs = nowMs()) {
+    return this._stmts.listExpiredUploadSessions.all(beforeMs).map(r => this._hydrateUploadSession(r));
+  }
   generateUploadSessionId() {
     return randomUUID().replace(/-/g, "");
   }
@@ -4735,6 +4750,7 @@ function _buildDagHandle(store, config) {
     updateUploadSession: (sessionId, patch) => store.updateUploadSession(sessionId, patch),
     deleteUploadSession: (sessionId) => store.deleteUploadSession(sessionId),
     cleanupExpiredUploadSessions: (beforeMs) => store.cleanupExpiredUploadSessions(beforeMs),
+    listExpiredUploadSessions: (beforeMs) => store.listExpiredUploadSessions(beforeMs),
     generateUploadSessionId: () => store.generateUploadSessionId(),
 
     // ── DB Transactions ──────────────────────────────────────────────────
