@@ -1,11 +1,8 @@
 /**
  * @file @tip-protocol/node/src/reg-credit.js
  * @description Registration-credit rate-cap math, shared by the emitter
- * (content-service, best-effort pre-filter) and the commit-handler
- * (authoritative, deterministic). Pure functions: pass the SCORE_UPDATE txs
- * plus the reference timestamp. The commit-handler passes the frozen
- * tx.timestamp so every node computes the identical clamp; the emitter passes
- * nowMs. Windows are UTC day / calendar month. See REGISTER_CREDIT.
+ * (best-effort) and the commit-handler (authoritative). Pure: the commit-handler
+ * passes the frozen tx.timestamp so every node computes the identical clamp.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -18,10 +15,8 @@ const { toIso } = require("../../shared/time");
 
 const MS_PER_DAY = 86_400_000;
 
-// Sum an author's reg_credit awards in the UTC day / calendar-month windows
-// around `atMs`, plus the net lifetime total (awards minus reversals, plus
-// restores). `txs` are SCORE_UPDATE tx objects: { timestamp, data: { tip_id,
-// reason, delta } }.
+// Author's reg_credit sums (UTC day / calendar-month windows around `atMs`,
+// plus net lifetime) from SCORE_UPDATE txs { timestamp, data:{tip_id,reason,delta} }.
 function regCreditSums(txs, tipId, atMs) {
   const dayStart = atMs - (atMs % MS_PER_DAY);
   const monthStart = dayStart - (Number(toIso(atMs).slice(8, 10)) - 1) * MS_PER_DAY;

@@ -903,13 +903,10 @@ const REGISTER_CREDIT = Object.freeze({
   PER_MONTH: 15,
   TOTAL: 350,
   ACTIVATION_MS: 1784522400000, // 2026-07-20 04:40:00 UTC mainnet activation
-  // Commit-time cap enforcement. The emitter computes headroom from committed
-  // SCORE_UPDATEs only, so a burst of registrations races past the caps; the
-  // commit-handler re-checks deterministically (committed + in-batch). That is
-  // a NEW commit-validation rule, so a mixed fleet would fork , gated on this
-  // future epoch-ms so every node enforces together. Operator sets the real
-  // value at deploy, AFTER all nodes carry this code; 0 = active immediately.
-  CAP_ENFORCE_ACTIVATION_MS: 1785196800000, // 2026-07-28 00:00:00 UTC
+  // Commit-time cap is a new reject rule; a mixed fleet would fork, so gate it
+  // on this epoch-ms and enforce fleet-wide together. Operator sets the real
+  // value (or TIP_REG_CREDIT_CAP_ACTIVATION_MS) once all nodes ship.
+  CAP_ENFORCE_ACTIVATION_MS: 1784868000000, // 2026-07-24 04:40:00 UTC
 
   AWARD_REASON_PREFIX: "reg_credit:",
   REVERSAL_REASON_PREFIX: "reg_credit_rev:",

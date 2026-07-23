@@ -120,11 +120,9 @@ function loadConfig() {
     minScore: 0,
     dailyVerifyScoreCap: 10,      // max score gain per day from verifications
     jurorMonthlyMax: 20,      // max jury cases per TIP-ID per 30 days
-    // reg_credit commit-time cap: activation epoch-ms override. Unset => the
-    // fleet-wide constant REGISTER_CREDIT.CAP_ENFORCE_ACTIVATION_MS. This is a
-    // consensus gate: it MUST be identical on every node (set uniformly across
-    // the fleet or leave unset). Used to activate the cap on an isolated test
-    // cluster before the mainnet constant date.
+    // reg_credit cap activation override (epoch-ms). Unset => the constant.
+    // Consensus gate: MUST match on every node; for activating the cap on an
+    // isolated test cluster before the mainnet date.
     regCreditCapActivationMs: process.env.TIP_REG_CREDIT_CAP_ACTIVATION_MS
       ? parseInt(process.env.TIP_REG_CREDIT_CAP_ACTIVATION_MS, 10) : undefined,
 

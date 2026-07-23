@@ -218,12 +218,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return null;
   }
 
-  // Author reward for registering content: +REGISTER_CREDIT.BASE, capped by the
-  // per-day / per-month / lifetime-total ceilings. This emission is only a
-  // best-effort pre-filter (it reads committed SCORE_UPDATEs, which lag under a
-  // burst); the commit-handler re-checks the cap deterministically against
-  // committed + in-batch credits and drops any that raced past. Reason
-  // `reg_credit:<ctid>`; the paired reversal `reg_credit_rev:` frees headroom.
+  // Author reward +REGISTER_CREDIT.BASE per registration. Best-effort only: the
+  // committed-only read lags under a burst, so the commit-handler is the real
+  // cap authority and drops any that raced past.
   function _emitRegistrationCredit(authorTipId, ctid, relatedTxId) {
     const now = nowMs();
     if (!authorTipId || now < REGISTER_CREDIT.ACTIVATION_MS) return;

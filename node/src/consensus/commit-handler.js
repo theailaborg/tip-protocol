@@ -518,12 +518,9 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const inBatch = validated.find(t => t.tx_type === TX_TYPES.SCORE_UPDATE && tipMatch(t));
         if (inBatch) return { valid: false, error: `SCORE_UPDATE for (${d.tip_id}, ${d.ctid || "—"}, ${d.reason}) already in this batch` };
 
-        // Registration-credit rate cap (commit-time authority). The emitter
-        // computes headroom from committed SCORE_UPDATEs only, so a burst races
-        // past the per-day/month/total caps; re-check here against committed +
-        // in-batch credits, windowed on the frozen tx.timestamp (deterministic,
-        // never nowMs). Gated so the fleet enforces this new rule together;
-        // config override exists only for tests (production uses the constant).
+        // reg_credit cap (commit-time authority): the emitter's headroom read
+        // lags under a burst, so re-check against committed + in-batch credits,
+        // windowed on the frozen tx.timestamp (deterministic, never nowMs).
         const capActiveMs = config && Number.isFinite(config.regCreditCapActivationMs)
           ? config.regCreditCapActivationMs : REGISTER_CREDIT.CAP_ENFORCE_ACTIVATION_MS;
         if (tx.timestamp >= capActiveMs

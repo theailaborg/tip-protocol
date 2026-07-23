@@ -122,10 +122,9 @@ describe("registration credit — award on REGISTER_CONTENT", () => {
 });
 
 // ─── Commit-time cap (the burst race the emitter cannot see) ────────────────
-// The emitter reads only committed SCORE_UPDATEs, so a burst of registrations
-// races past the caps before its own credits commit (this is how a load test
-// pushed one author to 16 same-day credits with PER_DAY=3). The commit-handler
-// re-checks the cap deterministically against committed + in-batch credits.
+// A burst races past the emitter's committed-only headroom read (the
+// 16-same-day-credits bug); the commit-handler re-checks against committed +
+// in-batch credits, so the cap holds.
 
 describe("registration credit: commit-time cap under burst", () => {
   // A committed-and-past same-UTC-day base (post reg_credit activation) so the
