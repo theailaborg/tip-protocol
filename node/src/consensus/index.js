@@ -561,6 +561,10 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // ── Public interface ───────────────────────────────────────────────────
 
   const consensus = {
+    // Expose the crypto worker pool so API services (chunked upload, etc.)
+    // can offload ML-DSA verify off the main thread.
+    cryptoPool,
+
     /**
      * Add a validated transaction to the mempool.
      * Called by API services after validation.

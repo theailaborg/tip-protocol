@@ -35,6 +35,12 @@ const {
   HeadObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
+  CopyObjectCommand,
+  ListPartsCommand,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { Upload } = require("@aws-sdk/lib-storage");
@@ -268,7 +274,130 @@ function createS3Backend(config = {}) {
     return { media_id: contentHash, size };
   }
 
-  return { put, get, head, presignedGet, delete: deleteMedia, list, stagingDir, promoteTmpFile, cleanStaging, backend: "s3" };
+  // Tmp key lives UNDER the media/<shard>/ prefix (the same IAM-allowed prefix as
+  // the final object), so no extra S3 policy is needed. The "tmp-" + non-hex tail
+  // means the retention sweep's media/<hex2>/<hex62>.bin regex skips it.
+  const _tmpKey = (sessionId, contentHash) => `media/${contentHash.slice(0, 2)}/tmp-${sessionId}.bin`;
+
+  // Opens the multipart at the tmp key: the final media/<hash> key gets the object
+  // only after complete's re-hash passes, so it never holds unverified bytes.
+  async function createMultipartUpload(sessionId, mime, contentHash) {
+    const key = _tmpKey(sessionId, contentHash);
+    const res = await client.send(new CreateMultipartUploadCommand({
+      Bucket: bucket,
+      Key: key,
+      ContentType: mime,
+      Metadata: { mime, "created-at": String(nowMs()) },
+      ...(_encryptionArgs()),
+    }));
+    return { upload_id: res.UploadId, key };
+  }
+
+  // Presigned URL for one UploadPart — client PUTs the part bytes straight to S3.
+  async function presignUploadPart(uploadId, key, partNumber, ttlSec) {
+    const cmd = new UploadPartCommand({
+      Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: partNumber,
+    });
+    return getSignedUrl(client, cmd, { expiresIn: ttlSec || presignTtlSec });
+  }
+
+  // Parts S3 has received so far (resume support). Pages past 1000 parts.
+  async function listUploadedParts(uploadId, key) {
+    const parts = [];
+    let marker;
+    while (true) {
+      const res = await client.send(new ListPartsCommand({
+        Bucket: bucket, Key: key, UploadId: uploadId, PartNumberMarker: marker,
+      }));
+      for (const p of res.Parts || []) parts.push({ part_number: p.PartNumber, etag: p.ETag, size: p.Size });
+      if (!res.IsTruncated) return parts;
+      marker = res.NextPartNumberMarker;
+    }
+  }
+
+  // Stream a raw object by key (used to re-hash the assembled tmp object without
+  // buffering the whole file in RAM).
+  async function getObjectStream(key) {
+    const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    return { stream: res.Body, size: res.ContentLength || 0 };
+  }
+
+  async function deleteObjectByKey(key) {
+    try {
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    } catch (err) {
+      if (err.$metadata?.httpStatusCode !== 404 && err.name !== "NoSuchKey") throw err;
+    }
+    return { deleted: true };
+  }
+
+  // Copy a verified tmp object to its final content-addressed key, then drop the
+  // tmp. Content-addressed dedup: if the final key already exists, skip the copy.
+  async function copyToFinal(tmpKey, contentHash, mime) {
+    const key = _objectKey(contentHash);
+    try {
+      await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      await deleteObjectByKey(tmpKey);
+      return { media_id: contentHash };
+    } catch (err) {
+      if (err.$metadata?.httpStatusCode !== 404 && err.name !== "NotFound") throw err;
+    }
+    await client.send(new CopyObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      CopySource: `${bucket}/${tmpKey}`,
+      ContentType: mime,
+      MetadataDirective: "REPLACE",
+      Metadata: { mime, "created-at": String(nowMs()), "content-hash": contentHash },
+      ...(_encryptionArgs()),
+    }));
+    await deleteObjectByKey(tmpKey);
+    return { media_id: contentHash };
+  }
+
+  async function uploadPart(uploadId, key, partNumber, body) {
+    const res = await client.send(new UploadPartCommand({
+      Bucket: bucket,
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+      Body: body,
+    }));
+    return { etag: res.ETag };
+  }
+
+  async function completeMultipartUpload(uploadId, key, parts) {
+    await client.send(new CompleteMultipartUploadCommand({
+      Bucket: bucket,
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: parts.map(p => ({ PartNumber: p.part_number, ETag: p.etag })),
+      },
+    }));
+    return { completed: true };
+  }
+
+  async function abortMultipartUpload(uploadId, key) {
+    try {
+      await client.send(new AbortMultipartUploadCommand({
+        Bucket: bucket,
+        Key: key,
+        UploadId: uploadId,
+      }));
+    } catch (err) {
+      if (err.name !== "NoSuchUpload") throw err;
+    }
+    return { aborted: true };
+  }
+
+  return {
+    put, get, head, presignedGet, delete: deleteMedia, list, stagingDir,
+    promoteTmpFile, cleanStaging, createMultipartUpload, uploadPart,
+    completeMultipartUpload, abortMultipartUpload,
+    presignUploadPart, listUploadedParts, getObjectStream, deleteObjectByKey, copyToFinal,
+    backend: "s3",
+  };
 }
 
 module.exports = { createS3Backend };
