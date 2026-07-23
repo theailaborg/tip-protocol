@@ -708,6 +708,9 @@ const TX_REJECTION_REASON = Object.freeze({
   DOMAIN_ALREADY_CLAIMED: "domain_already_claimed",
   VERIFIER_NOT_AUTHORIZED: "verifier_not_authorized",
   CLEAN_RECORD_VIOLATION: "clean_record_violation",
+  // Registration-credit SCORE_UPDATE that would exceed the per-day / per-month /
+  // lifetime cap (a burst raced past the emitter's stale headroom read).
+  REG_CREDIT_CAP_REACHED: "reg_credit_cap_reached",
   REVALIDATION_FAILED: "revalidation_failed",
   // Site 5 — generic fallback for unexpected drops; always logs detail.
   TX_DECODE_FAILED: "tx_decode_failed",
@@ -900,6 +903,13 @@ const REGISTER_CREDIT = Object.freeze({
   PER_MONTH: 15,
   TOTAL: 350,
   ACTIVATION_MS: 1784522400000, // 2026-07-20 04:40:00 UTC mainnet activation
+  // Commit-time cap enforcement. The emitter computes headroom from committed
+  // SCORE_UPDATEs only, so a burst of registrations races past the caps; the
+  // commit-handler re-checks deterministically (committed + in-batch). That is
+  // a NEW commit-validation rule, so a mixed fleet would fork , gated on this
+  // future epoch-ms so every node enforces together. Operator sets the real
+  // value at deploy, AFTER all nodes carry this code; 0 = active immediately.
+  CAP_ENFORCE_ACTIVATION_MS: 1785196800000, // 2026-07-28 00:00:00 UTC
 
   AWARD_REASON_PREFIX: "reg_credit:",
   REVERSAL_REASON_PREFIX: "reg_credit_rev:",
