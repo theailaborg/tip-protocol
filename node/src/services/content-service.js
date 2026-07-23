@@ -7,6 +7,7 @@ const {
 const { nowMs, toIso } = require("../../../shared/time");
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
+const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const contentRegisterSchema = require("../schemas/content-register");
 const contentListSchema = require("../schemas/content-list");
 const { ingestFingerprint } = require("../perceptual/ingest");
@@ -217,32 +218,15 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return null;
   }
 
-  // Author reward for registering content: +REGISTER_CREDIT.BASE, clamped by the
-  // smallest remaining headroom of per-day / per-month / lifetime-total. The
-  // running sums come from past SCORE_UPDATEs (award reason `reg_credit:`; the
-  // net total also nets out `reg_credit_rev:` reversals so clawed-back content
-  // frees its headroom). Delta is frozen into the paired SCORE_UPDATE so every
-  // node applies the same number (single-channel). Mirrors the verify caps.
+  // Author reward +REGISTER_CREDIT.BASE per registration. Best-effort only: the
+  // committed-only read lags under a burst, so the commit-handler is the real
+  // cap authority and drops any that raced past.
   function _emitRegistrationCredit(authorTipId, ctid, relatedTxId) {
     const now = nowMs();
     if (!authorTipId || now < REGISTER_CREDIT.ACTIVATION_MS) return;
 
-    const MS_PER_DAY = 86_400_000;
-    const dayStart = now - (now % MS_PER_DAY);
-    const monthStart = dayStart - (Number(toIso(now).slice(8, 10)) - 1) * MS_PER_DAY;
-
-    const mine = dag.getTxsByType(TX_TYPES.SCORE_UPDATE).filter(t => t.data?.tip_id === authorTipId);
-    const awards = mine.filter(t => String(t.data?.reason || "").startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX));
-    const netTotal = mine.filter(t => String(t.data?.reason || "").startsWith("reg_credit")).reduce((s, t) => s + (t.data?.delta || 0), 0);
-    const dailySum = awards.filter(t => t.timestamp >= dayStart).reduce((s, t) => s + (t.data?.delta || 0), 0);
-    const monthlySum = awards.filter(t => t.timestamp >= monthStart).reduce((s, t) => s + (t.data?.delta || 0), 0);
-
-    const delta = Math.min(
-      REGISTER_CREDIT.BASE,
-      Math.max(0, REGISTER_CREDIT.TOTAL - netTotal),
-      Math.max(0, REGISTER_CREDIT.PER_DAY - dailySum),
-      Math.max(0, REGISTER_CREDIT.PER_MONTH - monthlySum),
-    );
+    const credits = dag.getTxsByType(TX_TYPES.SCORE_UPDATE);
+    const delta = regCreditRemaining(regCreditSums(credits, authorTipId, now));
     if (delta <= 0) return;
 
     submitTx(scoring.buildScoreUpdateTx({

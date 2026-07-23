@@ -20,7 +20,8 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT } = require("../../../shared/constants");
+const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -96,6 +97,7 @@ function _mapBusinessRuleReason(error) {
   if (error.includes("Identity already registered")) return TX_REJECTION_REASON.IDENTITY_ALREADY_REGISTERED;
   if (error.includes("Content already registered")) return TX_REJECTION_REASON.CONTENT_ALREADY_REGISTERED;
   if (error.includes("already bound to a different TIP-ID")) return TX_REJECTION_REASON.DOMAIN_ALREADY_CLAIMED;
+  if (error.includes("reg_credit rate cap reached")) return TX_REJECTION_REASON.REG_CREDIT_CAP_REACHED;
   return TX_REJECTION_REASON.REVALIDATION_FAILED;
 }
 
@@ -515,6 +517,20 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         if (existing) return { valid: false, error: `SCORE_UPDATE for (${d.tip_id}, ${d.ctid || "—"}, ${d.reason}) already applied` };
         const inBatch = validated.find(t => t.tx_type === TX_TYPES.SCORE_UPDATE && tipMatch(t));
         if (inBatch) return { valid: false, error: `SCORE_UPDATE for (${d.tip_id}, ${d.ctid || "—"}, ${d.reason}) already in this batch` };
+
+        // reg_credit cap (commit-time authority): the emitter's headroom read
+        // lags under a burst, so re-check against committed + in-batch credits,
+        // windowed on the frozen tx.timestamp (deterministic, never nowMs).
+        const capActiveMs = config && Number.isFinite(config.regCreditCapActivationMs)
+          ? config.regCreditCapActivationMs : REGISTER_CREDIT.CAP_ENFORCE_ACTIVATION_MS;
+        if (tx.timestamp >= capActiveMs
+          && String(d.reason || "").startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX)) {
+          const priorCredits = dag.getTxsByType(TX_TYPES.SCORE_UPDATE)
+            .concat(validated.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE));
+          if (regCreditRemaining(regCreditSums(priorCredits, d.tip_id, tx.timestamp)) <= 0) {
+            return { valid: false, error: `reg_credit rate cap reached for ${d.tip_id} (${d.ctid})` };
+          }
+        }
 
         return { valid: true };
       }

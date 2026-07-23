@@ -120,6 +120,11 @@ function loadConfig() {
     minScore: 0,
     dailyVerifyScoreCap: 10,      // max score gain per day from verifications
     jurorMonthlyMax: 20,      // max jury cases per TIP-ID per 30 days
+    // reg_credit cap activation override (epoch-ms). Unset => the constant.
+    // Consensus gate: MUST match on every node; for activating the cap on an
+    // isolated test cluster before the mainnet date.
+    regCreditCapActivationMs: process.env.TIP_REG_CREDIT_CAP_ACTIVATION_MS
+      ? parseInt(process.env.TIP_REG_CREDIT_CAP_ACTIVATION_MS, 10) : undefined,
 
     // ── Pre-scan (v2 FIX-03) ──────────────────────────────────────────────────
     preScanEnabled: true,

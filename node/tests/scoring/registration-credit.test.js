@@ -21,13 +21,14 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, shake256, tipNormalize, computeTxId } = require(path.join(SHARED, "crypto"));
-const { TX_TYPES, REGISTER_CREDIT, ORIGIN, VOTE, VERDICT, CONTENT_STATUS } = require(path.join(SHARED, "constants"));
+const { TX_TYPES, REGISTER_CREDIT, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TX_REJECTION_REASON } = require(path.join(SHARED, "constants"));
 const { DISPUTE, JURY, APPEAL } = require(path.join(SHARED, "protocol-constants"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createContentService } = require(path.join(SRC, "services", "content-service"));
 const { buildAdjudicationBatch, buildAppealBatch } = require(path.join(SRC, "jury"));
+const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
 const schema = require(path.join(SRC, "schemas", "content-register"));
 
 beforeAll(async () => { await initCrypto(); });
@@ -117,6 +118,66 @@ describe("registration credit — award on REGISTER_CONTENT", () => {
     await fx.contentService.register(_body(bTip, b.privateKey, "b-one"));
     expect(regCredits(fx.submitted, aTip)).toHaveLength(1);
     expect(regCredits(fx.submitted, bTip)).toHaveLength(1);
+  });
+});
+
+// ─── Commit-time cap (the burst race the emitter cannot see) ────────────────
+// A burst races past the emitter's committed-only headroom read (the
+// 16-same-day-credits bug); the commit-handler re-checks against committed +
+// in-batch credits, so the cap holds.
+
+describe("registration credit: commit-time cap under burst", () => {
+  // A committed-and-past same-UTC-day base (post reg_credit activation) so the
+  // txs clear the validator's not-in-the-future guard. The cap gate itself is
+  // driven by config.regCreditCapActivationMs, not by this timestamp.
+  const SAME_DAY = REGISTER_CREDIT.ACTIVATION_MS + 3_600_000;
+  const N = REGISTER_CREDIT.PER_DAY + 5;
+
+  // A burst of N distinct-ctid reg_credits for one author, all in the same UTC
+  // day. Distinct ctids so the (tip_id, ctid, reason) dedup does not collapse
+  // them; they are genuinely separate credits, as under real load.
+  function _burst(scoring, config, tipId) {
+    return Array.from({ length: N }, (_, i) => scoring.buildScoreUpdateTx({
+      tipId, delta: REGISTER_CREDIT.BASE,
+      reason: `${REGISTER_CREDIT.AWARD_REASON_PREFIX}tip://c/OH-burst${i}-1111`,
+      ctid: `tip://c/OH-burst${i}-1111`, relatedTxId: null,
+      timestamp: SAME_DAY + i, config,
+    }));
+  }
+
+  test("a same-day burst is clamped to PER_DAY; the rest drop with the cap reason", () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("reg-burst").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp, 500);
+    // regCreditCapActivationMs: 0 -> cap enforced for these (past) timestamps.
+    const handler = createCommitHandler({ dag: fx.dag, scoring: fx.scoring, config: { ...fx.config, regCreditCapActivationMs: 0 } });
+
+    const txs = _burst(fx.scoring, fx.config, tipId);
+    const res = handler.commitOrderedTxs(txs, 100);
+
+    expect(res.committed).toBe(REGISTER_CREDIT.PER_DAY);
+    expect(res.dropped).toBe(N - REGISTER_CREDIT.PER_DAY);
+    const droppedReasons = txs.map(t => fx.dag.getTxRejection(t.tx_id)).filter(Boolean).map(r => r.reason);
+    expect(droppedReasons).toHaveLength(N - REGISTER_CREDIT.PER_DAY);
+    expect(droppedReasons.every(r => r === TX_REJECTION_REASON.REG_CREDIT_CAP_REACHED)).toBe(true);
+    expect(fx.scoring.getScore(tipId).score).toBe(500 + REGISTER_CREDIT.PER_DAY);
+  });
+
+  test("cap gate is inert before activation (no fork during the rolling upgrade)", () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("reg-burst-inert").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp, 500);
+    // Default activation (future constant) -> these past timestamps are pre-gate.
+    const handler = createCommitHandler({ dag: fx.dag, scoring: fx.scoring, config: fx.config });
+
+    const txs = _burst(fx.scoring, fx.config, tipId);
+    const res = handler.commitOrderedTxs(txs, 100);
+
+    // Before the gate the check does not run: pre-fix behavior, all admitted.
+    expect(res.committed).toBe(N);
+    expect(res.dropped).toBe(0);
   });
 });
 
