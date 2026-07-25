@@ -390,15 +390,17 @@ describe("content register — registered_urls handling", () => {
     expect(tx.data.registered_urls).toEqual(urls);
   });
 
-  test("empty registered_urls array → 400 (at least one published URL required)", async () => {
+  test("empty registered_urls is accepted (URLs optional)", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("unpublished-signer").slice(0, 16)}`;
     _seedIdentity(fx.dag, tipId, kp);
 
     const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "unpublished content test", registered_urls: [] });
-    await expect(fx.contentService.register(body))
-      .rejects.toMatchObject({ status: 400, code: "registered_urls_required" });
+    const out = await fx.contentService.register(body);
+    expect(out.confirmation).toBe("proposed");
+    const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
+    expect(tx.data.registered_urls).toEqual([]);
   });
 
   test("non-http(s) registered_url → 400", async () => {
