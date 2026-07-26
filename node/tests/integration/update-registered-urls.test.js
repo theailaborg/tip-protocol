@@ -249,6 +249,21 @@ describe("UPDATE_REGISTERED_URLS - url exclusivity", () => {
       .toThrow(expect.objectContaining({ status: 409, code: "url_already_registered" }));
   });
 
+  test("409 carries machine-readable url + conflict_ctid (not just the message)", () => {
+    const fx = _setup();
+    fx.handler.commitOrderedTxs([_registerContentTx(fx, { ctid: CTID_A, urls: ["https://example.com/a/"], tag: "c-a" })], 10);
+    fx.handler.commitOrderedTxs([_registerContentTx(fx, { ctid: CTID_B, urls: ["https://example.com/shared/"], tag: "c-b" })], 11);
+
+    const urls = ["https://example.com/a/", "https://example.com/shared/"];
+    const body = {
+      author_tip_id: AUTHOR_TIP_ID, registered_urls: urls,
+      signature: signBody({ author_tip_id: AUTHOR_TIP_ID, ctid: CTID_A, registered_urls: urls }, fx.authorKp.privateKey),
+    };
+    let thrown;
+    try { fx.contentService.updateRegisteredUrls(CTID_A, body); } catch (e) { thrown = e; }
+    expect(thrown.details).toEqual({ url: "https://example.com/shared/", conflict_ctid: CTID_B });
+  });
+
   test("a register claiming a url an earlier in-batch update just added is dropped", () => {
     const fx = _setup();
     fx.handler.commitOrderedTxs([_registerContentTx(fx, { ctid: CTID_A, urls: ["https://example.com/a/"], tag: "c-a" })], 10);
@@ -272,6 +287,25 @@ describe("UPDATE_REGISTERED_URLS - url exclusivity", () => {
     const res = fx.handler.commitOrderedTxs([_updateUrlsTx(fx, { ctid: CTID_A, urls: ["https://example.com/a/", "https://example.com/a2/"] })], 11);
     expect(res.committed).toBe(1);
     expect(fx.dag.getContent(CTID_A).registered_urls).toEqual(["https://example.com/a/", "https://example.com/a2/"]);
+  });
+});
+
+// ─── 4b. can_update_urls gate flag on the resolve payload ────────────────────
+
+describe("UPDATE_REGISTERED_URLS - can_update_urls flag", () => {
+  test("tracks the same status list the rule enforces", async () => {
+    const fx = _setup();
+    fx.handler.commitOrderedTxs([_registerContentTx(fx, { ctid: CTID_A, urls: ["https://example.com/a/"], tag: "c-a" })], 10);
+    expect((await fx.contentService.resolve(CTID_A)).can_update_urls).toBe(true);
+
+    fx.dag.updateContentStatus(CTID_A, CONTENT_STATUS.VERIFIED);
+    expect((await fx.contentService.resolve(CTID_A)).can_update_urls).toBe(true);
+
+    fx.dag.updateContentStatus(CTID_A, CONTENT_STATUS.RETRACTED);
+    expect((await fx.contentService.resolve(CTID_A)).can_update_urls).toBe(false);
+
+    fx.dag.updateContentStatus(CTID_A, CONTENT_STATUS.DISPUTED);
+    expect((await fx.contentService.resolve(CTID_A)).can_update_urls).toBe(false);
   });
 });
 

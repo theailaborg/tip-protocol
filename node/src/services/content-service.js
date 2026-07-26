@@ -306,7 +306,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       signer_tip_id, ctid, origin_code,
       registered_urls: canonicalPayload.registered_urls,
     });
-    if (!valid) throw schemaError(error.status, error.message, error.code);
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
 
     // In-flight dedup (committed dedup is canRegisterContent above).
     if (_isRegistrationPending(ctid, signer_tip_id)) {
@@ -571,6 +571,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       },
       review_history: _projectReviewHistory(ctid),
       appeal_pending: _isAppealPending(ctid),
+      // Content-state half of the update-urls gate, from the same list the rule
+      // enforces. The caller still adds "am I the author?" (resolve is public).
+      can_update_urls: rules.UPDATE_URLS_ALLOWED_STATUSES.includes(rec.status),
       prescan: buildPrescanDescriptor({
         preScan: {
           tier: rec.prescan_tier,
@@ -690,7 +693,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     // Stateful pre-conditions — same predicate as commit-handler.
     const { valid, error } = rules.canVerify(dag, { ctid, verifier_tip_id });
-    if (!valid) throw schemaError(error.status, error.message, error.code);
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const rec = dag.getContent(ctid);
     const verifier = dag.getIdentity(verifier_tip_id);
 
@@ -773,7 +776,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // Stateful + time-window pre-conditions. Time-window uses nowMs()
     // at API call; commit-handler re-checks with cert.timestamp.
     const { valid, error } = rules.canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now: nowMs() });
-    if (!valid) throw schemaError(error.status, error.message, error.code);
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 
@@ -801,7 +804,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     contentRegisterSchema.validateRegisteredUrls(body.registered_urls);
 
     const { valid, error } = rules.canUpdateRegisteredUrls(dag, { ctid, author_tip_id: body.author_tip_id, registered_urls: body.registered_urls });
-    if (!valid) throw schemaError(error.status, error.message, error.code);
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const author = dag.getIdentity(body.author_tip_id);
 
     // Bind the signature to the specific ctid being acted on (replay
@@ -828,7 +831,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const { author_tip_id, signature } = body;
 
     const { valid, error } = rules.canRetract(dag, { ctid, author_tip_id });
-    if (!valid) throw schemaError(error.status, error.message, error.code);
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 

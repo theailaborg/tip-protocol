@@ -53,8 +53,10 @@ function ok() {
   return { valid: true };
 }
 
-function fail(status, message, code) {
-  return { valid: false, error: code ? { status, message, code } : { status, message } };
+function fail(status, message, code, details) {
+  const error = code ? { status, message, code } : { status, message };
+  if (details) error.details = details;
+  return { valid: false, error };
 }
 
 // ─── Identity / VP ─────────────────────────────────────────────────────────
@@ -149,6 +151,7 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
           409,
           `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
           "url_already_registered",
+          { url: u, conflict_ctid: live.ctid },
         );
       }
     }
@@ -281,6 +284,15 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   return ok();
 }
 
+// Statuses whose URLs the owner may still edit. Exported so the content
+// projection's `can_update_urls` flag cannot drift from the rule enforced here.
+const UPDATE_URLS_ALLOWED_STATUSES = Object.freeze([
+  CONTENT_STATUS.REGISTERED,
+  CONTENT_STATUS.PENDING_REVIEW,
+  CONTENT_STATUS.PENDING_PRESCAN,
+  CONTENT_STATUS.VERIFIED,
+]);
+
 function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) {
   // The update endpoint exists to SET published URLs, so an empty array is a
   // no-op with no legitimate use. Enforced here (not in the shared
@@ -292,10 +304,7 @@ function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) 
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
   if (author_tip_id !== rec.author_tip_id) return fail(403, "Only the content author can update registered URLs");
-  if (rec.status !== CONTENT_STATUS.REGISTERED
-    && rec.status !== CONTENT_STATUS.PENDING_REVIEW
-    && rec.status !== CONTENT_STATUS.PENDING_PRESCAN
-    && rec.status !== CONTENT_STATUS.VERIFIED) {
+  if (!UPDATE_URLS_ALLOWED_STATUSES.includes(rec.status)) {
     return fail(403, `Cannot update registered URLs: content status is '${rec.status}'`);
   }
   // URL exclusivity, same predicate + dual call sites as canRegisterContent.
@@ -312,6 +321,7 @@ function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) 
           409,
           `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
           "url_already_registered",
+          { url: u, conflict_ctid: live.ctid },
         );
       }
     }
@@ -684,6 +694,7 @@ module.exports = {
   canVerify,
   canUpdateOrigin,
   canUpdateRegisteredUrls,
+  UPDATE_URLS_ALLOWED_STATUSES,
   canRetract,
   canDispute,
   canCommitVote,
