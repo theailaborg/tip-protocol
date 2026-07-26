@@ -281,6 +281,26 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   return ok();
 }
 
+function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) {
+  // The update endpoint exists to SET published URLs, so an empty array is a
+  // no-op with no legitimate use. Enforced here (not in the shared
+  // validateRegisteredUrls, which stays 0-16 for REGISTER_CONTENT) so it
+  // rejects deterministically at both API time and commit time.
+  if (!Array.isArray(registered_urls) || registered_urls.length < 1) {
+    return fail(400, "at least one registered URL is required", "registered_urls_required");
+  }
+  const rec = dag.getContent(ctid);
+  if (!rec) return fail(404, "Content record not found");
+  if (author_tip_id !== rec.author_tip_id) return fail(403, "Only the content author can update registered URLs");
+  if (rec.status !== CONTENT_STATUS.REGISTERED
+    && rec.status !== CONTENT_STATUS.PENDING_REVIEW
+    && rec.status !== CONTENT_STATUS.PENDING_PRESCAN
+    && rec.status !== CONTENT_STATUS.VERIFIED) {
+    return fail(403, `Cannot update registered URLs: content status is '${rec.status}'`);
+  }
+  return ok();
+}
+
 function canRetract(dag, { ctid, author_tip_id }) {
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
@@ -645,6 +665,7 @@ module.exports = {
   canRegisterContent,
   canVerify,
   canUpdateOrigin,
+  canUpdateRegisteredUrls,
   canRetract,
   canDispute,
   canCommitVote,

@@ -796,6 +796,33 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return { success: true, ctid, old_origin_code: rec.origin_code, new_origin_code, tx_id: updateTx.tx_id, confirmation: "proposed" };
   }
 
+  function updateRegisteredUrls(ctid, body) {
+    validate(body, { author_tip_id: { required: true }, registered_urls: { required: true }, signature: { required: true } });
+    contentRegisterSchema.validateRegisteredUrls(body.registered_urls);
+
+    const { valid, error } = rules.canUpdateRegisteredUrls(dag, { ctid, author_tip_id: body.author_tip_id, registered_urls: body.registered_urls });
+    if (!valid) throw schemaError(error.status, error.message, error.code);
+    const author = dag.getIdentity(body.author_tip_id);
+
+    // Bind the signature to the specific ctid being acted on (replay
+    // protection, see updateOrigin above for the same pattern).
+    const UPDATE_FIELDS = ["author_tip_id", "ctid", "registered_urls"];
+    const updatePayload = { ...body, ctid };
+    if (!verifyBodySignature(updatePayload, body.signature, author.public_key, UPDATE_FIELDS)) {
+      throw schemaError(403, "Author signature verification failed", "signature_invalid");
+    }
+
+    const updateTx = withTxId({
+      tx_type: TX_TYPES.UPDATE_REGISTERED_URLS, timestamp: nowMs(),
+      data: { ctid, registered_urls: body.registered_urls, author_tip_id: body.author_tip_id },
+      signature: body.signature,
+    }, dag);
+    submitTx(updateTx);
+
+    log.info(`Registered URLs update proposed: ${ctid} (${body.registered_urls.length} urls, by ${body.author_tip_id})`);
+    return { success: true, ctid, registered_urls: body.registered_urls, tx_id: updateTx.tx_id, confirmation: "proposed" };
+  }
+
   function retract(ctid, body) {
     validate(body, { author_tip_id: { required: true }, signature: { required: true } });
     const { author_tip_id, signature } = body;
@@ -929,7 +956,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return { ctid, count: similar.length, similar };
   }
 
-  return { register, resolve, resolveForOg, list, verify, updateOrigin, retract, getPrescanStatus, findSimilar };
+  return { register, resolve, resolveForOg, list, verify, updateOrigin, updateRegisteredUrls, retract, getPrescanStatus, findSimilar };
 }
 
 module.exports = { createContentService };

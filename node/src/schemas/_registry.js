@@ -114,6 +114,15 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     }),
   },
 
+  [TX_TYPES.UPDATE_REGISTERED_URLS]: {
+    SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
+    SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
+    SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.AUTHOR_TIP_ID,
+    buildSigningPayload: (data) => buildSignedPayload(data, {
+      required: ["author_tip_id", "ctid", "registered_urls"],
+    }),
+  },
+
   [TX_TYPES.CONTENT_RETRACTED]: {
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.SUBJECT,

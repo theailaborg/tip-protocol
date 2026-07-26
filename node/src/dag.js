@@ -656,6 +656,10 @@ class MemoryStore {
     const rec = this._content.get(ctid);
     if (rec) this._content.set(ctid, { ...rec, origin_code: originCode, status });
   }
+  updateContentUrls(ctid, registeredUrls) {
+    const rec = this._content.get(ctid);
+    if (rec) this._content.set(ctid, { ...rec, registered_urls: Array.isArray(registeredUrls) ? registeredUrls : [] });
+  }
   // Read-model only (never hashed): CONTENT_VERIFIED/CONTENT_DISPUTED volume per ctid.
   incrementContentCounter(ctid, field) {
     if (field !== "verification_count" && field !== "dispute_count") return;
@@ -2444,6 +2448,7 @@ class SQLiteStore {
       contentCount: this.db.prepare("SELECT COUNT(*) AS n FROM content"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE tip_ctid=?"),
       updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE tip_ctid=?"),
+      updateContentUrls: this.db.prepare("UPDATE content SET registered_urls=? WHERE tip_ctid=?"),
       incVerificationCount: this.db.prepare("UPDATE content SET verification_count = verification_count + 1 WHERE tip_ctid=?"),
       incDisputeCount: this.db.prepare("UPDATE content SET dispute_count = dispute_count + 1 WHERE tip_ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
@@ -3219,6 +3224,9 @@ class SQLiteStore {
   contentCount() { return this._stmts.contentCount.get().n; }
   updateContentStatus(ctid, status) { this._stmts.updateContentStatus.run(status, ctid); }
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
+  updateContentUrls(ctid, registeredUrls) {
+    this._stmts.updateContentUrls.run(JSON.stringify(Array.isArray(registeredUrls) ? registeredUrls : []), ctid);
+  }
   incrementContentCounter(ctid, field) {
     const stmt = field === "verification_count" ? this._stmts.incVerificationCount
       : field === "dispute_count" ? this._stmts.incDisputeCount : null;
@@ -4501,6 +4509,7 @@ function _buildDagHandle(store, config) {
     contentCount: () => store.contentCount(),
     updateContentStatus: (ctid, s) => store.updateContentStatus(ctid, s),
     updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
+    updateContentUrls: (ctid, urls) => store.updateContentUrls(ctid, urls),
     incrementContentCounter: (ctid, f) => store.incrementContentCounter(ctid, f),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
     getContentByStatus: (s) => store.getContentByStatus(s),

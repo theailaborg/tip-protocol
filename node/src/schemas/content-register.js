@@ -96,6 +96,37 @@ function _checkAuthorsRegistered(authors, dag) {
 }
 
 /**
+ * Per-entry canonical validation for registered_urls (<=16, canonical http(s),
+ * no #fragment). Shared so REGISTER_CONTENT and UPDATE_REGISTERED_URLS agree.
+ */
+function validateRegisteredUrls(urls) {
+  if (!Array.isArray(urls)) {
+    throw schemaError(400, "registered_urls must be an array of strings", "registered_urls_invalid");
+  }
+  if (urls.length > 16) {
+    throw schemaError(400, "registered_urls: at most 16 entries", "registered_urls_invalid");
+  }
+  for (const u of urls) {
+    if (typeof u !== "string" || u.length > 2048) {
+      throw schemaError(400, "registered_urls entries must be strings of at most 2048 chars", "registered_urls_invalid");
+    }
+    let parsed;
+    try { parsed = new URL(u); } catch {
+      throw schemaError(400, `registered_urls entry is not a valid URL: ${u}`, "registered_urls_invalid");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw schemaError(400, "registered_urls entries must be http(s) URLs", "registered_urls_invalid");
+    }
+    if (parsed.hash !== "") {
+      throw schemaError(400, `registered_urls entries must not carry a #fragment: ${u}`, "registered_urls_invalid");
+    }
+    if (u !== parsed.href) {
+      throw schemaError(400, `registered_urls entry is not canonical (expected ${parsed.href}): ${u}`, "registered_urls_invalid");
+    }
+  }
+}
+
+/**
  * Comprehensive request-envelope validator for POST /v1/content/register.
  * Single gate — runs before any crypto work and covers:
  *
@@ -184,32 +215,7 @@ function validateRequest(body, deps) {
   // registered_urls (optional): 0 to 16 published URLs, index 0 = canonical.
   // Provided entries bind to the signature, so they must already be canonical
   // (clients canonicalize before signing; query params stay, e.g. watch?v=).
-  if (body.registered_urls != null) {
-    if (!Array.isArray(body.registered_urls)) {
-      throw schemaError(400, "registered_urls must be an array of strings", "registered_urls_invalid");
-    }
-    if (body.registered_urls.length > 16) {
-      throw schemaError(400, "registered_urls: at most 16 entries", "registered_urls_invalid");
-    }
-    for (const u of body.registered_urls) {
-      if (typeof u !== "string" || u.length > 2048) {
-        throw schemaError(400, "registered_urls entries must be strings of at most 2048 chars", "registered_urls_invalid");
-      }
-      let parsed;
-      try { parsed = new URL(u); } catch {
-        throw schemaError(400, `registered_urls entry is not a valid URL: ${u}`, "registered_urls_invalid");
-      }
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        throw schemaError(400, "registered_urls entries must be http(s) URLs", "registered_urls_invalid");
-      }
-      if (parsed.hash !== "") {
-        throw schemaError(400, `registered_urls entries must not carry a #fragment: ${u}`, "registered_urls_invalid");
-      }
-      if (u !== parsed.href) {
-        throw schemaError(400, `registered_urls entry is not canonical (expected ${parsed.href}): ${u}`, "registered_urls_invalid");
-      }
-    }
-  }
+  if (body.registered_urls != null) validateRegisteredUrls(body.registered_urls);
 
   // authors[] shape — ≥1 entry, each carrying a tip://id/... string —
   // checked here so we can confidently DAG-look-up every author below.
@@ -600,6 +606,7 @@ module.exports = {
   AUTHOR_KEYS,
   ORIGIN_CODES,
   validateRequest,
+  validateRegisteredUrls,
   resolveSigner,
   buildSigningPayload,
   mediaCanonicalHash,

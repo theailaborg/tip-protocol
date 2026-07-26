@@ -75,6 +75,7 @@ function subjectTipIds(tx) {
       // mode the signer is the author.
       return _clean([d.signer_tip_id]);
     case TX_TYPES.UPDATE_ORIGIN:
+    case TX_TYPES.UPDATE_REGISTERED_URLS:
     case TX_TYPES.CONTENT_RETRACTED:
       return _clean([d.author_tip_id]);
 
