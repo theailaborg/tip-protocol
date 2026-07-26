@@ -53,8 +53,10 @@ function ok() {
   return { valid: true };
 }
 
-function fail(status, message, code) {
-  return { valid: false, error: code ? { status, message, code } : { status, message } };
+function fail(status, message, code, details) {
+  const error = code ? { status, message, code } : { status, message };
+  if (details) error.details = details;
+  return { valid: false, error };
 }
 
 // ─── Identity / VP ─────────────────────────────────────────────────────────
@@ -149,6 +151,7 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
           409,
           `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
           "url_already_registered",
+          { url: u, conflict_ctid: live.ctid },
         );
       }
     }
@@ -278,6 +281,51 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   if (!author) return fail(404, "Author identity not found");
   if (dag.isRevoked(author_tip_id)) return fail(403, "Author TIP-ID is revoked");
 
+  return ok();
+}
+
+// Statuses whose URLs the owner may still edit. Exported so the content
+// projection's `can_update_urls` flag cannot drift from the rule enforced here.
+const UPDATE_URLS_ALLOWED_STATUSES = Object.freeze([
+  CONTENT_STATUS.REGISTERED,
+  CONTENT_STATUS.PENDING_REVIEW,
+  CONTENT_STATUS.PENDING_PRESCAN,
+  CONTENT_STATUS.VERIFIED,
+]);
+
+function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) {
+  // The update endpoint exists to SET published URLs, so an empty array is a
+  // no-op with no legitimate use. Enforced here (not in the shared
+  // validateRegisteredUrls, which stays 0-16 for REGISTER_CONTENT) so it
+  // rejects deterministically at both API time and commit time.
+  if (!Array.isArray(registered_urls) || registered_urls.length < 1) {
+    return fail(400, "at least one registered URL is required", "registered_urls_required");
+  }
+  const rec = dag.getContent(ctid);
+  if (!rec) return fail(404, "Content record not found");
+  if (author_tip_id !== rec.author_tip_id) return fail(403, "Only the content author can update registered URLs");
+  if (!UPDATE_URLS_ALLOWED_STATUSES.includes(rec.status)) {
+    return fail(403, `Cannot update registered URLs: content status is '${rec.status}'`);
+  }
+  // URL exclusivity, same predicate + dual call sites as canRegisterContent.
+  // Only urls NEW to this ctid are checked, so re-declaring your own is valid;
+  // a retracted claimant releases its url.
+  const owned = new Set(Array.isArray(rec.registered_urls) ? rec.registered_urls : []);
+  if (typeof dag.listContent === "function") {
+    for (const u of registered_urls) {
+      if (typeof u !== "string" || !u || owned.has(u)) continue;
+      const claimants = dag.listContent({ url: u, limit: 100 });
+      const live = claimants.find(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
+      if (live) {
+        return fail(
+          409,
+          `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
+          "url_already_registered",
+          { url: u, conflict_ctid: live.ctid },
+        );
+      }
+    }
+  }
   return ok();
 }
 
@@ -645,6 +693,8 @@ module.exports = {
   canRegisterContent,
   canVerify,
   canUpdateOrigin,
+  canUpdateRegisteredUrls,
+  UPDATE_URLS_ALLOWED_STATUSES,
   canRetract,
   canDispute,
   canCommitVote,

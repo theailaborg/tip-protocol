@@ -95,9 +95,10 @@ function pickFields(input, fieldNames) {
  * input fails schema validation. Caller (service or commit-handler)
  * surfaces { status, error } at the API or rejects the tx.
  */
-function schemaError(status, message, code) {
+function schemaError(status, message, code, details) {
   const e = { status, error: message };
   if (code) e.code = code;
+  if (details) e.details = details;
   return e;
 }
 

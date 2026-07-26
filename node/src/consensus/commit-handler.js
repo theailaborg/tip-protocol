@@ -166,6 +166,7 @@ function _actorTipId(tx) {
       return d.verifier_tip_id ?? null;
     case TX_TYPES.CONTENT_RETRACTED:
     case TX_TYPES.UPDATE_ORIGIN:
+    case TX_TYPES.UPDATE_REGISTERED_URLS:
       return d.author_tip_id ?? null;
     case TX_TYPES.CONTENT_DISPUTED:
       return d.disputer_tip_id ?? null;
@@ -638,8 +639,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           ? d.registered_urls.filter(u => typeof u === "string" && u)
           : [];
         if (urls.length > 0) {
+          // UPDATE_REGISTERED_URLS counts too: ordered before a register that
+          // claims the same url, its urls are not committed yet, so only this
+          // in-batch scan stops the url binding to two CTIDs.
           const urlHit = validated.find(t =>
-            t.tx_type === TX_TYPES.REGISTER_CONTENT
+            (t.tx_type === TX_TYPES.REGISTER_CONTENT || t.tx_type === TX_TYPES.UPDATE_REGISTERED_URLS)
             && Array.isArray(t.data?.registered_urls)
             && t.data.registered_urls.some(u => urls.includes(u)));
           if (urlHit) {
@@ -815,6 +819,37 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         return { valid: true };
       }
 
+      case TX_TYPES.UPDATE_REGISTERED_URLS: {
+        // One url update per ctid per batch. Not a content-status mutator, so
+        // no Family A sibling guard: it doesn't compete with dispute/verify.
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.UPDATE_REGISTERED_URLS && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate UPDATE_REGISTERED_URLS in batch for ${d.ctid}` };
+        // URL exclusivity for NEWLY-ADDED urls (not already on this ctid): a url
+        // must not be live-claimed by another ctid. Same listContent({url})
+        // primitive REGISTER_CONTENT uses (canRegisterContent committed side +
+        // in-batch scan), so committed + same-round enforcement is store-identical.
+        const rec = dag.getContent(d.ctid);
+        const owned = new Set(Array.isArray(rec?.registered_urls) ? rec.registered_urls : []);
+        const added = (Array.isArray(d.registered_urls) ? d.registered_urls : [])
+          .filter(u => typeof u === "string" && u && !owned.has(u));
+        for (const u of added) {
+          const claimants = typeof dag.listContent === "function" ? dag.listContent({ url: u, limit: 100 }) : [];
+          const live = claimants.find(c => c.ctid !== d.ctid && c.status !== CONTENT_STATUS.RETRACTED);
+          if (live) return { valid: false, error: `registered_url already claimed by another content (CTID: ${live.ctid}): ${u}` };
+        }
+        if (added.length > 0) {
+          const batchHit = validated.find(t =>
+            (t.tx_type === TX_TYPES.REGISTER_CONTENT || t.tx_type === TX_TYPES.UPDATE_REGISTERED_URLS)
+            && t.data?.ctid !== d.ctid
+            && Array.isArray(t.data?.registered_urls)
+            && t.data.registered_urls.some(u => added.includes(u)));
+          if (batchHit) return { valid: false, error: `registered_url already claimed in this batch (CTID: ${batchHit.data.ctid})` };
+        }
+        return { valid: true };
+      }
+
       case TX_TYPES.CONTENT_RETRACTED: {
         // State write is idempotent, and the paired SCORE_UPDATE is
         // already collapsed by the SCORE_UPDATE (tip_id, ctid, reason)
@@ -930,6 +965,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const r = rules.canUpdateOrigin(dag, {
           ctid: d.ctid, author_tip_id: d.author_tip_id, new_origin_code: d.new_origin_code,
         }, { now });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.UPDATE_REGISTERED_URLS: {
+        const r = rules.canUpdateRegisteredUrls(dag, { ctid: d.ctid, author_tip_id: d.author_tip_id, registered_urls: d.registered_urls });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
@@ -1364,6 +1404,12 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
               decided_at_round: round,
             });
           }
+        }
+        break;
+
+      case TX_TYPES.UPDATE_REGISTERED_URLS:
+        if (d.ctid && Array.isArray(d.registered_urls)) {
+          dag.updateContentUrls(d.ctid, d.registered_urls);
         }
         break;
 

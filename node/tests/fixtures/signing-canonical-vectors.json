@@ -17,6 +17,18 @@
     },
     "canonical": "{\"author_tip_id\":\"tip://id/US-author\",\"ctid\":\"ctid-deadbeef\",\"new_origin_code\":\"AA\"}"
   },
+  "UPDATE_REGISTERED_URLS:base": {
+    "tx_type": "UPDATE_REGISTERED_URLS",
+    "data": {
+      "author_tip_id": "tip://id/US-author",
+      "ctid": "ctid-deadbeef",
+      "registered_urls": [
+        "https://example.com/a/",
+        "https://example.com/b/"
+      ]
+    },
+    "canonical": "{\"author_tip_id\":\"tip://id/US-author\",\"ctid\":\"ctid-deadbeef\",\"registered_urls\":[\"https://example.com/a/\",\"https://example.com/b/\"]}"
+  },
   "CONTENT_RETRACTED:base": {
     "tx_type": "CONTENT_RETRACTED",
     "data": {

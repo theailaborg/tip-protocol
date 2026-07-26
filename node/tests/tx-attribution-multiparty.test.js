@@ -137,6 +137,7 @@ describe("subjectTipIds — completeness guard (every tx_type classified)", () =
     // Author / actor single-party
     [TX_TYPES.REGISTER_CONTENT]: ["signer_tip_id"],
     [TX_TYPES.UPDATE_ORIGIN]: ["author_tip_id"],
+    [TX_TYPES.UPDATE_REGISTERED_URLS]: ["author_tip_id"],
     [TX_TYPES.CONTENT_RETRACTED]: ["author_tip_id"],
     [TX_TYPES.CONTENT_VERIFIED]: ["verifier_tip_id"],
     [TX_TYPES.JURY_SUMMONS]: ["juror_tip_id"],

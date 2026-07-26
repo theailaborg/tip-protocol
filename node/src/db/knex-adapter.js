@@ -1236,6 +1236,12 @@ class KnexAdapter {
     this._ff(() => this._k("content").where("tip_ctid", ctid).update({ origin_code: originCode, status }));
   }
 
+  updateContentUrls(ctid, registeredUrls) {
+    this.mirror.updateContentUrls(ctid, registeredUrls);
+    const urls = Array.isArray(registeredUrls) ? registeredUrls : [];
+    this._ff(() => this._k("content").where("tip_ctid", ctid).update({ registered_urls: JSON.stringify(urls) }));
+  }
+
   incrementContentCounter(ctid, field) {
     if (field !== "verification_count" && field !== "dispute_count") return;
     this.mirror.incrementContentCounter(ctid, field);
