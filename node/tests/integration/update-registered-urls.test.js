@@ -235,6 +235,20 @@ describe("UPDATE_REGISTERED_URLS - url exclusivity", () => {
     expect(fx.dag.getContent(CTID_A).registered_urls).toEqual(["https://example.com/a/"]);
   });
 
+  test("adding another content's url → 409 at the service gate (not a silent commit drop)", () => {
+    const fx = _setup();
+    fx.handler.commitOrderedTxs([_registerContentTx(fx, { ctid: CTID_A, urls: ["https://example.com/a/"], tag: "c-a" })], 10);
+    fx.handler.commitOrderedTxs([_registerContentTx(fx, { ctid: CTID_B, urls: ["https://example.com/shared/"], tag: "c-b" })], 11);
+
+    const urls = ["https://example.com/a/", "https://example.com/shared/"];
+    const body = {
+      author_tip_id: AUTHOR_TIP_ID, registered_urls: urls,
+      signature: signBody({ author_tip_id: AUTHOR_TIP_ID, ctid: CTID_A, registered_urls: urls }, fx.authorKp.privateKey),
+    };
+    expect(() => fx.contentService.updateRegisteredUrls(CTID_A, body))
+      .toThrow(expect.objectContaining({ status: 409, code: "url_already_registered" }));
+  });
+
   test("a register claiming a url an earlier in-batch update just added is dropped", () => {
     const fx = _setup();
     fx.handler.commitOrderedTxs([_registerContentTx(fx, { ctid: CTID_A, urls: ["https://example.com/a/"], tag: "c-a" })], 10);

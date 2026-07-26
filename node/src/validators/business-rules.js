@@ -298,6 +298,24 @@ function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) 
     && rec.status !== CONTENT_STATUS.VERIFIED) {
     return fail(403, `Cannot update registered URLs: content status is '${rec.status}'`);
   }
+  // URL exclusivity, same predicate + dual call sites as canRegisterContent.
+  // Only urls NEW to this ctid are checked, so re-declaring your own is valid;
+  // a retracted claimant releases its url.
+  const owned = new Set(Array.isArray(rec.registered_urls) ? rec.registered_urls : []);
+  if (typeof dag.listContent === "function") {
+    for (const u of registered_urls) {
+      if (typeof u !== "string" || !u || owned.has(u)) continue;
+      const claimants = dag.listContent({ url: u, limit: 100 });
+      const live = claimants.find(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
+      if (live) {
+        return fail(
+          409,
+          `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
+          "url_already_registered",
+        );
+      }
+    }
+  }
   return ok();
 }
 
