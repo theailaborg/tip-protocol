@@ -260,6 +260,41 @@ describe("GH #85 — canonical-payload regression: optional-field-absent paths a
     expect(payload.creator_name).toBe("Alice");
   });
 
+  const _biomBase = {
+    public_key: "a".repeat(64),
+    dedup_hash: "b".repeat(64),
+    zk_proof: { proof: "x" },
+    vp_id: "tip://vp/v1",
+  };
+
+  test("REGISTER_IDENTITY — biometric_commit absent: buildSigningPayload omits it", () => {
+    const payload = registerIdentity.buildSigningPayload({ ..._biomBase });
+    expect(payload).not.toHaveProperty("biometric_commit");
+  });
+
+  test("REGISTER_IDENTITY — biometric_commit null: treated same as absent", () => {
+    const withNull   = registerIdentity.buildSigningPayload({ ..._biomBase, biometric_commit: null });
+    const withAbsent = registerIdentity.buildSigningPayload({ ..._biomBase });
+    expect(withNull).toEqual(withAbsent);
+    expect(withNull).not.toHaveProperty("biometric_commit");
+  });
+
+  test("REGISTER_IDENTITY — biometric_commit present: buildSigningPayload includes it", () => {
+    const commit = "c".repeat(64);
+    const payload = registerIdentity.buildSigningPayload({ ..._biomBase, biometric_commit: commit });
+    expect(payload.biometric_commit).toBe(commit);
+  });
+
+  test("REGISTER_IDENTITY — biometric_commit malformed: rejected", () => {
+    // schemaError() throws a plain { status, error, code } object (not an
+    // Error instance), so assert via objectContaining — same convention as
+    // bind-domain.test.js / register-domain.test.js / interest-registered.test.js.
+    expect(() => registerIdentity.buildSigningPayload({ ..._biomBase, biometric_commit: "XYZ" }))
+      .toThrow(expect.objectContaining({ status: 400, code: "biometric_commit_invalid" }));
+    expect(() => registerIdentity.buildSigningPayload({ ..._biomBase, biometric_commit: "A".repeat(64) }))
+      .toThrow(expect.objectContaining({ status: 400, code: "biometric_commit_invalid" }));
+  });
+
   // ── VP_REGISTERED / NODE_REGISTERED (server-default injection) ────────────────
   // These differ from the strip cases above: jurisdiction_tier / name are NOT
   // stripped-when-absent — the service injects a default ("green" / node-derived)
