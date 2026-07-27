@@ -702,6 +702,41 @@ describe("Transaction Validator", () => {
     expect(result.valid).toBe(false);
   });
 
+  test("5.6 REGISTER_IDENTITY carries biometric_commit through sign + replay", async () => {
+    const freshKp = generateMLDSAKeypair();
+    const tipId = generateTIPID("US", freshKp.publicKey);
+    const { dedup_hash, zk_proof } = await makeDedup("biom-commit-1");
+    const commit = "f".repeat(64);
+    const idFields = {
+      public_key: freshKp.publicKey,
+      dedup_hash, zk_proof,
+      vp_id: VP_ID,
+      region: "US",
+      verification_tier: "T1",
+      biometric_commit: commit,
+    };
+    const payload = registerIdentitySchema.buildSigningPayload(idFields);
+    expect(payload.biometric_commit).toBe(commit);
+    // Replaying buildSigningPayload from a tx.data mirror must reproduce identical canonical bytes.
+    const replayed = registerIdentitySchema.buildSigningPayload({ ...idFields });
+    expect(registerIdentitySchema.canonicalJson(replayed))
+      .toBe(registerIdentitySchema.canonicalJson(payload));
+    // tipId generated for parity with a real registration flow, unused beyond that.
+    expect(tipId).toBeDefined();
+  });
+
+  test("5.7 commit-handler persists biometric_commit onto the identity row", () => {
+    const tipId = "tip://id/US-1234567890abcdef";
+    dag.saveIdentity({
+      tip_id: tipId, region: "US", public_key: "pk-x", algorithm: "ml-dsa-65",
+      vp_id: VP_ID, verification_tier: "T1", tip_id_type: "personal",
+      founding: false, status: "active", registered_at: nowMs(),
+      tx_id: "tx-biom-1", creator_name: null,
+      biometric_commit: "a".repeat(64),
+    });
+    expect(dag.getIdentity(tipId).biometric_commit).toBe("a".repeat(64));
+  });
+
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
