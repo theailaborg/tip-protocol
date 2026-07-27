@@ -2238,6 +2238,10 @@ class SQLiteStore {
     if (!idCols.includes("creator_name")) {
       this.db.exec("ALTER TABLE identities ADD COLUMN creator_name TEXT");
     }
+    // Backfill biometric_commit column for pre-existing identities tables
+    if (!idCols.includes("biometric_commit")) {
+      this.db.exec("ALTER TABLE identities ADD COLUMN biometric_commit TEXT");
+    }
     // #50: backfill anchor_batch_hash column for pre-existing commits tables.
     // Older rows (written before #50) have NULL — snapshot serving still
     // tries the cert lookup as a fallback for them, which fails if the
