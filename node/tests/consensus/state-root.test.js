@@ -182,6 +182,7 @@ describe("state_merkle_root", () => {
             vp_id: "vp:founding", verification_tier: "T1",
             founding: false, status: "active",
             registered_at: 1767225600000, tx_id: "tx-alpha",
+            biometric_commit: "d".repeat(64),
           };
           sqliteDag.saveIdentity(rec); memDag.saveIdentity(rec);
         },
