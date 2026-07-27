@@ -98,6 +98,7 @@ function _canonIdentity(r) {
     expert_consent: r.expert_consent ? 1 : 0,
     registered_at: r.registered_at,
     creator_name: r.creator_name || null,
+    biometric_commit: r.biometric_commit || null,
     tx_id: r.tx_id || null,
   };
 }
@@ -2430,8 +2431,8 @@ class SQLiteStore {
             reviewer_consent,juror_consent,expert_consent,
             interests,
             registered_at,creator_name,tx_id,
-            org_type)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            org_type,biometric_commit)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       // GH #60 — JOIN with active entity_keys row so existing callers
       // of getIdentity(id).public_key keep working. valid_to_ts IS NULL
@@ -3164,7 +3165,7 @@ class SQLiteStore {
       rec.expert_consent ? 1 : 0,
       JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
       rec.registered_at, rec.creator_name || null, rec.tx_id || null,
-      rec.org_type || null
+      rec.org_type || null, rec.biometric_commit || null
     );
   }
   getIdentity(id) {

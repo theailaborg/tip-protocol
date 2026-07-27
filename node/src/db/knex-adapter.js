@@ -884,6 +884,7 @@ class KnexAdapter {
       interests: JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
       registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
+      biometric_commit: rec.biometric_commit || null,
       tx_id: rec.tx_id || null,
       org_type: rec.org_type || null,
     };
