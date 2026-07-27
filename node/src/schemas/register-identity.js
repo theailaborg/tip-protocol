@@ -154,9 +154,10 @@ function validateRequest(body, deps) {
 }
 
 /**
- * Build the canonical 9-field signed payload. All fields always
- * present; defaults fill in for omitted optionals. Reject-on-extra:
- * picks exactly these 9 keys.
+ * Build the canonical signed payload (8 required fields always present;
+ * defaults fill in for omitted optionals). The 2 optional fields
+ * (creator_name, biometric_commit) are stripped when absent, so the
+ * payload carries 8-10 keys. Reject-on-extra: picks exactly these keys.
  */
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {
