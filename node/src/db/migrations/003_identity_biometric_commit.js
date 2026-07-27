@@ -1,8 +1,8 @@
 // consensus-affecting: `identities` is projected into state_merkle_root via
 // _canonIdentity, so every node MUST apply this to carry biometric_commit on
 // the canonical row. Optional nullable hex column — existing rows get NULL
-// (strip-rule: identities registered without a biometric commit hash to the
-// same canonical bytes as before this column existed).
+// (strip-rule: identities registered without a biometric_commit still produce
+// the same canonical bytes as before this column existed).
 
 "use strict";
 
