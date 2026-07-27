@@ -217,6 +217,38 @@ describe("state_merkle_root", () => {
       }
     }
   });
+
+  test("biometric_commit is bound into state_merkle_root (differs-in-field ⇒ differs-in-root)", () => {
+    // Consensus-binding guard: two identities that differ ONLY in
+    // biometric_commit MUST hash to different roots, and present-vs-absent MUST
+    // differ. If biometric_commit were dropped from _canonIdentity, all three
+    // canonical rows would be identical and this test would fail — catching a
+    // silent un-binding of the field from consensus that the store-parity and
+    // snapshot tests cannot (they only check the two stores agree with each
+    // other, which stays true even if the field is dropped from the shaper).
+    const base = {
+      tip_id: "tip:dev:us:biom", region: "US",
+      public_key: "aa", vp_id: "vp:founding", verification_tier: "T1",
+      founding: false, status: "active",
+      registered_at: 1767225600000, tx_id: "tx-biom",
+    };
+    let withA, withB, without;
+    try {
+      withA   = initDAG({ dbPath: ":memory:" });
+      withB   = initDAG({ dbPath: ":memory:" });
+      without = initDAG({ dbPath: ":memory:" });
+      withA.saveIdentity({ ...base, biometric_commit: "a".repeat(64) });
+      withB.saveIdentity({ ...base, biometric_commit: "b".repeat(64) });
+      without.saveIdentity({ ...base }); // no biometric_commit → canonicalizes to null
+      const rootA = computeStateMerkleRoot(withA);
+      const rootB = computeStateMerkleRoot(withB);
+      const rootNone = computeStateMerkleRoot(without);
+      expect(rootA).not.toBe(rootB);     // differ only in biometric_commit value
+      expect(rootA).not.toBe(rootNone);  // present vs absent must differ
+    } finally {
+      for (const d of [withA, withB, without]) { try { d?.close?.(); } catch { /* ignore */ } }
+    }
+  });
 });
 
 describe("txs_merkle_root", () => {
