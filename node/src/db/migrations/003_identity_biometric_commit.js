@@ -1,8 +1,11 @@
 // consensus-affecting: `identities` is projected into state_merkle_root via
-// _canonIdentity, so every node MUST apply this to carry biometric_commit on
-// the canonical row. Optional nullable hex column — existing rows get NULL
-// (strip-rule: identities registered without a biometric_commit still produce
-// the same canonical bytes as before this column existed).
+// _canonIdentity, which emits `biometric_commit` for EVERY identity (null for
+// rows registered before this field). Because canonicalJson keeps null values,
+// this changes each identity's canonical leaf — and thus state_merkle_root —
+// even for pre-existing rows. Roll out COORDINATED (all nodes together /
+// genesis-gated), NOT as a rolling upgrade, or old-vs-new nodes will fork.
+// (Distinct from the signing-payload strip-rule in register-identity.js, which
+// IS byte-identical when biometric_commit is absent — do not conflate the two.)
 
 "use strict";
 
