@@ -702,11 +702,25 @@ describe("Transaction Validator", () => {
     expect(result.valid).toBe(false);
   });
 
-  test("5.6 REGISTER_IDENTITY carries biometric_commit through sign + replay", async () => {
+  // NOTE: the commit-handler-side persistence guard for biometric_commit
+  // (consensus replay: tx.data -> _applyDerivedState -> dag.saveIdentity)
+  // lives in tests/consensus/commit-handler-biometric-commit.test.js —
+  // it routes a REAL signed REGISTER_IDENTITY tx through
+  // commitHandler.commitOrderedTxs so it's sensitive to the
+  // `biometric_commit: d.biometric_commit || null` line in commit-handler.js
+  // (mutation-verified: reverting that line fails both tests there).
+  test("5.6 identity-service.register mirrors biometric_commit onto tx.data (end-to-end, guards the service-side mirror line)", async () => {
+    const { createIdentityService } = require(path.join(SRC, "services", "identity-service"));
     const freshKp = generateMLDSAKeypair();
-    const tipId = generateTIPID("US", freshKp.publicKey);
-    const { dedup_hash, zk_proof } = await makeDedup("biom-commit-1");
+    const { dedup_hash, zk_proof } = await makeDedup("biom-commit-service-1");
     const commit = "f".repeat(64);
+
+    let capturedTx = null;
+    const svc = createIdentityService({
+      dag, scoring, config: TEST_CONFIG,
+      submitTx: (tx) => { capturedTx = tx; },
+    });
+
     const idFields = {
       public_key: freshKp.publicKey,
       dedup_hash, zk_proof,
@@ -715,26 +729,16 @@ describe("Transaction Validator", () => {
       verification_tier: "T1",
       biometric_commit: commit,
     };
-    const payload = registerIdentitySchema.buildSigningPayload(idFields);
-    expect(payload.biometric_commit).toBe(commit);
-    // Replaying buildSigningPayload from a tx.data mirror must reproduce identical canonical bytes.
-    const replayed = registerIdentitySchema.buildSigningPayload({ ...idFields });
-    expect(registerIdentitySchema.canonicalJson(replayed))
-      .toBe(registerIdentitySchema.canonicalJson(payload));
-    // tipId generated for parity with a real registration flow, unused beyond that.
-    expect(tipId).toBeDefined();
-  });
+    const vpSig = _signIdentity(idFields, vpKeypair.privateKey);
 
-  test("5.7 commit-handler persists biometric_commit onto the identity row", () => {
-    const tipId = "tip://id/US-1234567890abcdef";
-    dag.saveIdentity({
-      tip_id: tipId, region: "US", public_key: "pk-x", algorithm: "ml-dsa-65",
-      vp_id: VP_ID, verification_tier: "T1", tip_id_type: "personal",
-      founding: false, status: "active", registered_at: nowMs(),
-      tx_id: "tx-biom-1", creator_name: null,
-      biometric_commit: "a".repeat(64),
-    });
-    expect(dag.getIdentity(tipId).biometric_commit).toBe("a".repeat(64));
+    const result = await svc.register({ ...idFields, vp_signature: vpSig });
+    expect(result.tip_id).toBeDefined();
+    expect(capturedTx).not.toBeNull();
+    // Guards identity-service.js's
+    // `biometric_commit: canonicalPayload.biometric_commit,` line in
+    // txBody.data — reverting that line drops the key from the submitted
+    // tx, so this assertion fails (mutation-verified below).
+    expect(capturedTx.data.biometric_commit).toBe(commit);
   });
 
 });
