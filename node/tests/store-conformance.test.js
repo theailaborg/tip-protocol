@@ -245,6 +245,18 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(active).toEqual(expect.objectContaining({ public_key: `pk-${tipId}`, algorithm: "ml-dsa-65" }));
   });
 
+  test("identity saved without biometric_commit round-trips as nullish (both stores)", async () => {
+    const dag = await makeDag();
+    const tipId = uniq("US-id-nobc");
+    const rec = identityRec(tipId);
+    delete rec.biometric_commit;
+    dag.saveIdentity(rec);
+    // Absent on input: MemoryStore yields undefined, SQLite/Knex yield null.
+    // _canonIdentity normalizes both to null, so state_merkle_root stays in
+    // parity across stores — pin the nullish contract here.
+    expect(dag.getIdentity(tipId).biometric_commit ?? null).toBe(null);
+  });
+
   test("key rotation closes the prior key and getKeyValidAt selects by timestamp", async () => {
     const dag = await makeDag();
     const tipId = uniq("US-rot");
