@@ -109,6 +109,7 @@ function identityRec(tipId, overrides = {}) {
     region: "US",
     public_key: `pk-${tipId}`,
     algorithm: "ml-dsa-65",
+    biometric_commit: "a".repeat(64),
     ...overrides,
   };
 }
@@ -238,6 +239,7 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(got.verification_tier).toBe("VERIFIED");
     expect(got.public_key).toBe(`pk-${tipId}`);
     expect(got.algorithm).toBe("ml-dsa-65");
+    expect(got.biometric_commit).toBe("a".repeat(64));
 
     const active = dag.getActiveKey("identity", tipId);
     expect(active).toEqual(expect.objectContaining({ public_key: `pk-${tipId}`, algorithm: "ml-dsa-65" }));
