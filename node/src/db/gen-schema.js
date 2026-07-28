@@ -35,15 +35,16 @@ const OUT = path.join(__dirname, "schema.sql");
 
 // Indexes intentionally EXCLUDED from schema.sql because dag.js `_migrate()`
 // creates them AFTER its conditional ALTER backfills. They index columns
-// (subject_tip_id) that may be added via ALTER on a DB that predates the
-// column; emitting the CREATE INDEX here would throw "no such column" when
-// schema.sql is exec'd on such a pre-existing DB and cascade to the in-memory
-// fallback (a live-observed incident). On a fresh DB the trailing
+// (subject_tip_id, parent_url) that may be added via ALTER on a DB that
+// predates the column; emitting the CREATE INDEX here would throw "no such
+// column" when schema.sql is exec'd on such a pre-existing DB and cascade to
+// the in-memory fallback (a live-observed incident). On a fresh DB the trailing
 // CREATE INDEX IF NOT EXISTS still creates them, so coverage is unchanged.
 const DEFERRED_INDEXES = new Set([
   "idx_txs_subject",
   "idx_mempool_subject",
   "idx_tx_rej_subject",
+  "idx_content_parent_url",
 ]);
 
 function addIfNotExists(sql) {

@@ -914,6 +914,16 @@ const REGISTER_CREDIT = Object.freeze({
   RESTORE_REASON_PREFIX: "reg_credit_restore:",
 });
 
+// GET /v1/content?parent_url= read gating. parent_url is an unverified
+// assertion (any content may claim any parent) and is never exclusivity-checked,
+// so the lookup caps the scan, drops sub-VERIFIED authors, and returns one entry
+// per author, which is the actual Sybil bound.
+const PARENT_URL_LOOKUP = Object.freeze({
+  SCAN_LIMIT: 500,
+  MAX_RESULTS: 50,
+  MIN_TIERS: Object.freeze(["VERIFIED", "TRUSTED", "HIGHLY_TRUSTED"]),
+});
+
 // Fail-open PRESCAN_COMPLETED re-emission cooldown per ctid: a dropped
 // fail-open leaves the content stuck, and re-emitting on every anchor turned
 // recovery into a cluster-wide signing self-flood (2026-07-10).
@@ -925,6 +935,7 @@ module.exports = {
   CLASSIFIER_COOLDOWN_MS,
   STATS_SCORING_CACHE_MS,
   REGISTER_CREDIT,
+  PARENT_URL_LOOKUP,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
   MLDSA65_PUBKEY_BYTES,

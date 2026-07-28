@@ -38,14 +38,16 @@ const path = require("path");
 const { canonicalJson } = require(path.resolve(__dirname, "../../shared/crypto"));
 const { SIGNATURE_SCOPE, TX_TYPES } = require(path.resolve(__dirname, "../../shared/constants"));
 const { TX_SIGNATURE_REGISTRY } = require(path.resolve(__dirname, "../src/schemas/_registry"));
+const { SCHEMA_FOR_TX_TYPE } = require(path.resolve(__dirname, "../src/schemas/_schema-map"));
 
 const VECTORS = require("./fixtures/signing-canonical-vectors.json");
 
-// Resolve the signing contract the same way production does: a dual-mode
+// Resolve the signing contract the same way production does: a schema module
+// wins when the tx_type has one, otherwise the registry entry; a dual-mode
 // tx_type exposes getSignatureContract(tx) and decides BODY vs ENVELOPE from
 // tx.data; a single-mode tx_type IS the contract.
 function resolveContract(txType, data) {
-  const entry = TX_SIGNATURE_REGISTRY[txType];
+  const entry = SCHEMA_FOR_TX_TYPE[txType] || TX_SIGNATURE_REGISTRY[txType];
   if (!entry) return null;
   if (typeof entry.getSignatureContract === "function") {
     return entry.getSignatureContract({ tx_type: txType, data: data || {} }) || null;
@@ -103,6 +105,15 @@ describe("canonical signed-payload golden vectors", () => {
     expect(withOpt).toBeTruthy();
     expect(reqOnly.canonical.includes("confirmed_origin")).toBe(false);
     expect(withOpt.canonical.includes("confirmed_origin")).toBe(true);
+  });
+
+  test("strip rule holds for REGISTER_CONTENT.parent_url", () => {
+    const reqOnly = VECTORS["REGISTER_CONTENT:required_only"];
+    const withParent = VECTORS["REGISTER_CONTENT:with_parent_url"];
+    expect(reqOnly).toBeTruthy();
+    expect(withParent).toBeTruthy();
+    expect(reqOnly.canonical.includes("parent_url")).toBe(false);
+    expect(withParent.canonical.includes("parent_url")).toBe(true);
   });
 
   // ── Replay regression tests (GH #121) ──────────────────────────────────────

@@ -114,6 +114,11 @@ function _canonContent(r) {
   // writer that updates them non-deterministically. Re-add if/when they
   // start being incremented from commit-handler with tx context.
   //
+  // Optional columns are folded in under the STRIP RULE (see parent_url at the
+  // bottom): emitted only when set, so canonicalJson omits the key and every
+  // pre-existing row hashes byte-identically. That is how a new optional field
+  // joins the state root without an activation gate or a genesis reset.
+  //
   // Every other column is included — fields are populated from tx.data
   // (deterministic across nodes), so any divergence on the persisted
   // row would indicate a code bug, and the merkle-root mismatch is
@@ -144,6 +149,10 @@ function _canonContent(r) {
     media: Array.isArray(r.media) ? r.media : [],
     media_canonical_hash: typeof r.media_canonical_hash === "string" ? r.media_canonical_hash : null,
     tx_id: r.tx_id || null,
+    // Strip rule: absent unless set, so rows predating the column hash exactly
+    // as before. Only rows carrying one differ, and those cannot exist until
+    // the whole fleet accepts the signed field.
+    ...(r.parent_url ? { parent_url: r.parent_url } : {}),
   };
 }
 // Canonical projection for the `scores` table — included in
@@ -674,13 +683,14 @@ class MemoryStore {
   // query. Cursor is an exclusive (registered_at, ctid) tuple; the
   // composite tiebreak makes pagination stable when several rows share
   // a timestamp.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
     let rows = [...this._content.values()];
     if (author) rows = rows.filter(c => c.author_tip_id === author);
     if (origin) rows = rows.filter(c => c.origin_code === origin);
     if (status) rows = rows.filter(c => c.status === status);
     if (hasMedia === true) rows = rows.filter(c => Array.isArray(c.media) && c.media.length > 0);
     if (url) rows = rows.filter(c => Array.isArray(c.registered_urls) && c.registered_urls.includes(url));
+    if (parentUrl) rows = rows.filter(c => c.parent_url === parentUrl);
     rows.sort((a, b) => (b.registered_at - a.registered_at) || (a.ctid < b.ctid ? 1 : -1));
     if (cursor) {
       rows = rows.filter(c =>
@@ -2268,6 +2278,12 @@ class SQLiteStore {
       this.db.exec("ALTER TABLE tx_rejections ADD COLUMN subject_tip_id TEXT");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_tx_rej_subject ON tx_rejections(subject_tip_id)");
+
+    const contentCols = this.db.prepare("PRAGMA table_info(content)").all().map(c => c.name);
+    if (!contentCols.includes("parent_url")) {
+      this.db.exec("ALTER TABLE content ADD COLUMN parent_url TEXT");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_content_parent_url ON content(parent_url)");
   }
 
 
@@ -2441,8 +2457,8 @@ class SQLiteStore {
             prescan_status,prescan_completed_at,prescan_assigned_node_id,
             prescan_content_type,prescan_overall_degraded,content_type_hint,
             override,registered_at,registered_urls,media,media_canonical_hash,tx_id,
-            verification_count,dispute_count)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            verification_count,dispute_count,parent_url)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE tip_ctid=?"),
       contentCount: this.db.prepare("SELECT COUNT(*) AS n FROM content"),
@@ -3198,7 +3214,8 @@ class SQLiteStore {
       typeof rec.media_canonical_hash === "string" ? rec.media_canonical_hash : null,
       rec.tx_id || null,
       rec.verification_count || 0,
-      rec.dispute_count || 0
+      rec.dispute_count || 0,
+      typeof rec.parent_url === "string" ? rec.parent_url : null
     );
   }
   // SQL returns array/object columns as JSON-encoded TEXT. Decode all
@@ -3241,7 +3258,7 @@ class SQLiteStore {
   // Explorer list — see MemoryStore.listContent for the contract.
   // Filters vary per call, so the statement is built dynamically; the
   // (status, author, origin) columns are indexed.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
     const where = [];
     const params = [];
     if (author) { where.push("author_tip_id = ?"); params.push(author); }
@@ -3265,6 +3282,7 @@ class SQLiteStore {
       where.push("instr(registered_urls, ?) > 0");
       params.push('"' + jsonInner + '"');
     }
+    if (parentUrl) { where.push("parent_url = ?"); params.push(parentUrl); }
     if (cursor) {
       where.push("(registered_at < ? OR (registered_at = ? AND tip_ctid < ?))");
       params.push(cursor.t, cursor.t, cursor.c);
