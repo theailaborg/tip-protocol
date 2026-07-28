@@ -329,3 +329,34 @@ describe("parent_url: GET /v1/content?parent_url= gating", () => {
       .toThrow(expect.objectContaining({ code: "parent_url_invalid" }));
   });
 });
+
+// ─── State-root strip rule ───────────────────────────────────────────────────
+// parent_url joins the state root under the strip rule: emitted only when set,
+// so rows predating the column hash byte-identically and a rolling upgrade
+// cannot fork. A naive `parent_url: x || null` would add a null key to EVERY
+// row and change the root for all of them, which is what this pins against.
+
+describe("parent_url state-root strip rule", () => {
+  const _row = (extra) => ({
+    ctid: "tip://c/OH-canon-0001", origin_code: "OH", content_hash: "aa",
+    author_tip_id: "tip://id/US-a", signer_tip_id: "tip://id/US-a",
+    status: CONTENT_STATUS.REGISTERED, registered_at: 1767225600000,
+    registered_urls: [], cna_version: "CNA-2.2", tx_id: "tx1", ...extra,
+  });
+
+  test("a row with parent_url absent and one with parent_url null hash the same", () => {
+    const a = initDAG({ dbPath: ":memory:" });
+    const b = initDAG({ dbPath: ":memory:" });
+    a.saveContent(_row({}));
+    b.saveContent(_row({ parent_url: null }));
+    expect(b.stateRoot()).toBe(a.stateRoot());
+  });
+
+  test("setting parent_url does change the root (it is genuinely covered)", () => {
+    const a = initDAG({ dbPath: ":memory:" });
+    const b = initDAG({ dbPath: ":memory:" });
+    a.saveContent(_row({}));
+    b.saveContent(_row({ parent_url: "https://example.com/post/" }));
+    expect(b.stateRoot()).not.toBe(a.stateRoot());
+  });
+});

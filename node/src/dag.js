@@ -114,9 +114,10 @@ function _canonContent(r) {
   // writer that updates them non-deterministically. Re-add if/when they
   // start being incremented from commit-handler with tx context.
   //
-  // Also excluded: `parent_url`. It IS deterministic (mirrored from tx.data),
-  // but folding it in changes the root for every pre-existing row, which would
-  // fork a fleet mid-rolling-upgrade. Fold it in at the next genesis reset.
+  // Optional columns are folded in under the STRIP RULE (see parent_url at the
+  // bottom): emitted only when set, so canonicalJson omits the key and every
+  // pre-existing row hashes byte-identically. That is how a new optional field
+  // joins the state root without an activation gate or a genesis reset.
   //
   // Every other column is included — fields are populated from tx.data
   // (deterministic across nodes), so any divergence on the persisted
@@ -148,6 +149,10 @@ function _canonContent(r) {
     media: Array.isArray(r.media) ? r.media : [],
     media_canonical_hash: typeof r.media_canonical_hash === "string" ? r.media_canonical_hash : null,
     tx_id: r.tx_id || null,
+    // Strip rule: absent unless set, so rows predating the column hash exactly
+    // as before. Only rows carrying one differ, and those cannot exist until
+    // the whole fleet accepts the signed field.
+    ...(r.parent_url ? { parent_url: r.parent_url } : {}),
   };
 }
 // Canonical projection for the `scores` table — included in
