@@ -1372,6 +1372,9 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
             registered_urls: Array.isArray(d.registered_urls) ? d.registered_urls : [],
+            // Signed parent context; stored here (not only on the API path) so
+            // a replaying node's read model matches the receiving node's.
+            parent_url: d.parent_url || null,
             // M3 — media refs + canonical hash. Not signed individually:
             // content_hash binds them via CNA-MIX-1 (mch + textHash).
             media: Array.isArray(d.media) ? d.media : [],

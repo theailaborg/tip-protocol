@@ -17,6 +17,7 @@
  *   content_hash      string,  required (no default)
  *   extras            object,  default {}
  *   origin_code       string,  required (no default), uppercased
+ *   parent_url        string,  OPTIONAL (strip rule: bound only when present)
  *   registered_urls   string[],default [], index 0 = canonical / primary URL
  *   signer_tip_id     string,  required (no default)
  *
@@ -96,6 +97,31 @@ function _checkAuthorsRegistered(authors, dag) {
 }
 
 /**
+ * Canonical-form validation for a single signed URL field (<=2048 chars,
+ * http(s), no #fragment, already canonical). Shared by every URL-bearing
+ * signed field so their accept/reject predicate can't drift.
+ */
+function validateCanonicalUrl(u, fieldName) {
+  const code = `${fieldName}_invalid`;
+  if (typeof u !== "string" || u.length > 2048) {
+    throw schemaError(400, `${fieldName} entries must be strings of at most 2048 chars`, code);
+  }
+  let parsed;
+  try { parsed = new URL(u); } catch {
+    throw schemaError(400, `${fieldName} entry is not a valid URL: ${u}`, code);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw schemaError(400, `${fieldName} entries must be http(s) URLs`, code);
+  }
+  if (parsed.hash !== "") {
+    throw schemaError(400, `${fieldName} entries must not carry a #fragment: ${u}`, code);
+  }
+  if (u !== parsed.href) {
+    throw schemaError(400, `${fieldName} entry is not canonical (expected ${parsed.href}): ${u}`, code);
+  }
+}
+
+/**
  * Per-entry canonical validation for registered_urls (<=16, canonical http(s),
  * no #fragment). Shared so REGISTER_CONTENT and UPDATE_REGISTERED_URLS agree.
  */
@@ -106,24 +132,7 @@ function validateRegisteredUrls(urls) {
   if (urls.length > 16) {
     throw schemaError(400, "registered_urls: at most 16 entries", "registered_urls_invalid");
   }
-  for (const u of urls) {
-    if (typeof u !== "string" || u.length > 2048) {
-      throw schemaError(400, "registered_urls entries must be strings of at most 2048 chars", "registered_urls_invalid");
-    }
-    let parsed;
-    try { parsed = new URL(u); } catch {
-      throw schemaError(400, `registered_urls entry is not a valid URL: ${u}`, "registered_urls_invalid");
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw schemaError(400, "registered_urls entries must be http(s) URLs", "registered_urls_invalid");
-    }
-    if (parsed.hash !== "") {
-      throw schemaError(400, `registered_urls entries must not carry a #fragment: ${u}`, "registered_urls_invalid");
-    }
-    if (u !== parsed.href) {
-      throw schemaError(400, `registered_urls entry is not canonical (expected ${parsed.href}): ${u}`, "registered_urls_invalid");
-    }
-  }
+  for (const u of urls) validateCanonicalUrl(u, "registered_urls");
 }
 
 /**
@@ -216,6 +225,11 @@ function validateRequest(body, deps) {
   // Provided entries bind to the signature, so they must already be canonical
   // (clients canonicalize before signing; query params stay, e.g. watch?v=).
   if (body.registered_urls != null) validateRegisteredUrls(body.registered_urls);
+
+  // parent_url (optional): where a response-type content lives, e.g. a comment's
+  // parent post. Canonical-form only, never checked for exclusivity: many
+  // contents legitimately point at the same parent.
+  if (body.parent_url != null) validateCanonicalUrl(body.parent_url, "parent_url");
 
   // authors[] shape — ≥1 entry, each carrying a tip://id/... string —
   // checked here so we can confidently DAG-look-up every author below.
@@ -373,6 +387,15 @@ function buildSigningPayload(input, contentHashFull) {
       throw schemaError(400, "fingerprint_commit must be a 64-char lowercase hex string", "fingerprint_commit_invalid");
     }
     payload.fingerprint_commit = input.fingerprint_commit;
+  }
+
+  // Optional parent context (comment -> post, reply -> comment). Strip-rule:
+  // bound only when present, so content without it signs byte-identical to
+  // before this field existed. Never exclusivity-checked: many contents
+  // legitimately share one parent.
+  if (input.parent_url != null) {
+    validateCanonicalUrl(input.parent_url, "parent_url");
+    payload.parent_url = input.parent_url;
   }
 
   return payload;
@@ -607,6 +630,7 @@ module.exports = {
   ORIGIN_CODES,
   validateRequest,
   validateRegisteredUrls,
+  validateCanonicalUrl,
   resolveSigner,
   buildSigningPayload,
   mediaCanonicalHash,

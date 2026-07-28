@@ -24,8 +24,21 @@ const path = require("path");
 const { canonicalJson } = require(path.resolve(__dirname, "../../shared/crypto"));
 const { TX_TYPES } = require(path.resolve(__dirname, "../../shared/constants"));
 const { TX_SIGNATURE_REGISTRY } = require(path.resolve(__dirname, "../src/schemas/_registry"));
+const { SCHEMA_FOR_TX_TYPE } = require(path.resolve(__dirname, "../src/schemas/_schema-map"));
 
 const FIXTURE = path.resolve(__dirname, "../tests/fixtures/signing-canonical-vectors.json");
+
+// REGISTER_CONTENT's optional parent_url pair pins the strip rule for the one
+// signed recipe that predates it: the required_only bytes must stay identical.
+const REGISTER_CONTENT_BASE = {
+  signer_tip_id: "tip://id/US-author",
+  origin_code: "OH",
+  content_hash: "a".repeat(64),
+  attribution_mode: "self",
+  extras: {},
+  registered_urls: ["https://example.com/post/"],
+  authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: "tip://id/US-author", tip_id_type: "personal" }],
+};
 
 // [tx_type key in TX_TYPES, case label, sample data].
 // required_only / with_optional pairs pin the strip rule (absent optional must
@@ -33,6 +46,7 @@ const FIXTURE = path.resolve(__dirname, "../tests/fixtures/signing-canonical-vec
 const CASES = [
   ["CONTENT_VERIFIED", "base", { verifier_tip_id: "tip://id/US-verif", ctid: "ctid-deadbeef", verdict: "OH" }],
   ["UPDATE_ORIGIN", "base", { author_tip_id: "tip://id/US-author", ctid: "ctid-deadbeef", new_origin_code: "AA" }],
+  ["UPDATE_REGISTERED_URLS", "base", { author_tip_id: "tip://id/US-author", ctid: "ctid-deadbeef", registered_urls: ["https://example.com/a/", "https://example.com/b/"] }],
   ["CONTENT_RETRACTED", "base", { author_tip_id: "tip://id/US-author", ctid: "ctid-deadbeef" }],
   ["JURY_VOTE_COMMIT", "base", { juror_tip_id: "tip://id/US-juror", commitment: "commit-hash", ctid: "ctid-deadbeef", is_appeal: false }],
   ["JURY_VOTE_REVEAL", "required_only", { juror_tip_id: "tip://id/US-juror", vote: "MATCH", salt: "salt-1", ctid: "ctid-deadbeef", is_appeal: false }],
@@ -49,11 +63,13 @@ const CASES = [
   ["NODE_REGISTERED", "no_endpoint", { name: "N1", public_key: "pubkey-hex", approving_vp_id: "tip://vp/appr" }],
   ["NODE_REGISTERED", "with_endpoint", { name: "N1", public_key: "pubkey-hex", approving_vp_id: "tip://vp/appr", api_endpoint: "https://n1.example.com" }],
   ["UNBIND_DOMAIN", "base", { domain: "example.com", node_id: "tip://node/n1", reason: "revoked", revoked_at: 1767225600000 }],
+  ["REGISTER_CONTENT", "required_only", REGISTER_CONTENT_BASE],
+  ["REGISTER_CONTENT", "with_parent_url", { ...REGISTER_CONTENT_BASE, parent_url: "https://example.com/parent-post/" }],
 ];
 
 function buildCanonical(txType, data) {
-  const entry = TX_SIGNATURE_REGISTRY[txType];
-  if (!entry) throw new Error(`no registry entry for ${txType}`);
+  const entry = SCHEMA_FOR_TX_TYPE[txType] || TX_SIGNATURE_REGISTRY[txType];
+  if (!entry) throw new Error(`no signing contract for ${txType}`);
   const contract = typeof entry.getSignatureContract === "function"
     ? entry.getSignatureContract({ tx_type: txType, data })
     : entry;

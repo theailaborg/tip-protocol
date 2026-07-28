@@ -470,6 +470,7 @@ class KnexAdapter {
         extras: (extras && typeof extras === "object" && !Array.isArray(extras)) ? extras : {},
         media: Array.isArray(media) ? media : [],
         media_canonical_hash: typeof row.media_canonical_hash === "string" ? row.media_canonical_hash : null,
+        parent_url: typeof row.parent_url === "string" ? row.parent_url : null,
       };
       delete mapped.tip_ctid;
       this.mirror._content.set(mapped.ctid, mapped);
@@ -976,6 +977,7 @@ class KnexAdapter {
       media: JSON.stringify(Array.isArray(rec.media) ? rec.media : []),
       media_canonical_hash: typeof rec.media_canonical_hash === "string" ? rec.media_canonical_hash : null,
       tx_id: rec.tx_id || null,
+      parent_url: typeof rec.parent_url === "string" ? rec.parent_url : null,
     };
     this._ff(() => this._dbInsert("content", "tip_ctid", row, "merge"));
   }

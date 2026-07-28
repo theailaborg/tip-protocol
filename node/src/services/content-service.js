@@ -5,7 +5,7 @@ const {
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
-const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT, PARENT_URL_LOOKUP } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -377,6 +377,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         ...(canonicalPayload.fingerprint_commit
           ? { fingerprint_commit: canonicalPayload.fingerprint_commit }
           : {}),
+        // ── Optional signed parent context. Same strip rule as the
+        //    commit above: absent when the client didn't send it, so
+        //    tx.data stays byte-identical to pre-parent_url registrations.
+        ...(canonicalPayload.parent_url
+          ? { parent_url: canonicalPayload.parent_url }
+          : {}),
       },
       // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
       signature,
@@ -433,6 +439,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       near_duplicates: nearDuplicates,
       author_name: identity?.creator_name || null,
       registered_urls: canonicalPayload.registered_urls,
+      parent_url: canonicalPayload.parent_url || null,
       // ── Async prescan ─────────────────────────────────────────────
       // No verdict yet — client polls the prescan_status endpoint until
       // PRESCAN_COMPLETED commits and the row's prescan_status flips
@@ -560,6 +567,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
       original_origin_code: originalOriginCode,
       origin_changed: originChanged,
+      parent_url: rec.parent_url || null,
       author_name: (author && author.creator_name) || null,
       author_score: scoring.getScore(rec.author_tip_id).score,
       author_tier: scoring.getScore(rec.author_tip_id).tier.name,
@@ -896,15 +904,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     };
   }
 
-  // Explorer list — slim rows, cursor-paginated, newest first. Heavy
-  // fields (authors[], extras, media[]) stay out of list rows; clients
+  // Slim list row. Heavy fields (authors[], extras, media[]) stay out; clients
   // follow the ctid to resolve() for the full record.
-  function list(query) {
-    const opts = contentListSchema.validateRequest(query);
-    const rows = dag.listContent(opts);
-    const hasMore = rows.length > opts.limit;
-    const page = hasMore ? rows.slice(0, opts.limit) : rows;
-    const items = page.map(c => ({
+  function _listRow(c) {
+    return {
       ctid: c.ctid,
       author_tip_id: c.author_tip_id,
       origin_code: c.origin_code,
@@ -913,8 +916,42 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       prescan_tier: c.prescan_tier,
       media_count: Array.isArray(c.media) ? c.media.length : 0,
       registered_urls: Array.isArray(c.registered_urls) ? c.registered_urls : [],
+      parent_url: c.parent_url || null,
       registered_at: c.registered_at,
-    }));
+    };
+  }
+
+  // Responses pointing at one parent. parent_url is an unverified assertion and
+  // is never exclusivity-checked, so the read is gated: retracted/disputed rows
+  // and sub-VERIFIED authors drop out, and the one-entry-per-author rule is the
+  // real Sybil bound (flooding a parent buys an attacker nothing). Uncursored:
+  // the ranking is score-ordered and deduped, capped at MAX_RESULTS.
+  function _listByParentUrl(opts) {
+    const rows = dag.listContent({ parentUrl: opts.parentUrl, limit: PARENT_URL_LOOKUP.SCAN_LIMIT });
+    const best = new Map();
+    for (const c of rows) {
+      if (c.status === CONTENT_STATUS.RETRACTED || c.status === CONTENT_STATUS.DISPUTED) continue;
+      const sc = scoring.getScore(c.author_tip_id);
+      if (!PARENT_URL_LOOKUP.MIN_TIERS.includes(sc.tier.name)) continue;
+      const prev = best.get(c.author_tip_id);
+      if (prev && prev.registered_at <= c.registered_at) continue;
+      best.set(c.author_tip_id, { ...c, author_score: sc.score });
+    }
+    const items = [...best.values()]
+      .sort((a, b) => (b.author_score - a.author_score) || (a.registered_at - b.registered_at))
+      .slice(0, PARENT_URL_LOOKUP.MAX_RESULTS)
+      .map(c => ({ ..._listRow(c), author_score: c.author_score }));
+    return { items, next_cursor: null };
+  }
+
+  // Explorer list: cursor-paginated, newest first.
+  function list(query) {
+    const opts = contentListSchema.validateRequest(query);
+    if (opts.parentUrl) return _listByParentUrl(opts);
+    const rows = dag.listContent(opts);
+    const hasMore = rows.length > opts.limit;
+    const page = hasMore ? rows.slice(0, opts.limit) : rows;
+    const items = page.map(_listRow);
     const next_cursor = hasMore ? contentListSchema.encodeCursor(page[page.length - 1]) : null;
     return { items, next_cursor };
   }
