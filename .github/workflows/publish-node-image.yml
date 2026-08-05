@@ -1,0 +1,99 @@
+# Builds the TIP node image from a release tag and pushes it to Docker Hub.
+#
+# Runs when a tag like v2.0.0 is pushed. The image is built from that exact tag,
+# so the published image and the tag's source always match (same genesis).
+#
+# Setup needed once, in the repo settings under Secrets and variables > Actions:
+#   DOCKERHUB_USERNAME   the Docker Hub account (or org) name
+#   DOCKERHUB_TOKEN      a Docker Hub access token (not the password)
+#
+# After that, pushing a new vX.Y.Z tag publishes theailaborg/tip-node:X.Y.Z
+# and updates :latest.
+
+name: Publish node image
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  # Manual trigger, so you can publish an existing tag (like v2.0.0) on demand
+  # from the Actions tab. Enter the tag name when you run it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g. v2.0.0)"
+        required: true
+        default: "v2.0.0"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Work out which tag to build
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the tagged code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pick.outputs.ref }}
+
+      - name: Verify the genesis matches the release
+        run: |
+          EXPECTED_HASH="d4666ce12479a5bc3ce074f8cb71f18a81d0d8011bb0552fe55513a9aa9ad52c"
+          ACTUAL_HASH=$(python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'])")
+          echo "expected: $EXPECTED_HASH"
+          echo "actual:   $ACTUAL_HASH"
+          if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+            echo "Genesis hash does not match the mainnet reference. Stopping."
+            exit 1
+          fi
+
+      - name: Work out the version number
+        id: version
+        run: |
+          REF="${{ steps.pick.outputs.ref }}"
+          echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            theailaborg/tip-node:${{ steps.version.outputs.version }}
+            theailaborg/tip-node:latest
+
+      # Partners verify the image they pulled is the one built from this tag,
+      # so surface the digest in the run summary rather than the build log.
+      - name: Publish digest to the run summary
+        run: |
+          {
+            echo "### Published image"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| tag | \`${{ steps.pick.outputs.ref }}\` |"
+            echo "| image | \`theailaborg/tip-node:${{ steps.version.outputs.version }}\` |"
+            echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo ""
+            echo "Pull by digest to verify:"
+            echo '```'
+            echo "docker pull theailaborg/tip-node@${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
