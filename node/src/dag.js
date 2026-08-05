@@ -98,7 +98,15 @@ function _canonIdentity(r) {
     expert_consent: r.expert_consent ? 1 : 0,
     registered_at: r.registered_at,
     creator_name: r.creator_name || null,
-    biometric_commit: r.biometric_commit || null,
+    // Strip-when-absent (deliberately `|| undefined`, NOT `|| null`). canonicalJson
+    // KEEPS null ("biometric_commit":null) but OMITS undefined keys — so an identity
+    // that never bound a commit (every identity registered before this feature, plus
+    // any ZK-only / no-commit registration) canonicalizes byte-identically to the
+    // pre-feature bytes, leaving its state_merkle_root leaf UNCHANGED. This is what
+    // lets the feature deploy onto a live chain with existing identities as a normal
+    // rolling upgrade — old-vs-new nodes agree on every pre-existing identity, and
+    // only identities that actually carry a commit contribute it to the root.
+    biometric_commit: r.biometric_commit || undefined,
     tx_id: r.tx_id || null,
   };
 }

@@ -239,7 +239,7 @@ describe("state_merkle_root", () => {
       without = initDAG({ dbPath: ":memory:" });
       withA.saveIdentity({ ...base, biometric_commit: "a".repeat(64) });
       withB.saveIdentity({ ...base, biometric_commit: "b".repeat(64) });
-      without.saveIdentity({ ...base }); // no biometric_commit → canonicalizes to null
+      without.saveIdentity({ ...base }); // no biometric_commit → OMITTED from the canonical row
       const rootA = computeStateMerkleRoot(withA);
       const rootB = computeStateMerkleRoot(withB);
       const rootNone = computeStateMerkleRoot(without);
@@ -247,6 +247,36 @@ describe("state_merkle_root", () => {
       expect(rootA).not.toBe(rootNone);  // present vs absent must differ
     } finally {
       for (const d of [withA, withB, without]) { try { d?.close?.(); } catch { /* ignore */ } }
+    }
+  });
+
+  test("absent biometric_commit is OMITTED from the canonical identity row (live-chain byte-compat)", () => {
+    // The rolling-upgrade safety guarantee: an identity that never bound a commit
+    // must canonicalize EXACTLY as it did before the field existed — the key is
+    // OMITTED, not emitted as null. If it were `|| null`, the pre-existing rows'
+    // leaves (and thus state_merkle_root) would change on deploy and old-vs-new
+    // nodes would fork. This asserts the strip-when-absent behavior at the byte level
+    // (mutation guard: reverting _canonIdentity to `|| null` fails the first expect).
+    const { canonicalJson } = require(path.join(SHARED, "crypto"));
+    const base = {
+      tip_id: "tip:dev:us:oldid", region: "US", public_key: "aa",
+      vp_id: "vp:founding", verification_tier: "T1", founding: false,
+      status: "active", registered_at: 1767225600000, tx_id: "tx-old",
+    };
+    let d;
+    try {
+      d = initDAG({ dbPath: ":memory:" });
+      d.saveIdentity({ ...base });                                          // no commit → omitted
+      d.saveIdentity({ ...base, tip_id: "tip:dev:us:newid",
+                       biometric_commit: "c".repeat(64) });                 // commit → present
+      const canon = {};
+      for (const { table, row } of d.iterateCanonicalState()) {
+        if (table === "identities") canon[row.tip_id] = canonicalJson(row);
+      }
+      expect(canon["tip:dev:us:oldid"]).not.toContain("biometric_commit");  // old: key absent
+      expect(canon["tip:dev:us:newid"]).toContain("biometric_commit");      // new: key present
+    } finally {
+      try { d?.close?.(); } catch { /* ignore */ }
     }
   });
 });
