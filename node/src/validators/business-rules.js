@@ -33,9 +33,23 @@
 
 const {
   TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
+  TIP_ID_TYPES, ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
 } = require("../../../shared/constants");
 const { DISPUTE, APPEAL, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
+
+// Consensus gate: must be IDENTICAL fleet-wide or nodes diverge. Env override
+// exists to activate it on an isolated cluster before the mainnet date.
+const _ADJUDICATION_GATE_MS = Number.isFinite(parseInt(process.env.TIP_ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS, 10))
+  ? parseInt(process.env.TIP_ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS, 10)
+  : ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS;
+
+// Adjudication (verify / dispute / review) is personal-only; see the constant.
+// `atMs` is the frozen tx.timestamp so every node decides identically.
+function _adjudicationBlocked(identity, atMs) {
+  if (!Number.isFinite(atMs) || atMs < _ADJUDICATION_GATE_MS) return false;
+  return (identity?.tip_id_type || TIP_ID_TYPES.PERSONAL) !== TIP_ID_TYPES.PERSONAL;
+}
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 
@@ -181,12 +195,15 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
   return ok();
 }
 
-function canVerify(dag, { ctid, verifier_tip_id }) {
+function canVerify(dag, { ctid, verifier_tip_id }, { now } = {}) {
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
 
   const verifier = dag.getIdentity(verifier_tip_id);
   if (!verifier) return fail(404, "Verifier TIP-ID not found");
+  if (_adjudicationBlocked(verifier, now)) {
+    return fail(403, "Organizations cannot verify content", "adjudication_personal_only");
+  }
   if (dag.isRevoked(verifier_tip_id)) return fail(403, "Verifier TIP-ID is revoked");
   if (verifier_tip_id === rec.author_tip_id) return fail(403, "Cannot verify your own content");
   if (dag.isRevoked(rec.author_tip_id)) return fail(403, "Content author has been revoked — verification not allowed");
@@ -377,6 +394,9 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
 
   const disputer = dag.getIdentity(disputer_tip_id);
   if (!disputer) return fail(404, "Disputer TIP-ID not found");
+  if (_adjudicationBlocked(disputer, now)) {
+    return fail(403, "Organizations cannot file disputes", "adjudication_personal_only");
+  }
   if (dag.isRevoked(disputer_tip_id)) return fail(403, "Disputer TIP-ID is revoked");
 
   // No self-disputes — covers author of record, the signer (relevant in
