@@ -110,8 +110,8 @@ function slugify(s) {
 // that does not match its shape. A wrong value here cannot be detected later
 // (the hash is one-way) and cannot be corrected (the entry is committed).
 const ORG_ID_SCHEMES = Object.freeze({
-  GB: [{ key: "company", name: "Companies House number", re: /^[A-Z0-9]{8}$/,
-         hint: "8 characters, keep leading zeros (e.g. 01234567)" }],
+  GB: [{ key: "company", name: "company number (Companies House)", re: /^[A-Z0-9]{8}$/,
+         hint: "8 characters, keep leading zeros (e.g. 01234567). Not the VAT or UTR number" }],
   IN: [{ key: "company", name: "CIN", re: /^[A-Z0-9]{21}$/,
          hint: "21 characters (e.g. U74999MH2020PTC123456)" },
        { key: "llp", name: "LLPIN", re: /^[A-Z0-9]{7}$/,
