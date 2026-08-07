@@ -56,7 +56,7 @@ const path = require("path");
 const http = require("http");
 const https = require("https");
 
-const { nowIso } = require("../shared/time");
+const { nowIso, nowMs } = require("../shared/time");
 const {
   initCrypto,
   generateMLDSAKeypair,
@@ -309,7 +309,7 @@ async function main() {
     incorporated,
     dedup_hash: dedupHash,
     approving_vp_id: vp.vp_id,
-    registered_at: result.registered_at || Date.now(),
+    registered_at: result.registered_at || nowMs(),
     registered_on: nodeUrl,
     generated_at: nowIso(),
   }, null, 2);

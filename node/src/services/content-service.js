@@ -700,7 +700,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const { verifier_tip_id, verdict, signature } = body;
 
     // Stateful pre-conditions — same predicate as commit-handler.
-    const { valid, error } = rules.canVerify(dag, { ctid, verifier_tip_id });
+    const { valid, error } = rules.canVerify(dag, { ctid, verifier_tip_id }, { now: nowMs() });
     if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const rec = dag.getContent(ctid);
     const verifier = dag.getIdentity(verifier_tip_id);

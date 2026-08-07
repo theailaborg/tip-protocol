@@ -957,7 +957,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       }
 
       case TX_TYPES.CONTENT_VERIFIED: {
-        const r = rules.canVerify(dag, { ctid: d.ctid, verifier_tip_id: d.verifier_tip_id });
+        const r = rules.canVerify(dag, { ctid: d.ctid, verifier_tip_id: d.verifier_tip_id }, { now });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
