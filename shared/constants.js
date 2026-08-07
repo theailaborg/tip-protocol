@@ -917,7 +917,7 @@ const REGISTER_CREDIT = Object.freeze({
 // Adjudication is personal-only: one person can incorporate many companies, so
 // org votes/disputes scale with an attacker's budget. New commit-time reject
 // rule, so gated on tx.timestamp to keep a mixed fleet from forking.
-const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786250400000; // 2026-08-09 04:40:00 UTC
+const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15:00:00 UTC
 
 // GET /v1/content?parent_url= read gating. parent_url is an unverified
 // assertion (any content may claim any parent) and is never exclusivity-checked,
