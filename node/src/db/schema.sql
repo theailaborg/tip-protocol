@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS `mempool` (`tx_id` varchar(128), `tx_data` text not n
 
 CREATE TABLE IF NOT EXISTS `minhash_band` (`profile` varchar(64) not null, `band_idx` integer not null, `band_hash` bigint not null, `tip_ctid` varchar(512) not null, primary key (`profile`, `band_idx`, `band_hash`, `tip_ctid`));
 
-CREATE TABLE IF NOT EXISTS `nodes` (`node_id` varchar(512), `name` text null, `status` varchar(32) not null default 'active', `api_endpoint` text null, `updated_at` bigint null, `registered_at` bigint not null, primary key (`node_id`));
+CREATE TABLE IF NOT EXISTS `nodes` (`node_id` varchar(512), `name` text null, `status` varchar(32) not null default 'active', `api_endpoint` text null, `updated_at` bigint null, `registered_at` bigint not null, `operated_by` varchar(512) null, primary key (`node_id`));
 
 CREATE TABLE IF NOT EXISTS `owner_heads` (`entity_key` text, `tx_id` text not null, primary key (`entity_key`));
 
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS `tx_rejections` (`tx_id` varchar(128), `reason` varch
 
 CREATE TABLE IF NOT EXISTS `upload_sessions` (`session_id` varchar(64), `upload_id` varchar(256) not null, `s3_key` varchar(512) not null, `content_hash` varchar(64) not null, `mime` varchar(128) not null, `size` bigint not null, `signer_tip_id` varchar(512) not null, `timestamp` bigint not null, `signature` text not null, `parts_json` text not null default '[]', `completed_size` bigint not null default '0', `created_at` bigint not null, `expires_at` bigint not null, primary key (`session_id`));
 
-CREATE TABLE IF NOT EXISTS `verification_providers` (`vp_id` varchar(512), `name` varchar(256) not null, `jurisdiction` varchar(8) not null default 'US', `jurisdiction_tier` varchar(16) not null default 'green', `status` varchar(32) not null default 'active', `registered_at` bigint not null, primary key (`vp_id`));
+CREATE TABLE IF NOT EXISTS `verification_providers` (`vp_id` varchar(512), `name` varchar(256) not null, `jurisdiction` varchar(8) not null default 'US', `jurisdiction_tier` varchar(16) not null default 'green', `status` varchar(32) not null default 'active', `registered_at` bigint not null, `operated_by` varchar(512) null, primary key (`vp_id`));
 
 CREATE TABLE IF NOT EXISTS `votes_seen` (`round` integer not null, `author` varchar(512) not null, `batch_hash` varchar(128) not null, `local_inserted_at` bigint not null default (unixepoch() * 1000), primary key (`round`, `author`));
 

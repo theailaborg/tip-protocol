@@ -2,7 +2,7 @@
 
 const { generateVPId, verifyBodySignature } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
-const { TX_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, SIGNED_BY_KIND } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
@@ -11,6 +11,8 @@ const { getFoundingVP } = require("../genesis");
 const interestRegisteredSchema = require("../schemas/interest-registered");
 const nodeEndpointUpdateSchema = require("../schemas/node-endpoint-update");
 const { nodeSignedAuto } = require("./helpers");
+const { verifyCosignatures, sortCosignatures } = require("../schemas/_common");
+const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 const { log } = require("../logger");
 
 // Liveness + ownership probe timeout. The endpoint must answer /health
@@ -121,6 +123,25 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
       }
     }
 
+    // operated_by is a claim about a third party, so the named identity must
+    // cosign the same canonical bytes. Without that an approving VP could
+    // attribute a node to an organization that never agreed to operate it.
+    const operated_by = normalisedBody.operated_by;
+    const operator_signature = normalisedBody.operator_signature;
+    if (operated_by !== undefined) {
+      if (typeof operated_by !== "string" || !operated_by.startsWith("tip://id/")) {
+        throw { status: 400, error: "operated_by must be a tip://id/ identity URI" };
+      }
+      const operator = dag.getIdentity ? dag.getIdentity(operated_by) : null;
+      if (!operator) throw { status: 400, error: `operated_by identity not registered: ${operated_by}` };
+      if (dag.isRevoked && dag.isRevoked(operated_by)) {
+        throw { status: 403, error: "operated_by identity is revoked" };
+      }
+      if (typeof operator_signature !== "string" || operator_signature.length === 0) {
+        throw { status: 400, error: "operator_signature is required when operated_by is set" };
+      }
+    }
+
     // GH #85: pre-compute nodeId (depends only on public_key, available now)
     // so the resolved name is part of the canonical bytes the VP signs.
     // Previously nodeId was computed after verifyBodySignature, so a client
@@ -135,7 +156,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
     // keeps signer/verifier byte-aligned. api_endpoint is optional —
     // verifyBodySignature skips undefined fields, so legacy clients that
     // don't send it keep verifying.
-    const NODE_REGISTER_FIELDS = ["algorithm", "api_endpoint", "approving_vp_id", "name", "public_key"];
+    const NODE_REGISTER_FIELDS = ["algorithm", "api_endpoint", "approving_vp_id", "name", "operated_by", "public_key"];
     if (!verifyBodySignature(bodyForVerify, council_signature, approvingVp.public_key, NODE_REGISTER_FIELDS)) {
       throw { status: 403, error: "Council signature verification failed" };
     }
@@ -151,10 +172,26 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
         node_id: nodeId, name: resolvedName,
         public_key, algorithm, approving_vp_id,
         ...(api_endpoint ? { api_endpoint } : {}),
+        ...(operated_by ? {
+          operated_by,
+          cosignatures: sortCosignatures([{
+            signer_kind: SIGNED_BY_KIND.SUBJECT,
+            signer_ref: operated_by,
+            signature: operator_signature,
+          }]),
+        } : {}),
       },
       // GH #51 — approving VP's council signature lives at tx.signature.
       signature: council_signature,
     }, dag);
+
+    // Run the same dispatcher consensus uses at commit time, so a bad operator
+    // signature is a 403 here rather than a 202 followed by a silent drop.
+    const cosigContract = TX_SIGNATURE_REGISTRY[TX_TYPES.NODE_REGISTERED].getCosignatureContract(nodeTx);
+    if (cosigContract.length > 0) {
+      const cosigResult = verifyCosignatures(nodeTx, cosigContract, dag);
+      if (!cosigResult.ok) throw { status: 403, error: `Operator cosignature failed: ${cosigResult.error}` };
+    }
 
     const validation = validateTransaction(nodeTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };

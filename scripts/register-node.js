@@ -20,6 +20,9 @@
  *   --public-ip 127.0.0.1        Publicly-reachable IP (default: 127.0.0.1)
  *   --db-name tip_node2          Per-node DB name override (optional; defaults to DB_NAME from env)
  *   --db-user tip_node2          Per-node DB user override (optional; Oracle nodes need tip_node2/3/4)
+ *   --operated-by tip://id/...   Identity responsible for this node (optional)
+ *   --operator-key-file ./x.json That identity's .tip.json; required with --operated-by,
+ *                                since the operator must cosign the registration
  *
  * Output layout:
  *   generated_nodes/<slug>-<short-tip-id>/
@@ -85,6 +88,11 @@ const nodeUrl = getArg("--node-url", "http://localhost:4000");
 // for operators who want a specific path; otherwise it lands under
 // generated_nodes/<slug>-<short-id>/.
 const outDirOverride = getArg("--out-dir", null);
+// The identity responsible for this node. Naming one is a claim about a third
+// party, so its keyfile is required too: the node registers only if that
+// identity cosigns the same bytes the founding VP signs.
+const operatedBy = getArg("--operated-by", null);
+const operatorKeyFile = getArg("--operator-key-file", null);
 const apiPort = parseInt(getArg("--port", "4100"), 10);   // API port for the new node
 const p2pPort = parseInt(getArg("--p2p-port", String(apiPort + 1)), 10);   // libp2p port; convention is API+1
 const publicIp = getArg("--public-ip", "127.0.0.1");      // override for prod / cloud deployments
@@ -197,9 +205,27 @@ async function main() {
     name,
     public_key: keypair.publicKey,
     approving_vp_id: foundingVpId,
+    ...(operatedBy ? { operated_by: operatedBy } : {}),
   };
   const councilSignature = signBody(registrationFields, vpKeys.privateKey);
   ok("Council signature created");
+
+  // The operator signs the SAME fields as the VP, so the two attestations
+  // cover identical bytes and the server can verify both against one payload.
+  let operatorSignature = null;
+  if (operatedBy) {
+    if (!operatorKeyFile) {
+      fail("--operated-by requires --operator-key-file (the operating identity's .tip.json)");
+      process.exit(1);
+    }
+    const opKeys = JSON.parse(fs.readFileSync(path.resolve(operatorKeyFile), "utf8"));
+    if (opKeys.tip_id && opKeys.tip_id !== operatedBy) {
+      fail(`--operator-key-file is for ${opKeys.tip_id}, not ${operatedBy}`);
+      process.exit(1);
+    }
+    operatorSignature = signBody(registrationFields, opKeys.private_key);
+    ok(`Operator cosignature created: ${operatedBy}`);
+  }
 
   // 6. Register via API
   info("Registering node...");
@@ -209,6 +235,7 @@ async function main() {
     const response = await post(`${nodeUrl}/v1/node/register`, {
       ...registrationFields,
       council_signature: councilSignature,
+      ...(operatorSignature ? { operator_signature: operatorSignature } : {}),
     }, postHeaders);
     result = response.data || response;
     ok(`Node registered: ${result.node_id}`);
