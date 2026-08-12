@@ -138,7 +138,10 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       // Mark all existing certificates as ordered so they won't be re-collected.
       // On restart, Narwhal resumes from latestRound+1 — Bullshark only processes new rounds.
       _lastCommittedRound = latestRound;
-      for (let r = 1; r <= latestRound; r++) {
+      // Start at the prune horizon, not round 1: rounds below it hold no certs,
+      // so scanning from 1 is O(latestRound) and grows for the life of the chain.
+      const earliestCertRound = dag.getEarliestCertRound ? dag.getEarliestCertRound() : 0;
+      for (let r = Math.max(1, earliestCertRound); r <= latestRound; r++) {
         try {
           const certs = dag.getCertificatesByRound(r);
           for (const cert of certs) _orderedCertHashes.add(cert.hash);
