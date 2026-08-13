@@ -261,7 +261,7 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
-    // api_endpoint and operated_by are optional — omitted on legacy txs;
+    // api_endpoint and operated_by are optional: omitted on legacy txs;
     // included in canonical bytes only when present so old committed txs keep
     // verifying byte-for-byte. GH #85: null/undefined is stripped by
     // buildSignedPayload, preserving the "omit on missing" behaviour.
