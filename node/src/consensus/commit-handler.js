@@ -1174,6 +1174,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
             creator_name: d.creator_name || null,
+            org_type: d.org_type || null,
           });
         }
         // Score effect (initial score for new identity) is applied in
@@ -1656,6 +1657,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             public_key: d.public_key || "",
             algorithm: d.algorithm || "ml-dsa-65",
             api_endpoint: typeof d.api_endpoint === "string" ? d.api_endpoint : null,
+            operated_by: typeof d.operated_by === "string" ? d.operated_by : null,
             status: "active",
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,

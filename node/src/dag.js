@@ -949,7 +949,7 @@ class MemoryStore {
     }
     const { public_key, algorithm, ...rest } = rec;
     void public_key; void algorithm;
-    this._nodes.set(rec.node_id, { api_endpoint: null, ...rest });
+    this._nodes.set(rec.node_id, { api_endpoint: null, operated_by: null, ...rest });
   }
   updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
     const row = this._nodes.get(nodeId);
@@ -2422,8 +2422,9 @@ class SQLiteStore {
             verification_tier,tip_id_type,founding,status,
             reviewer_consent,juror_consent,expert_consent,
             interests,
-            registered_at,creator_name,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            registered_at,creator_name,tx_id,
+            org_type)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       // GH #60 — JOIN with active entity_keys row so existing callers
       // of getIdentity(id).public_key keep working. valid_to_ts IS NULL
@@ -2586,8 +2587,8 @@ class SQLiteStore {
       ),
 
       saveNode: this.db.prepare(
-        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,updated_at,registered_at)
-         VALUES (?,?,?,?,?,?)`
+        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,operated_by,updated_at,registered_at)
+         VALUES (?,?,?,?,?,?,?)`
       ),
       updateNodeEndpoint: this.db.prepare(
         "UPDATE nodes SET api_endpoint=?, updated_at=? WHERE node_id=?"
@@ -3155,7 +3156,8 @@ class SQLiteStore {
       rec.juror_consent ? 1 : 0,
       rec.expert_consent ? 1 : 0,
       JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
-      rec.registered_at, rec.creator_name || null, rec.tx_id || null
+      rec.registered_at, rec.creator_name || null, rec.tx_id || null,
+      rec.org_type || null
     );
   }
   getIdentity(id) {
@@ -3488,6 +3490,7 @@ class SQLiteStore {
       rec.node_id, rec.name || null,
       rec.status || "active",
       rec.api_endpoint || null,
+      rec.operated_by || null,
       null,  // updated_at: null for new nodes (no update committed yet)
       rec.registered_at || nowMs()
     );

@@ -885,6 +885,7 @@ class KnexAdapter {
       registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
       tx_id: rec.tx_id || null,
+      org_type: rec.org_type || null,
     };
     this._ff(() => this._dbInsert("identities", "tip_id", row, "merge"));
   }
@@ -1510,6 +1511,7 @@ class KnexAdapter {
       name: rec.name || null,
       status: rec.status || "active",
       api_endpoint: rec.api_endpoint || null,
+      operated_by: rec.operated_by || null,
       updated_at: null,  // null for new nodes (no update committed yet)
       registered_at: rec.registered_at,
     };
