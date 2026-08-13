@@ -350,7 +350,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // Total rows for the joiner's install % (display-only, never hashed/signed);
     // the tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
     let _snapTotalRows = 0;
-    for (const _r of dag.iterateCanonicalState({ contentRaw: true })) _snapTotalRows++;
+    for (const _r of dag.iterateCanonicalState({ rawTransfer: true })) _snapTotalRows++;
     if (typeof dag.transactionCount === "function") _snapTotalRows += dag.transactionCount();
     if (typeof dag.certificateCount === "function") _snapTotalRows += dag.certificateCount();
 
@@ -440,7 +440,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // contentRaw rows (#132) ship the RAW content row; the receiver
         // re-derives the root via computeStateMerkleRoot after install so the
         // ack-signed state_merkle_root verifies.
-        for (const { table, row } of dag.iterateCanonicalState({ contentRaw: true })) {
+        for (const { table, row } of dag.iterateCanonicalState({ rawTransfer: true })) {
           const rowBuf = encode("SnapshotStateRow", {
             table,
             canonicalJson: Buffer.from(canonicalJson(row), "utf8"),
