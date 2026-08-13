@@ -1,19 +1,17 @@
-// org_type and lei on identities. Both are public registry data about an
-// organization, unlike the registration number and incorporation date, which
+// org_type on identities: the legal form as the jurisdiction names it. Public
+// registry data, unlike the registration number and incorporation date, which
 // stay hashed into dedup_hash and never land on chain in the clear. Nullable:
-// persons never carry them, and organizations registered before this migration
-// have neither.
+// persons never carry it, and organizations registered before this migration
+// have none.
 //
-// org_type is 128 rather than the 64 the validator enforces: widening a column
-// later needs a migration, loosening the regex does not, so the headroom lives
-// here. lei is exactly 20 because ISO 17442 fixes it at 20.
+// 128 rather than the 64 the validator enforces: widening a column later needs
+// a migration, loosening the regex does not, so the headroom lives here.
 
 "use strict";
 
 const TABLE_NAME = "identities";
 const COLUMNS = [
   { name: "org_type", length: 128 },
-  { name: "lei", length: 20 },
 ];
 
 exports.up = async (knex) => {

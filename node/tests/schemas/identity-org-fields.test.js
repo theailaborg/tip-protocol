@@ -1,8 +1,7 @@
 /**
  * @file node/tests/schemas/identity-org-fields.test.js
- * @description org_type and lei on REGISTER_IDENTITY: organization-only,
- * LEI checksum-validated, and absent on identities that omit them so existing
- * signatures keep verifying.
+ * @description org_type on REGISTER_IDENTITY: organization-only, and absent
+ * on identities that omit it so existing signatures keep verifying.
  */
 
 "use strict";
@@ -28,8 +27,6 @@ function baseInput(extra = {}) {
 }
 
 const ORG = { tip_id_type: TIP_ID_TYPES.ORGANIZATION, creator_name: "ROOVERSE LTD" };
-const REAL_LEI = "506700GE1G29325QX363";   // GLEIF Foundation
-
 // schemaError throws a plain { status, error, code } object, not an Error, so
 // jest's .toThrow(regex) cannot see a message. Assert on the code instead.
 function expectCode(fn, code) {
@@ -39,49 +36,28 @@ function expectCode(fn, code) {
 
 beforeAll(async () => { await initCrypto(); });
 
-describe("REGISTER_IDENTITY org_type and lei", () => {
-  test("omitting both leaves the signed bytes unchanged", () => {
-    // Both are optional, so an identity without them must hash exactly as it
-    // did before the fields existed.
-    const withFields = schema.buildSigningPayload(baseInput(ORG));
-    expect(withFields.org_type).toBeUndefined();
-    expect(withFields.lei).toBeUndefined();
-    // Same payload built twice is stable, and neither key leaks in as null.
-    expect(Object.keys(withFields)).not.toContain("org_type");
-    expect(Object.keys(withFields)).not.toContain("lei");
+describe("REGISTER_IDENTITY org_type", () => {
+  test("omitting org_type leaves the signed bytes unchanged", () => {
+    // Optional, so an identity without it must hash exactly as it did before
+    // the field existed: the key must be absent, not emitted as null.
+    const payload = schema.buildSigningPayload(baseInput(ORG));
+    expect(payload.org_type).toBeUndefined();
+    expect(Object.keys(payload)).not.toContain("org_type");
   });
 
-  test("both enter the signed bytes when present", () => {
+  test("org_type enters the signed bytes when present", () => {
     const without = schema.buildSigningPayload(baseInput(ORG));
-    const withBoth = schema.buildSigningPayload(
-      baseInput({ ...ORG, org_type: "private-limited-company", lei: REAL_LEI }),
-    );
-    expect(withBoth.org_type).toBe("private-limited-company");
-    expect(withBoth.lei).toBe(REAL_LEI);
-    expect(shake256(canonicalJson(withBoth))).not.toBe(shake256(canonicalJson(without)));
+    const withType = schema.buildSigningPayload(baseInput({ ...ORG, org_type: "private-limited-company" }));
+    expect(withType.org_type).toBe("private-limited-company");
+    expect(shake256(canonicalJson(withType))).not.toBe(shake256(canonicalJson(without)));
   });
 
-  test("lei is uppercased before signing", () => {
-    const p = schema.buildSigningPayload(baseInput({ ...ORG, lei: REAL_LEI.toLowerCase() }));
-    expect(p.lei).toBe(REAL_LEI);
-  });
 
-  test("a bad LEI checksum is rejected", () => {
-    // Real LEI with the final check digit changed.
-    const bad = REAL_LEI.slice(0, 19) + "4";
-    expectCode(() => schema.buildSigningPayload(baseInput({ ...ORG, lei: bad })), "lei_invalid");
-  });
 
-  test("a wrong-length LEI is rejected", () => {
-    expectCode(() => schema.buildSigningPayload(baseInput({ ...ORG, lei: "TOOSHORT" })), "lei_invalid");
-  });
 
   test("org fields on a person are rejected", () => {
     expectCode(() => schema.buildSigningPayload(
       baseInput({ tip_id_type: TIP_ID_TYPES.PERSONAL, org_type: "llc" }),
-    ), "org_field_on_person");
-    expectCode(() => schema.buildSigningPayload(
-      baseInput({ tip_id_type: TIP_ID_TYPES.PERSONAL, lei: REAL_LEI }),
     ), "org_field_on_person");
   });
 

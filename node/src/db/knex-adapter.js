@@ -886,7 +886,6 @@ class KnexAdapter {
       creator_name: rec.creator_name || null,
       tx_id: rec.tx_id || null,
       org_type: rec.org_type || null,
-      lei: rec.lei || null,
     };
     this._ff(() => this._dbInsert("identities", "tip_id", row, "merge"));
   }

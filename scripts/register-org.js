@@ -93,8 +93,6 @@ const region = (getArg("--region", "GB") || "GB").toUpperCase();
 // Legal form as the jurisdiction names it (private-limited-company, llc, gmbh).
 // Deliberately not a fixed enum: forms differ per country and new ones appear.
 const orgType = getArg("--org-type", null);
-// ISO 17442. Optional: most companies never obtain an LEI.
-const lei = getArg("--lei", null);
 const nodeUrl = getArg("--node-url", "http://localhost:4000");
 const vpFile = getArg("--vp-file", null);
 const outDirOverride = getArg("--out-dir", null);
@@ -255,7 +253,6 @@ async function main() {
     tip_id_type: "organization",
     creator_name: orgName,
     ...(orgType ? { org_type: orgType } : {}),
-    ...(lei ? { lei } : {}),
   };
   const canonicalPayload = registerIdentitySchema.buildSigningPayload(idFields);
   const vpSignature = registerIdentitySchema.sign(canonicalPayload, vp.private_key);

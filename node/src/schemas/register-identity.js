@@ -147,22 +147,6 @@ function validateRequest(body, deps) {
 }
 
 /**
- * ISO 17442 LEI: 18 alphanumerics + 2 check digits, validated with ISO 7064
- * MOD 97-10 (the IBAN scheme). Letters expand to numbers (A=10 .. Z=35) and
- * the whole 20-character string must be congruent to 1 mod 97.
- */
-function isValidLei(lei) {
-  if (!/^[A-Z0-9]{18}[0-9]{2}$/.test(lei)) return false;
-  let rem = 0;
-  for (const ch of lei) {
-    const code = ch.charCodeAt(0);
-    const part = (code >= 65 && code <= 90) ? String(code - 55) : ch;
-    for (const digit of part) rem = (rem * 10 + Number(digit)) % 97;
-  }
-  return rem === 1;
-}
-
-/**
  * Build the canonical 9-field signed payload. All fields always
  * present; defaults fill in for omitted optionals. Reject-on-extra:
  * picks exactly these 9 keys.
@@ -220,22 +204,15 @@ function buildSigningPayload(input) {
     );
   }
 
-  // org_type and lei describe an organization, so they are meaningless on a
-  // person and rejected there rather than silently dropped. Both are public
-  // registry data, unlike the registration number, which stays hashed.
+  // org_type describes an organization, so it is meaningless on a person and
+  // rejected there rather than silently dropped. Public registry data, unlike
+  // the registration number, which stays hashed into dedup_hash.
   const orgType = input.org_type == null ? undefined : input.org_type;
-  const lei = input.lei == null ? undefined : String(input.lei).toUpperCase();
-  if ((orgType !== undefined || lei !== undefined) && tipIdType !== TIP_ID_TYPES.ORGANIZATION) {
-    throw schemaError(400, "org_type and lei are only valid for organizations", "org_field_on_person");
+  if (orgType !== undefined && tipIdType !== TIP_ID_TYPES.ORGANIZATION) {
+    throw schemaError(400, "org_type is only valid for organizations", "org_field_on_person");
   }
   if (orgType !== undefined && (typeof orgType !== "string" || !/^[a-z0-9-]{2,64}$/.test(orgType))) {
     throw schemaError(400, "org_type must be 2-64 chars, lowercase letters, digits or hyphens", "org_type_invalid");
-  }
-  // ISO 17442: 18 alphanumerics then 2 ISO 7064 MOD 97-10 check digits. The
-  // checksum matters because the value is permanent once committed and a
-  // transposed character is otherwise undetectable.
-  if (lei !== undefined && !isValidLei(lei)) {
-    throw schemaError(400, "lei must be a valid 20-character LEI (ISO 17442 checksum)", "lei_invalid");
   }
 
   const normalised = {
@@ -249,14 +226,13 @@ function buildSigningPayload(input) {
     zk_proof: input.zk_proof,
     creator_name: input.creator_name,
     org_type: orgType,
-    lei,
   };
   return buildSignedPayload(normalised, {
     required: [
       "algorithm", "dedup_hash", "public_key", "region",
       "tip_id_type", "verification_tier", "vp_id", "zk_proof",
     ],
-    optional: ["creator_name", "lei", "org_type"],
+    optional: ["creator_name", "org_type"],
   });
 }
 

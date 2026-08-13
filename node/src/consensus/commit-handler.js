@@ -1175,7 +1175,6 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             tx_id: tx.tx_id,
             creator_name: d.creator_name || null,
             org_type: d.org_type || null,
-            lei: d.lei || null,
           });
         }
         // Score effect (initial score for new identity) is applied in
