@@ -1673,14 +1673,17 @@ class MemoryStore {
   // forking the state root. The snapshot serve sets contentRaw:true; the
   // receiver re-derives the root via computeStateMerkleRoot after install, so
   // hashing still canonicalizes and determinism is preserved.
-  *iterateCanonicalState({ contentRaw = false } = {}) {
+  *iterateCanonicalState({ rawTransfer = false, contentRaw = false } = {}) {
+    // contentRaw is the old name, kept so an un-updated caller cannot silently
+    // opt out of raw transfer and reintroduce the #132 re-quantization fork.
+    const raw = rawTransfer || contentRaw;
     for (const r of [...this._identities.values()]
       .sort((a, b) => cmpBin(a.tip_id, b.tip_id))) {
-      yield { table: "identities", row: _canonIdentity(r) };
+      yield { table: "identities", row: raw ? r : _canonIdentity(r) };
     }
     for (const r of [...this._content.values()]
       .sort((a, b) => cmpBin(a.ctid, b.ctid))) {
-      yield { table: "content", row: contentRaw ? r : _canonContent(r) };
+      yield { table: "content", row: raw ? r : _canonContent(r) };
     }
     for (const [tip_id, v] of [...this._scores.entries()]
       .sort((a, b) => cmpBin(a[0], b[0]))) {
@@ -1713,7 +1716,7 @@ class MemoryStore {
     }
     for (const r of [...this._nodes.values()]
       .sort((a, b) => cmpBin(a.node_id, b.node_id))) {
-      yield { table: "nodes", row: _canonNode(r) };
+      yield { table: "nodes", row: raw ? r : _canonNode(r) };
     }
     // GH #60 — entity_keys participates in state_merkle_root so the
     // federation agrees byte-for-byte on every identity/node/VP's key
@@ -3919,10 +3922,12 @@ class SQLiteStore {
     return smt.root();
   }
   rebuildStateTree() { return this.stateRoot(); }
-  *iterateCanonicalState() {
+  *iterateCanonicalState({ rawTransfer = false, contentRaw = false } = {}) {
+    // Mirrors MemoryStore: raw rows for transfer, whitelists for hashing.
+    const raw = rawTransfer || contentRaw;
     const db = this.db;
     for (const r of db.prepare("SELECT * FROM identities ORDER BY tip_id").iterate()) {
-      yield { table: "identities", row: _canonIdentity(r) };
+      yield { table: "identities", row: raw ? r : _canonIdentity(r) };
     }
     for (const r of db.prepare("SELECT * FROM content ORDER BY tip_ctid").iterate()) {
       // _hydrateContent decodes JSON columns (authors, extras, registered_urls)
@@ -3933,7 +3938,7 @@ class SQLiteStore {
       // Boolean/int normalization (founding, prescan_flagged, override, etc.)
       // is handled inside _canonContent/_canonIdentity via `? 1 : 0` — works
       // for both SQLite int (0/1) and MemoryStore bool (true/false).
-      yield { table: "content", row: _canonContent(this._hydrateContent(r)) };
+      yield { table: "content", row: raw ? this._hydrateContent(r) : _canonContent(this._hydrateContent(r)) };
     }
     for (const r of db.prepare("SELECT tip_id, score, offense_count, last_updated FROM scores ORDER BY tip_id").iterate()) {
       yield { table: "scores", row: _canonScore(r.tip_id, r) };
@@ -3957,7 +3962,7 @@ class SQLiteStore {
       yield { table: "verification_providers", row: _canonVP(r) };
     }
     for (const r of db.prepare("SELECT * FROM nodes ORDER BY node_id").iterate()) {
-      yield { table: "nodes", row: _canonNode(r) };
+      yield { table: "nodes", row: raw ? r : _canonNode(r) };
     }
     // GH #60 — entity_keys participates in state_merkle_root.
     for (const r of this._stmts.iterateEntityKeys.iterate()) {
