@@ -8,7 +8,7 @@
 
 "use strict";
 
-const { MemoryStore } = require("../../src/dag");
+const { MemoryStore, SQLiteStore } = require("../../src/dag");
 
 function seed(store) {
   store.saveIdentity({
@@ -84,5 +84,23 @@ describe("snapshot raw transfer", () => {
     // An un-updated caller must not silently fall back to canonical rows.
     expect(rowsFor(store, "identities", { contentRaw: true })[0].org_type)
       .toBe("private-limited-company");
+  });
+
+  // Adapter parity: the Postgres path delegates to the mirror (MemoryStore)
+  // with opts threaded through, so covering Memory + SQLite covers all three.
+  test("SQLiteStore honours rawTransfer the same way", () => {
+    let sq;
+    try { sq = new SQLiteStore(":memory:"); }
+    catch { return; }   // better-sqlite3 unavailable in this environment
+    seed(sq);
+    const canonIds = rowsFor(sq, "identities");
+    const rawIds = rowsFor(sq, "identities", { rawTransfer: true });
+    expect(canonIds[0]).not.toHaveProperty("org_type");
+    expect(rawIds[0].org_type).toBe("private-limited-company");
+
+    const canonNodes = rowsFor(sq, "nodes");
+    const rawNodes = rowsFor(sq, "nodes", { rawTransfer: true });
+    expect(canonNodes[0]).not.toHaveProperty("operated_by");
+    expect(rawNodes[0].operated_by).toBe("tip://id/GB-1111111111111111");
   });
 });
