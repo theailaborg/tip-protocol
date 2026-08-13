@@ -225,6 +225,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       tier: scoreData.tier.name, tier_color: scoreData.tier.color,
       content_count: content.length, registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
+      org_type: rec.org_type || null,
       verification: { tx_exists: !!tx, tx_id_valid: txValid, on_dag: true },
     };
   }
