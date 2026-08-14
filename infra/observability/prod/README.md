@@ -167,33 +167,32 @@ live under Dashboards; run `../grafana/star-dashboards.sh` to surface them all.
 There is no separate "test" or "simple" variant, and there should not be. This
 is the only stack: point `.env` at test values and deploy the same files.
 
-Prefer reusing the existing monitoring host rather than standing up a second
-one. A test cluster does not need its own Loki, its own Grafana, or its own
-domains: point the node agents at the Loki that already exists and label them
-apart.
+Test clusters get their own Loki and their own Prometheus. Do not point a test
+cluster at the production monitoring host.
+
+Sharing one Loki looks tempting because labels can separate the queries, but
+labels do not separate anything that matters:
+
+- `ingestion_rate_mb` and `ingestion_burst_size_mb` are global. A load test on
+  the test cluster can saturate the write path and cause Loki to reject
+  production log lines, during exactly the window you would want them.
+- Retention is shared, so test volume consumes the production window.
+- Any query or alert that omits a cluster filter silently spans both. The
+  runbook's own `{job="tip-node"} |= "ERROR"` would return test errors during a
+  production incident.
+
+Deploy these same files a second time with test values:
 
 ```
-# on each test node, agent/promtail.env
-LOKI_URL=logs.example.org          # the SAME Loki production uses
-LOKI_PASSWORD=<same credential>
-NODE_LABEL=testnet-node1           # the only thing that differs
+OBS_DOMAIN=<test grafana host>
+LOGS_DOMAIN=<test loki host>
+TIP_NODE_TARGETS=<test node IPs>:4000
+TIP_API_BASE_URL=http://<a test node private IP>:4000
 ```
 
-Then add the test nodes to the monitoring host's `prometheus.yml` under their
-own job with a `cluster: testnet` label. One Grafana, both clusters, filterable
-by label. No `OBS_DOMAIN` or `LOGS_DOMAIN` for the test cluster, because it
-serves neither.
-
-Only stand up a second full stack if the test cluster must be reachable when
-production monitoring is down, or by people who should not see production. In
-that case deploy these same files with test values for `OBS_DOMAIN`,
-`LOGS_DOMAIN`, `TIP_NODE_TARGETS` and `TIP_API_BASE_URL`, and accept that it is
-a second thing to patch.
-
-Either way the node agent is identical: the same
-`agent/docker-compose.promtail.yml`, differing only by `NODE_LABEL`. A
-hand-rolled variant drifts from this one and silently loses whichever fixes
-landed here.
+and point the test nodes' `agent/promtail.env` at the test `LOKI_URL`. The node
+agent is otherwise identical. Two stacks is the cost of keeping production data
+clean; it is the right trade.
 
 ## Operations
 
