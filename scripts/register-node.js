@@ -18,11 +18,26 @@
  *   --port 4100                  API port for the new node (default: 4100)
  *   --p2p-port 4101              libp2p port for the new node (default: api-port + 1)
  *   --public-ip 127.0.0.1        Publicly-reachable IP (default: 127.0.0.1)
- *   --db-name tip_node2          Per-node DB name override (optional; defaults to DB_NAME from env)
- *   --db-user tip_node2          Per-node DB user override (optional; Oracle nodes need tip_node2/3/4)
+ *   --db-name tip_node2          Per-node DB name (default: tip_protocol)
+ *   --db-user tip_node2          Per-node DB user (default: tip; Oracle nodes need tip_node2/3/4)
+ *   --db-host postgres           DB host (default: postgres)
+ *   --db-port 5432               DB port (default: 5432)
+ *   --db-password ...            DB password (default: secret, the local-compose value)
+ *   --public-url https://...     Public URL of the new node (default: http://localhost:<port>)
+ *   --api-endpoint https://...   Endpoint the node announces on chain (default: unset)
+ *   --classifier-url https://... Classifier base URL (default: the .env.example value)
+ *   --cors-origins a,b           Allowed origins (default: the .env.example value)
+ *   --production                 NODE_ENV=production and force an explicit CORS origin list
  *   --operated-by tip://id/...   Identity responsible for this node (optional)
  *   --operator-key-file ./x.json That identity's .tip.json; required with --operated-by,
  *                                since the operator must cosign the registration
+ *
+ * The generated .env is built from .env.example plus the flags above and
+ * nothing else. It deliberately inherits no value from the operator's own
+ * environment: this file is handed to other node operators, so an inherited
+ * credential, bucket or tuning value would travel with it. Secrets
+ * (TIP_CLASSIFIER_KEY, TIP_METRICS_TOKEN, DATABASE_URL, AWS_*) are set by hand
+ * on the target host; node-env-template.js refuses to write them.
  *
  * Output layout:
  *   generated_nodes/<slug>-<short-tip-id>/
@@ -99,6 +114,21 @@ const publicIp = getArg("--public-ip", "127.0.0.1");      // override for prod /
 const dbNameOverride = getArg("--db-name", null);         // per-node DB name (optional)
 const dbUserOverride = getArg("--db-user", null);         // per-node DB user (optional; needed for Oracle)
 const forceHalted = args.includes("--force");              // allow registration against a halted node
+
+// The generated .env is a function of .env.example plus these flags and nothing
+// else. It reads nothing from the operator's own environment: this file is
+// handed to other node operators, so anything inherited here travels with it,
+// and a value that is right for our box is usually wrong or unsafe on theirs.
+const dbHost = getArg("--db-host", "postgres");
+const dbPort = getArg("--db-port", "5432");
+const dbPassword = getArg("--db-password", "secret");
+const classifierUrl = getArg("--classifier-url", null);
+// Announced on chain by init-endpoint-announce, so it must never be inherited:
+// a generated node would publish the generating machine's endpoint as its own.
+const apiEndpoint = getArg("--api-endpoint", null);
+const publicUrl = getArg("--public-url", null);
+const corsOrigins = getArg("--cors-origins", null);
+const isProduction = args.includes("--production");
 
 /** Slugify a display name into a filesystem-safe identifier. */
 function slugify(s) {
@@ -304,45 +334,8 @@ async function main() {
   const envPath = path.join(outDir, envFileName);
   const envRelForLaunch = path.relative(process.cwd(), envPath);
 
-  // Collect DB settings from the current environment (loaded by dotenv above).
-  // DB_NAME may be overridden per-node via --db-name; all other settings are
-  // inherited from the seed node's environment so the new node uses the same DB.
-  const dbDriver = process.env.DB_DRIVER || "";
-  const dbHost = process.env.DB_HOST || "";
-  const dbPort = process.env.DB_PORT || "";
-  const dbName = dbNameOverride || process.env.DB_NAME || "";
-  const dbUser = dbUserOverride || process.env.DB_USER || "";
-  const dbPassword = process.env.DB_PASSWORD || "";
-  const dbSsl = process.env.DB_SSL || "";
-  const dbSslRejectUnauthorized = process.env.DB_SSL_REJECT_UNAUTHORIZED || "";
-  const dbPoolMin = process.env.DB_POOL_MIN || "";
-  const dbPoolMax = process.env.DB_POOL_MAX || "";
-
-  // Operational config carried from the seed node's env (media, classifier,
-  // prescan, rate-limit, dev) so a new node matches it. Not consensus-critical.
-  const mediaBackend = process.env.TIP_MEDIA_BACKEND || "";
-  const mediaFsPath = process.env.TIP_MEDIA_FS_PATH || "";
-  const mediaPresignTtl = process.env.TIP_MEDIA_PRESIGN_TTL_SEC || "";
-  const mediaS3Bucket = process.env.TIP_MEDIA_S3_BUCKET || "";
-  const mediaS3Region = process.env.TIP_MEDIA_S3_REGION || "";
-  const mediaS3Kms = process.env.TIP_MEDIA_S3_KMS_KEY_ID || "";
-  const classifierUrl = process.env.TIP_CLASSIFIER_URL || "";
-  const classifierFb = process.env.TIP_CLASSIFIER_FALLBACK || "";
-  const prescanConc = process.env.TIP_PRESCAN_CONCURRENCY || "";
-  const rateLimitMax = process.env.TIP_RATE_LIMIT_MAX || "";
-  const devForceTier = process.env.TIP_DEV_FORCE_PRESCAN_TIER || "";
-  const disableNativeMldsa = process.env.TIP_DISABLE_NATIVE_MLDSA || "";
-  const vpId = process.env.TIP_VP_ID || "";
-  const databaseUrl = process.env.DATABASE_URL || "";
-  const cryptoPool = process.env.TIP_CRYPTO_POOL_SIZE || "";
-  const classifierKey = process.env.TIP_CLASSIFIER_KEY || "";
-  const classifierScan = process.env.TIP_CLASSIFIER_SCAN_NON_OH || "";
-  const prescanWorker = process.env.TIP_PRESCAN_WORKER_COUNT || "";
-  const rateLimitWin = process.env.TIP_RATE_LIMIT_WINDOW_MS || "";
-  const apiEndpoint = process.env.TIP_API_ENDPOINT || "";
-
-  // Drop-in .env from .env.example + the values we know. Blank carried values
-  // (u -> undefined) keep the example default. See node-env-template.js.
+  // Drop-in .env from .env.example + the values we know. Anything omitted here
+  // keeps its .env.example default. See node-env-template.js.
   const u = (x) => (x === "" || x === undefined || x === null ? undefined : x);
   const envContent = renderEnvFromExample({
     TIP_NODE_ID: result.node_id,
@@ -354,27 +347,19 @@ async function main() {
     TIP_DATA_DIR: dataDirRel,
     TIP_DB_PATH: `${dataDirRel}/tip.db`,
     TIP_LOG_DIR: logDirRel,
-    TIP_PUBLIC_URL: `http://localhost:${apiPort}`,
+    TIP_PUBLIC_URL: u(publicUrl) || `http://localhost:${apiPort}`,
     TIP_NODE_CREDENTIALS_FILE: tipFileRel,
-    DB_DRIVER: u(dbDriver) || "postgres",
-    DB_HOST: u(dbHost) || "postgres",
-    DB_PORT: u(dbPort) || "5432",
-    DB_NAME: u(dbName) || "tip_protocol",
-    DB_USER: u(dbUser) || "tip",
-    DB_PASSWORD: u(dbPassword) || "secret",
-    DB_SSL: u(dbSsl), DB_SSL_REJECT_UNAUTHORIZED: u(dbSslRejectUnauthorized),
-    DB_POOL_MIN: u(dbPoolMin), DB_POOL_MAX: u(dbPoolMax),
-    TIP_VP_ID: u(vpId), DATABASE_URL: u(databaseUrl), TIP_CRYPTO_POOL_SIZE: u(cryptoPool),
-    TIP_MEDIA_BACKEND: u(mediaBackend), TIP_MEDIA_FS_PATH: u(mediaFsPath),
-    TIP_MEDIA_PRESIGN_TTL_SEC: u(mediaPresignTtl), TIP_MEDIA_S3_BUCKET: u(mediaS3Bucket),
-    TIP_MEDIA_S3_REGION: u(mediaS3Region), TIP_MEDIA_S3_KMS_KEY_ID: u(mediaS3Kms),
-    TIP_CLASSIFIER_URL: u(classifierUrl), TIP_CLASSIFIER_KEY: u(classifierKey),
-    TIP_CLASSIFIER_FALLBACK: u(classifierFb), TIP_CLASSIFIER_SCAN_NON_OH: u(classifierScan),
-    TIP_PRESCAN_CONCURRENCY: u(prescanConc), TIP_PRESCAN_WORKER_COUNT: u(prescanWorker),
-    TIP_RATE_LIMIT_MAX: u(rateLimitMax), TIP_RATE_LIMIT_WINDOW_MS: u(rateLimitWin),
+    DB_DRIVER: "postgres",
+    DB_HOST: dbHost,
+    DB_PORT: dbPort,
+    DB_NAME: dbNameOverride || "tip_protocol",
+    DB_USER: dbUserOverride || "tip",
+    DB_PASSWORD: dbPassword,
+    TIP_CLASSIFIER_URL: u(classifierUrl),
     TIP_API_ENDPOINT: u(apiEndpoint),
-    TIP_DEV_FORCE_PRESCAN_TIER: u(devForceTier),
-    TIP_DISABLE_NATIVE_MLDSA: u(disableNativeMldsa),
+    NODE_ENV: isProduction ? "production" : undefined,
+    TIP_CORS_ORIGINS: u(corsOrigins)
+      || (isProduction ? "CHANGE_ME_YOUR_CLIENT_ORIGINS_COMMA_SEPARATED" : undefined),
   }, {
     headerNotes: [
       `${name}`,
