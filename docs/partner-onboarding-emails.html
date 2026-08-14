@@ -48,6 +48,8 @@
   button.done { background: var(--ok); }
   .body { padding: 20px 24px; }
   .warn { font-size: 13px; color: var(--muted); padding: 10px 24px 0; }
+  .alert { font-size: 14px; margin: 0 0 22px; padding: 11px 14px; border-radius: 8px;
+           background: rgba(217,48,37,.10); border: 1px solid rgba(217,48,37,.45); }
   .ph { background: rgba(255,196,0,.22); border-radius: 3px; padding: 0 2px; }
   .ph.filled { background: none; padding: 0; }
 </style>
@@ -55,10 +57,12 @@
 <body>
 <div class="wrap">
   <h1>Node operator onboarding emails</h1>
-  <p class="lede">Fill in the fields, click <b>Copy email</b>, paste into your mail client. It pastes as
-     formatted text, not markdown source. Highlighted values are the ones still unfilled.
-     Never attach the <code>.tip.json</code> key files to the email: send them as a password-protected
-     zip, with the password over a different channel.</p>
+  <p class="lede">Fill in the fields, click <b>Copy email</b>, then paste with <b>Cmd/Ctrl+V</b>. Do not use
+     paste-as-plain-text (Cmd/Ctrl+Shift+V), which throws away the formatting. Highlighted values are the
+     ones still unfilled.</p>
+  <p class="alert"><b>Attach one partner's zip and no other.</b> The archives are named per partner and sit
+     in the same folder, so it is easy to attach two. Check the attachment list against the partner in the
+     To field before sending. Send the password by phone or Signal, never in this thread.</p>
 
   <div class="fields">
     <h2>Details</h2>
@@ -360,12 +364,47 @@ FIELDS.forEach((i) => {
   i.addEventListener("input", () => apply(i));
 });
 
+// The source is hard-wrapped for readability, so every line break inside a <p>
+// would otherwise survive into the clipboard and arrive as ragged mid-sentence
+// newlines. Collapse runs of whitespace everywhere except <pre>, where the
+// command blocks must stay verbatim.
+function collapseWhitespace(root) {
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walk.nextNode()) nodes.push(walk.currentNode);
+  for (const n of nodes) {
+    if (n.parentElement && n.parentElement.closest("pre")) continue;
+    n.nodeValue = n.nodeValue.replace(/\s+/g, " ");
+  }
+}
+
+// innerText drops list markers, which makes the plain-text fallback read as a
+// wall of indented fragments. Build it by hand instead.
+function toPlainText(root) {
+  const out = [];
+  for (const el of root.querySelectorAll("p, ul, ol, pre")) {
+    if (el.closest("li")) continue;
+    if (el.tagName === "PRE") { out.push(el.textContent.replace(/\s+$/, "")); continue; }
+    if (el.tagName === "UL" || el.tagName === "OL") {
+      const ordered = el.tagName === "OL";
+      [...el.children].forEach((li, i) => {
+        out.push((ordered ? `${i + 1}. ` : "- ") + li.textContent.replace(/\s+/g, " ").trim());
+      });
+      continue;
+    }
+    const t = el.textContent.replace(/\s+/g, " ").trim();
+    if (t) out.push(t);
+  }
+  return out.join("\n\n").replace(/\n{3,}/g, "\n\n");
+}
+
 async function copyEmail(id, btn) {
   const node = document.getElementById(id);
   // Strip the highlight so an unfilled placeholder does not paste with a background.
   const clone = node.cloneNode(true);
   clone.querySelectorAll(".ph").forEach((el) => el.replaceWith(document.createTextNode(el.textContent)));
-  const html = clone.innerHTML, text = clone.innerText;
+  collapseWhitespace(clone);
+  const html = clone.innerHTML, text = toPlainText(clone);
   try {
     await navigator.clipboard.write([new ClipboardItem({
       "text/html": new Blob([html], { type: "text/html" }),
