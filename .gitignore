@@ -32,6 +32,9 @@ node3/
 # Generated per-node keys + .env from scripts/register-node.js
 generated_nodes/
 generated-nodes/
+# register-org.js writes org private keys here
+generated_orgs/
+generated-orgs/
 
 # Genesis public data — OK to commit
 !genesis-data/seed.db

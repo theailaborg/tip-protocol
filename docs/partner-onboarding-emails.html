@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TIP node operator onboarding emails</title>
+<!--
+  Fill the fields, click Copy, paste into an email client. Copies rich text, so
+  it arrives formatted rather than as a block of markdown source.
+  Never attach the .tip.json key files to the email itself.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --line: #dadce0; --ink: #202124;
+    --muted: #5f6368; --accent: #1a73e8; --ok: #188038; --code: #f6f8fa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181c; --card:#212429; --line:#3a3f47; --ink:#e6e8eb;
+            --muted:#9aa0a6; --accent:#8ab4f8; --ok:#81c995; --code:#1a1d21; }
+  }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         color: var(--ink); background: var(--bg); margin: 0; padding: 28px 18px 80px; }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .lede { color: var(--muted); margin: 0 0 22px; font-size: 14px; }
+  .lede code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  .fields { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+            padding: 16px 18px; margin: 0 0 26px; }
+  .fields h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+               color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+  input { width: 100%; font: inherit; font-size: 14px; padding: 7px 10px; color: var(--ink);
+          background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .hint { font-size: 12px; color: var(--muted); margin: 12px 0 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          margin: 0 0 26px; overflow: hidden; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+         padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  .bar h2 { font-size: 14px; margin: 0; font-weight: 600; }
+  .subj { font-size: 13px; color: var(--muted); margin: 3px 0 0; }
+  button { font: 600 13px/1 inherit; background: var(--accent); color: #fff; border: 0;
+           border-radius: 6px; padding: 9px 16px; cursor: pointer; white-space: nowrap; }
+  @media (prefers-color-scheme: dark) { button { color: #16181c; } }
+  button:hover { filter: brightness(1.08); }
+  button.done { background: var(--ok); }
+  .body { padding: 20px 24px; }
+  .warn { font-size: 13px; color: var(--muted); padding: 10px 24px 0; }
+  .ph { background: rgba(255,196,0,.22); border-radius: 3px; padding: 0 2px; }
+  .ph.filled { background: none; padding: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Node operator onboarding emails</h1>
+  <p class="lede">Fill in the fields, click <b>Copy email</b>, paste into your mail client. It pastes as
+     formatted text, not markdown source. Highlighted values are the ones still unfilled.
+     Never attach the <code>.tip.json</code> key files to the email: send them as a password-protected
+     zip, with the password over a different channel.</p>
+
+  <div class="fields">
+    <h2>Details</h2>
+    <div class="grid">
+      <div><label for="f-PARTNER">Partner name</label>
+           <input id="f-PARTNER" data-ph="PARTNER" placeholder="Acme Ltd" autofocus></div>
+      <div><label for="f-ORG_TIP_ID">Org TIP-ID (mainnet)</label>
+           <input id="f-ORG_TIP_ID" data-ph="ORG_TIP_ID" placeholder="tip://id/GB-..."></div>
+      <div><label for="f-LEGAL_NAME">Legal name (mainnet)</label>
+           <input id="f-LEGAL_NAME" data-ph="LEGAL_NAME" placeholder="Acme Limited"></div>
+      <div><label for="f-REG_NUMBER">Registration number</label>
+           <input id="f-REG_NUMBER" data-ph="REG_NUMBER" placeholder="12345678"></div>
+      <div><label for="f-REG_SCHEME">Registration scheme</label>
+           <input id="f-REG_SCHEME" data-ph="REG_SCHEME" placeholder="UK Companies House"></div>
+      <div><label for="f-INCORPORATED">Incorporated</label>
+           <input id="f-INCORPORATED" data-ph="INCORPORATED" placeholder="2019-04-11"></div>
+      <div><label for="f-COUNTRY">Country</label>
+           <input id="f-COUNTRY" data-ph="COUNTRY" placeholder="United Kingdom"></div>
+      <div><label for="f-GENESIS">Mainnet genesis prefix</label>
+           <input id="f-GENESIS" data-ph="GENESIS" placeholder="d4666ce1"></div>
+    </div>
+    <p class="hint">Only <b>Partner name</b> matters for the test email. The rest fill in the mainnet one.</p>
+  </div>
+
+  <!-- ─────────────── TEST NETWORK ─────────────── -->
+  <div class="card">
+    <div class="bar">
+      <div>
+        <h2>1. Test network onboarding</h2>
+        <p class="subj">Subject: TIP test network: your node credentials and setup steps</p>
+      </div>
+      <button onclick="copyEmail('email-test', this)">Copy email</button>
+    </div>
+    <div class="body" id="email-test">
+      <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
+        <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
+
+        <p>Your node is registered on the TIP test network and ready to bring online. The test network is
+        completely separate from production: its own genesis, its own identities, its own data. Nothing you
+        do here can affect the live chain, so it is a safe place to get familiar with running a node.</p>
+
+        <p><b>Attached</b></p>
+        <ul>
+          <li><b>node.env</b> - your node configuration, mostly filled in</li>
+          <li><b>genesis.json</b> - the test network genesis</li>
+          <li><b>README.md</b> - what to do, in order</li>
+        </ul>
+
+        <p><b>Sent as a password-protected zip</b> (private keys). The password comes over a separate
+        channel, not in this thread.</p>
+        <ul>
+          <li><b>tip-node-&lt;id&gt;.tip.json</b> - your <b>node</b> key. Runs the node. Treat it like an SSH
+          host key: <span style="font-family:monospace">chmod 600</span>, never commit it, never forward it.</li>
+          <li><b>id-&lt;REGION&gt;-&lt;id&gt;.tip.json</b> - your <b>organization identity</b>. This is your
+          company on the network; it signs content as you. It is not needed to run the node, so keep it off
+          the node host, wherever you keep company signing material.</li>
+        </ul>
+
+        <p>Please store both in whatever you use for company secrets and keep an offline backup before you
+        deploy. If either is ever lost or exposed, tell us straight away so we can act on it with you.</p>
+
+        <p><b>Where to start</b></p>
+
+        <p>Start with <b>README.md</b> in the bundle. The node is open source, so you can read everything
+        before you provision anything:<br>
+        <a href="https://github.com/theailaborg/tip-protocol">https://github.com/theailaborg/tip-protocol</a></p>
+
+        <ol>
+          <li><b>Hardware and OS</b>, please check before provisioning; the figures are measured from our
+          production federation:<br>
+          <a href="https://github.com/theailaborg/tip-protocol/blob/main/docs/NODE_REQUIREMENTS.md">https://github.com/theailaborg/tip-protocol/blob/main/docs/NODE_REQUIREMENTS.md</a></li>
+          <li><b>The deploy itself</b>, section <i>Production Federation Deploy (0 to live)</i>:<br>
+          <a href="https://github.com/theailaborg/tip-protocol/blob/main/docs/DEPLOYMENT.md">https://github.com/theailaborg/tip-protocol/blob/main/docs/DEPLOYMENT.md</a></li>
+          <li><b>Overview and repo layout</b>:<br>
+          <a href="https://github.com/theailaborg/tip-protocol/blob/main/README.md">https://github.com/theailaborg/tip-protocol/blob/main/README.md</a></li>
+        </ol>
+
+        <p>Two things that catch almost everyone:</p>
+        <ul>
+          <li>The container runs as <b>uid 1001</b>. Every file it reads must be owned by 1001.</li>
+          <li>Run <span style="font-family:monospace">mkdir -p logs &amp;&amp; sudo chown -R 1001:1001 logs</span>
+          <b>before</b> the first boot, or the log directory silently stays empty.</li>
+        </ul>
+
+        <p>And please do <b>not</b> run <span style="font-family:monospace">npm run seed</span> or
+        <span style="font-family:monospace">seed:fresh</span>. That mints a fresh genesis and new identities,
+        and your node will not be able to join us.</p>
+
+        <p><b>Three values you need to set</b> in <b>node.env</b> (marked
+        <span style="font-family:monospace">CHANGE_ME</span>): your public IP, your public URL, and a database
+        password of your choosing.</p>
+
+        <p><b>node.env</b> also contains <span style="font-family:monospace">TIP_CLASSIFIER_KEY</span>, which
+        lets your node reach our content classifier. Please treat it as a credential: keep the file
+        <span style="font-family:monospace">chmod 600</span>, do not commit it, and do not use the key from
+        anywhere other than your node. It is shared infrastructure, so if it leaks we have to rotate it for
+        everyone.</p>
+
+        <p><b>Please send back</b></p>
+        <p>To finish connecting you and add you to our monitoring, we need:</p>
+        <ol>
+          <li><b>Public IP</b> of the node host - we allow-list it and our nodes dial you back.</li>
+          <li><b>Domain name</b> for the node, if you are using one (e.g. tip.yourdomain.com), otherwise we
+          use the IP.</li>
+          <li><b>Confirmation that inbound TCP 4000 and 4001 are open</b> to the internet. 4000 is the API,
+          4001 is peer-to-peer. Without 4001 you can reach us but we cannot reach you, and you will not fully
+          join.</li>
+          <li><b>Your node's bootstrap address</b> once it is running:<br>
+          <span style="font-family:monospace">curl -s localhost:4000/health | grep -o '"bootstrap_addr":"[^"]*"'</span></li>
+          <li><b>A contact</b> for node issues - name and email, ideally someone reachable if the node
+          misbehaves.</li>
+          <li><b>Which region/provider</b> you are hosting in - helps us interpret latency.</li>
+          <li><b>Your real company registration details</b>, for the live network later: full legal name
+          exactly as registered, registration number, date of incorporation, country. We could not find you in
+          the public register, so your test identity uses a placeholder number. That is fine for testing and
+          not fine for production, where the value is permanent and uncorrectable. Please confirm these from
+          your own records rather than us looking them up.</li>
+        </ol>
+
+        <p><b>node.env</b> already contains <span style="font-family:monospace">TIP_METRICS_TOKEN</span>, which
+        lets our monitoring scrape your node's <span style="font-family:monospace">/metrics</span> endpoint so
+        your node's health shows on our dashboards alongside ours. Please leave it set: without it we cannot
+        tell you your node is unhealthy before you notice.
+        <span style="font-family:monospace">/metrics</span> rejects any request that does not present this
+        token, so the endpoint stays closed to everyone else. Once we have items 1 to 3 we will add your node
+        to our scrape config.</p>
+
+        <p><b>How to confirm you joined</b></p>
+        <p>Run these <b>on the node host</b> (over SSH), where
+        <span style="font-family:monospace">localhost</span> is the node:</p>
+        <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">curl -s localhost:4000/ready        # ready:true, halted:false, join_state:ready
+curl -s localhost:4000/health       # peers.connected &gt;= 1
+curl -s localhost:4000/v1/state-root</pre>
+        <p>From your laptop or anywhere else, use the node's own address instead. That also double-checks
+        that port 4000 is genuinely open, which <span style="font-family:monospace">localhost</span> cannot
+        tell you:</p>
+        <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">curl -s http://YOUR_NODE_IP:4000/ready</pre>
+
+        <p>The <span style="font-family:monospace">state_merkle_root</span> should match ours at the same
+        round. Expect the first boot to sit in
+        <span style="font-family:monospace">catching_up</span> briefly while it syncs; that is normal.</p>
+
+        <p>If anything does not match, send us the output of those commands plus
+        <span style="font-family:monospace">docker logs tip-node --tail 100</span> and we will take a look.</p>
+
+        <p>Thanks,<br>The AI Lab Team</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────── MAINNET ─────────────── -->
+  <div class="card">
+    <div class="bar">
+      <div>
+        <h2>2. Mainnet onboarding</h2>
+        <p class="subj">Subject: TIP mainnet: your production node credentials</p>
+      </div>
+      <button onclick="copyEmail('email-main', this)">Copy email</button>
+    </div>
+    <p class="warn">Send only after their test node has run and converged, and after their real registration
+       details are confirmed in writing. Registration details go on chain and cannot be edited.</p>
+    <div class="body" id="email-main">
+      <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
+        <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
+
+        <p>Your organization identity and node are now registered on the TIP <b>production</b> network, and
+        your test node has been running cleanly, so you are ready to bring a production node online.</p>
+
+        <p>Please read this section before anything else.</p>
+
+        <p><b>Treat both files as you would a signing certificate or an HSM-backed key.</b> They are what
+        proves your node and your organization on a live network, and they are not something we can reissue
+        on request. Keep an offline backup of each before you deploy, store them where you keep company
+        signing material, and tell us immediately if either is ever lost or exposed so we can act on it with
+        you.</p>
+
+        <p><b>Attached</b></p>
+        <ul>
+          <li><b>node.env</b> - your node configuration</li>
+          <li><b>genesis.json</b> - the production genesis
+          (<span class="ph" data-ph="GENESIS">{{GENESIS}}</span>...). This is not the test genesis; do not mix
+          the two, and do not reuse your test data directory.</li>
+          <li><b>README.md</b> - setup steps</li>
+        </ul>
+
+        <p><b>Sent as a password-protected zip</b> (private keys). The password comes over a separate
+        channel, not in this thread.</p>
+        <ul>
+          <li><b>NODE-KEY__tip-node-&lt;id&gt;.tip.json</b> - your <b>node</b> key. Lives on the node host,
+          read by the process at boot. <span style="font-family:monospace">chmod 600</span>, owned by uid 1001.</li>
+          <li><b>ORG-IDENTITY__id-&lt;REGION&gt;-&lt;id&gt;.tip.json</b> - your <b>organization identity</b>,
+          <span class="ph" data-ph="ORG_TIP_ID">{{ORG_TIP_ID}}</span>. Signs content as
+          <span class="ph" data-ph="PARTNER">{{PARTNER}}</span>. <b>Not</b> needed to run the node, so please
+          keep it off the node host entirely, wherever you keep company signing material.</li>
+        </ul>
+
+        <p><b>Your registered details</b>, as you confirmed them:</p>
+        <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">Legal name          : <span class="ph" data-ph="LEGAL_NAME">{{LEGAL_NAME}}</span>
+Registration number : <span class="ph" data-ph="REG_NUMBER">{{REG_NUMBER}}</span>  (<span class="ph" data-ph="REG_SCHEME">{{REG_SCHEME}}</span>)
+Incorporated        : <span class="ph" data-ph="INCORPORATED">{{INCORPORATED}}</span>
+Country             : <span class="ph" data-ph="COUNTRY">{{COUNTRY}}</span></pre>
+
+        <p>These are now on chain and cannot be changed. If anything above is wrong, tell us before you deploy
+        and do not use the identity.</p>
+
+        <p><b>Setup</b></p>
+        <p>Follow <b>README.md</b> in the bundle. The node is open source:</p>
+        <ul>
+          <li>Repo: <a href="https://github.com/theailaborg/tip-protocol">https://github.com/theailaborg/tip-protocol</a></li>
+          <li>Hardware and OS: <a href="https://github.com/theailaborg/tip-protocol/blob/main/docs/NODE_REQUIREMENTS.md">https://github.com/theailaborg/tip-protocol/blob/main/docs/NODE_REQUIREMENTS.md</a></li>
+          <li>Deploy steps: <a href="https://github.com/theailaborg/tip-protocol/blob/main/docs/DEPLOYMENT.md">https://github.com/theailaborg/tip-protocol/blob/main/docs/DEPLOYMENT.md</a></li>
+        </ul>
+
+        <p>Production notes beyond the test setup:</p>
+        <ul>
+          <li><span style="font-family:monospace">NODE_ENV=production</span></li>
+          <li><span style="font-family:monospace">TIP_CORS_ORIGINS</span> must list real origins, never
+          <span style="font-family:monospace">*</span></li>
+          <li><b>node.env</b> carries <span style="font-family:monospace">TIP_CLASSIFIER_KEY</span>, our
+          content classifier credential. Keep the file
+          <span style="font-family:monospace">chmod 600</span>, never commit it, and use the key only from
+          this node. It is shared infrastructure: a leak forces a rotation for every operator.</li>
+          <li>the container runs as <b>uid 1001</b>; every file it reads must be owned by 1001</li>
+          <li>run <span style="font-family:monospace">mkdir -p logs &amp;&amp; sudo chown -R 1001:1001 logs</span>
+          <b>before</b> first boot</li>
+          <li>never run <span style="font-family:monospace">npm run seed</span> or
+          <span style="font-family:monospace">seed:fresh</span></li>
+          <li>take a backup of both key files before you start, stored offline</li>
+        </ul>
+
+        <p><b>Before you deploy, please confirm</b></p>
+        <ol>
+          <li>Inbound TCP <b>4000 and 4001</b> reachable from the public internet</li>
+          <li>Static or elastic IP, not one that changes on reboot</li>
+          <li>Host meets the spec:<br>
+          <a href="https://github.com/theailaborg/tip-protocol/blob/main/docs/NODE_REQUIREMENTS.md">https://github.com/theailaborg/tip-protocol/blob/main/docs/NODE_REQUIREMENTS.md</a></li>
+          <li>You hold an offline backup of both key files</li>
+        </ol>
+
+        <p><b>Once you are up</b></p>
+        <p>Run these <b>on the node host</b> (over SSH), where
+        <span style="font-family:monospace">localhost</span> is the node:</p>
+        <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">curl -s localhost:4000/ready        # ready:true, halted:false, join_state:ready
+curl -s localhost:4000/health       # peers.connected &gt;= 1
+curl -s localhost:4000/v1/state-root</pre>
+        <p>From anywhere else, use the node's own address. That also confirms port 4000 is genuinely
+        reachable, which <span style="font-family:monospace">localhost</span> cannot tell you:</p>
+        <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">curl -s http://YOUR_NODE_IP:4000/ready</pre>
+
+        <p>Please send us:</p>
+        <ol>
+          <li><b>The public IP</b> of the node host. It must be static or elastic: peers store it, so an
+          address that changes on reboot drops you out of the mesh.</li>
+          <li><b>The domain name</b> you are serving the node on, if any (e.g. tip.yourdomain.com). This is
+          what goes in <span style="font-family:monospace">TIP_API_ENDPOINT</span>, and the node announces it
+          <b>on chain</b> as its public API origin, so it needs to be the address you intend to keep.</li>
+          <li><b>Your state-root and bootstrap_addr</b> from the commands above.</li>
+        </ol>
+
+        <p>We hold 1 and 2 in our operator records, allow-list the IP so our nodes dial you back, and add the
+        node to our monitoring. Tell us if either ever changes.</p>
+
+        <p>We will confirm your <span style="font-family:monospace">state_merkle_root</span> matches ours at
+        the same round. <b>node.env</b> already contains
+        <span style="font-family:monospace">TIP_METRICS_TOKEN</span>, so your node's health appears on our
+        dashboards next to ours; please leave it set.
+        <span style="font-family:monospace">/metrics</span> rejects any request that does not present it.</p>
+
+        <p>Expect the first boot to sit in <span style="font-family:monospace">catching_up</span> while it
+        syncs from a peer. On production that takes longer than it did on test.</p>
+
+        <p><b>Operational expectations</b></p>
+        <p>Your node participates in consensus, so its availability affects the network, not only you. Please
+        let us know in advance of planned downtime, and reach out promptly if the node is unhealthy. We
+        monitor and will contact you if we see a problem first.</p>
+
+        <p>Thanks,<br>The AI Lab Team</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Live-fill: every .ph span with a matching data-ph mirrors its input.
+const FIELDS = [...document.querySelectorAll(".fields input")];
+function apply(input) {
+  const key = input.dataset.ph;
+  const val = input.value.trim();
+  document.querySelectorAll('.ph[data-ph="' + key + '"]').forEach((el) => {
+    el.textContent = val || "{{" + key + "}}";
+    el.classList.toggle("filled", !!val);
+  });
+  localStorage.setItem("tip-onboard-" + key, val);
+}
+FIELDS.forEach((i) => {
+  const saved = localStorage.getItem("tip-onboard-" + i.dataset.ph);
+  if (saved) i.value = saved;
+  apply(i);
+  i.addEventListener("input", () => apply(i));
+});
+
+async function copyEmail(id, btn) {
+  const node = document.getElementById(id);
+  // Strip the highlight so an unfilled placeholder does not paste with a background.
+  const clone = node.cloneNode(true);
+  clone.querySelectorAll(".ph").forEach((el) => el.replaceWith(document.createTextNode(el.textContent)));
+  const html = clone.innerHTML, text = clone.innerText;
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      "text/html": new Blob([html], { type: "text/html" }),
+      "text/plain": new Blob([text], { type: "text/plain" }),
+    })]);
+  } catch {
+    const holder = document.createElement("div");
+    holder.style.cssText = "position:fixed;left:-9999px;top:0";
+    holder.appendChild(clone); document.body.appendChild(holder);
+    const r = document.createRange(); r.selectNodeContents(clone);
+    const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    document.execCommand("copy"); s.removeAllRanges(); holder.remove();
+  }
+  const old = btn.textContent;
+  btn.textContent = "Copied"; btn.classList.add("done");
+  setTimeout(() => { btn.textContent = old; btn.classList.remove("done"); }, 1800);
+}
+</script>
+</body>
+</html>
