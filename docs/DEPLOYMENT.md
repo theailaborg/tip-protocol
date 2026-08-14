@@ -312,8 +312,22 @@ curl -s http://<node1-ip>:4000/health | grep -o '"bootstrap_addr":"[^"]*"'   # -
 > DB, then DROP/CREATE each DB, then bring up node1 first. A running node
 > half-rewrites a fresh DB and byzantine-halts at round 0.
 
+**6b. Schema migrations run automatically on first boot.** Knex applies
+anything in `node/src/db/migrations/` that the node's `knex_migrations` table
+has not seen, before consensus starts. A deploy is therefore a schema change
+whenever new migrations have landed since that node last booted. They are
+additive and fast (nullable columns on small tables), but on the first node of
+a rollout watch the boot logs and confirm the expected set applied:
+
+```bash
+docker exec tip-postgres psql -U tip -d "$DB_NAME" -tAc \
+  "SELECT name FROM knex_migrations ORDER BY id;"
+```
+
 **7. Validate** , across all nodes: `/health` shows `byzantineForkHalt=none`,
-`joinState=ready`, `peers=<N-1>`, rounds advancing; same `genesis_hash`,
+`joinState=ready`, `peers=<N-1>`, rounds advancing; the same
+`state_merkle_root` at the same round from `/v1/state-root` (`/health` does not
+return `genesis_hash`),
 identities = genesis ring size, and the same committed tx count (converged).
 
 **8. Observability** (obs host: Prometheus + Grafana + Loki + Caddy)
@@ -338,6 +352,53 @@ The load-bearing gotchas to not relearn the hard way:
   proxied is fine (browser UI).
 
 ---
+
+## Upgrading a Running Federation (rolling)
+
+The section above is a cold start. Upgrading a live chain is different: the
+chain must keep quorum throughout, so nodes go one at a time and each is
+verified before the next is touched. With 3 nodes quorum is 2, so exactly one
+node may be down at a time. Never two.
+
+Per node, in order (leave the seed until last so peers always have a bootstrap
+target):
+
+```bash
+# 1. back up genesis BEFORE touching git; a checkout can clobber a local edit
+cp genesis-data/genesis.json /tmp/genesis-backup.json
+
+# 2. move to the target commit, keeping the local genesis
+git stash push -q genesis-data/genesis.json
+git fetch origin && git checkout <sha>
+git stash pop -q
+diff -q genesis-data/genesis.json /tmp/genesis-backup.json   # MUST be identical
+
+# 3. rebuild (genesis is baked into the image) and recreate this node only
+docker compose build tip-node
+docker compose up -d --no-deps --force-recreate tip-node
+```
+
+Then verify **before** moving on:
+
+- `/ready` returns `ready:true, db_ok:true, halted:false`
+- `RestartCount` is still 0 and no `persistence lost, fail-stop` in the logs
+- `/v1/state-root` matches the untouched nodes at the same round
+- expected migrations applied (step 6b)
+
+Give it a few minutes rather than seconds. A node that comes up and then dies
+on its second cycle looks healthy at t+30s.
+
+Two things that are normal and should not stop a rollout:
+
+- Nodes on different commits reporting **identical** state roots. The canonical
+  projections used for hashing are explicit whitelists, so a column added by a
+  new migration does not enter the root. Mixed versions agree by design.
+- A single `HALT (byzantine_fork)` about 8-10s after boot that clears itself
+  via snapshot resync. The node is behind, not forked; anti-entropy compares its
+  catching-up root against peers that are further ahead. It self-heals and
+  `halted` returns to `false`.
+
+Anything else, stop and investigate before touching the next node.
 
 ## Production Checklist
 
@@ -366,7 +427,7 @@ mainnet bootstrap peers, complete this checklist.
 
 - [ ] The image was built from the correct `genesis-data/genesis.json` (the chain
   id and genesis are baked into the image, not set via env vars)
-- [ ] Every node reports the **same `genesis_hash`** on `/health`
+- [ ] Every node reports the **same `state_merkle_root` at the same round** on `/v1/state-root`
 - [ ] The genesis founding identities are present (identities count = ring size)
   and consensus is advancing with `byzantineForkHalt=none`
 
