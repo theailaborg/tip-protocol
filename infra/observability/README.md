@@ -1,6 +1,16 @@
 # TIP Federation observability stack (local dev)
 
-> Production (multi-EC2, TLS, login-gated): see [`prod/README.md`](prod/README.md).
+> **Any real cluster (production OR test), one host or many: use
+> [`prod/README.md`](prod/README.md).** That stack is the only maintained one.
+> It is not production-only despite the directory name: for a single-VM test
+> cluster deploy the same files with test `.env` values, plus a small
+> `docker-compose.override.yml` if peers need to reach Loki over a private IP
+> instead of a public logs domain.
+>
+> This directory is the **local development** stack only (Docker Desktop, no
+> TLS, anonymous viewer enabled). Do not deploy it to a shared host, and do not
+> hand-write a third variant: a fork silently misses the auth hardening, log
+> rotation and plugin pinning that live in `prod/`.
 
 Local Prometheus + Grafana + Loki for the TIP dev federation. Scrapes each
 node's `/metrics` endpoint, ships each node's logs via promtail, and provisions
