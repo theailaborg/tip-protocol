@@ -470,6 +470,38 @@ const OAUTH_REQUIRED_PLATFORMS = Object.freeze(new Set([
   "rooverse",
 ]));
 
+// Non-public address space (loopback, RFC1918, CGNAT, link-local/IMDS,
+// multicast/reserved, plus v4-embedding IPv6 transition prefixes). Outbound
+// profile fetches must never connect here (SSRF guard).
+const PRIVATE_NETWORK_CIDRS = Object.freeze([
+  "0.0.0.0/8",
+  "10.0.0.0/8",
+  "100.64.0.0/10",
+  "127.0.0.0/8",
+  "169.254.0.0/16",
+  "172.16.0.0/12",
+  "192.0.0.0/24",
+  "192.0.2.0/24",
+  "192.168.0.0/16",
+  "198.18.0.0/15",
+  "198.51.100.0/24",
+  "203.0.113.0/24",
+  "224.0.0.0/3",
+  "::/128",
+  "::1/128",
+  // v4-mapped (::ffff:0:0/96) is intentionally absent: net.BlockList models
+  // every IPv4 as v4-mapped, so listing it would block ALL v4. Consumers must
+  // unwrap v4-mapped addresses and re-check the embedded IPv4 instead.
+  "64:ff9b::/96",
+  "100::/64",
+  "2001::/32",
+  "2001:db8::/32",
+  "2002::/16",
+  "fc00::/7",
+  "fe80::/10",
+  "ff00::/8",
+]);
+
 const INITIAL_INTERESTS_SEED = Object.freeze([
   // Tech
   { slug: "ai-ml", label: "AI & Machine Learning", category: "tech" },
@@ -543,6 +575,7 @@ const TX_TYPES = Object.freeze({
   // Content
   REGISTER_CONTENT: "REGISTER_CONTENT",
   UPDATE_ORIGIN: "UPDATE_ORIGIN",
+  UPDATE_REGISTERED_URLS: "UPDATE_REGISTERED_URLS",
   CONTENT_RETRACTED: "CONTENT_RETRACTED",
   // Trust
   CONTENT_VERIFIED: "CONTENT_VERIFIED",
@@ -676,6 +709,9 @@ const TX_REJECTION_REASON = Object.freeze({
   DOMAIN_ALREADY_CLAIMED: "domain_already_claimed",
   VERIFIER_NOT_AUTHORIZED: "verifier_not_authorized",
   CLEAN_RECORD_VIOLATION: "clean_record_violation",
+  // Registration-credit SCORE_UPDATE that would exceed the per-day / per-month /
+  // lifetime cap (a burst raced past the emitter's stale headroom read).
+  REG_CREDIT_CAP_REACHED: "reg_credit_cap_reached",
   REVALIDATION_FAILED: "revalidation_failed",
   // Site 5 — generic fallback for unexpected drops; always logs detail.
   TX_DECODE_FAILED: "tx_decode_failed",
@@ -849,6 +885,50 @@ const MLDSA65_PRIVKEY_BYTES = 4032;
 const CLASSIFIER_BREAK_AFTER = 3;
 const CLASSIFIER_COOLDOWN_MS = 60000;
 
+// GET /v1/stats/scoring recomputes an O(identities) aggregate; memoize it so
+// repeated dashboard scrapes don't recompute on every hit.
+const STATS_SCORING_CACHE_MS = 15000;
+
+// Author reward for registering content: +1 per REGISTER_CONTENT, clamped by
+// the smallest remaining headroom of per-day / per-month / lifetime-total (the
+// content sub-score ceiling), so it can't be farmed. Delta is computed once at
+// emission and frozen into the paired SCORE_UPDATE (reason `reg_credit:<ctid>`);
+// reversed (`reg_credit_rev:<ctid>`) when a dispute is upheld against the author.
+// Lives in code (not genesis) until PROTOCOL_PARAM_UPDATE governance ships;
+// changing genesis on the live chain is not an option. ACTIVATION_MS gates the
+// award on so the fleet turns it on together after all nodes are upgraded (set
+// to a future epoch-ms at deploy; 0 = active immediately, e.g. for tests).
+const REGISTER_CREDIT = Object.freeze({
+  BASE: 1,
+  PER_DAY: 3,
+  PER_MONTH: 15,
+  TOTAL: 350,
+  ACTIVATION_MS: 1784522400000, // 2026-07-20 04:40:00 UTC mainnet activation
+  // Commit-time cap is a new reject rule; a mixed fleet would fork, so gate it
+  // on this epoch-ms and enforce fleet-wide together. Operator sets the real
+  // value (or TIP_REG_CREDIT_CAP_ACTIVATION_MS) once all nodes ship.
+  CAP_ENFORCE_ACTIVATION_MS: 1784868000000, // 2026-07-24 04:40:00 UTC
+
+  AWARD_REASON_PREFIX: "reg_credit:",
+  REVERSAL_REASON_PREFIX: "reg_credit_rev:",
+  RESTORE_REASON_PREFIX: "reg_credit_restore:",
+});
+
+// Adjudication is personal-only: one person can incorporate many companies, so
+// org votes/disputes scale with an attacker's budget. New commit-time reject
+// rule, so gated on tx.timestamp to keep a mixed fleet from forking.
+const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15:00:00 UTC
+
+// GET /v1/content?parent_url= read gating. parent_url is an unverified
+// assertion (any content may claim any parent) and is never exclusivity-checked,
+// so the lookup caps the scan, drops sub-VERIFIED authors, and returns one entry
+// per author, which is the actual Sybil bound.
+const PARENT_URL_LOOKUP = Object.freeze({
+  SCAN_LIMIT: 500,
+  MAX_RESULTS: 50,
+  MIN_TIERS: Object.freeze(["VERIFIED", "TRUSTED", "HIGHLY_TRUSTED"]),
+});
+
 // Fail-open PRESCAN_COMPLETED re-emission cooldown per ctid: a dropped
 // fail-open leaves the content stuck, and re-emitting on every anchor turned
 // recovery into a cluster-wide signing self-flood (2026-07-10).
@@ -858,6 +938,10 @@ module.exports = {
   LOCALLY_VERIFIED_TX_CACHE_CAP,
   CLASSIFIER_BREAK_AFTER,
   CLASSIFIER_COOLDOWN_MS,
+  STATS_SCORING_CACHE_MS,
+  REGISTER_CREDIT,
+  ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
+  PARENT_URL_LOOKUP,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
   MLDSA65_PUBKEY_BYTES,
@@ -949,4 +1033,5 @@ module.exports = {
   CLAIM_MAX_AGE_MS,
   ALLOWED_PLATFORMS,
   OAUTH_REQUIRED_PLATFORMS,
+  PRIVATE_NETWORK_CIDRS,
 };

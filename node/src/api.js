@@ -35,8 +35,10 @@ const { createRevocationService } = require("./services/revocation-service");
 const { createGovernanceService } = require("./services/governance-service");
 const { createDomainService } = require("./services/domain-service");
 const { createReviewService } = require("./services/review-service");
+const { createStatsService } = require("./services/stats-service");
 const { createMediaService } = require("./services/media-service");
 const { createMediaStorage } = require("./services/media-storage");
+const { createChunkedUploadService } = require("./services/chunked-upload-service");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -61,9 +63,24 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // the worker uses fetchForClassifier(); content-service uses
   // resolveRefs(); routes use upload/fetchBytes/head.
   const mediaStorage = createMediaStorage(config.mediaStorage || {});
+
+  // Shared crypto-pool ref for off-thread ML-DSA verify. The pool is
+  // created later by consensus/index.js; services that need it set
+  // ref.current once consensus starts.
+  const cryptoPoolRef = { current: null };
+
+  const chunkedUploadService = createChunkedUploadService({
+    storage: mediaStorage,
+    dag,
+    cryptoPoolRef,
+    log: getLogger("tip.media.chunked"),
+  });
+
   const mediaService = createMediaService({
     storage: mediaStorage, dag,
     selfNodeId: config.nodeRegisteredId || config.nodeId || null,
+    cryptoPoolRef,
+    chunkedUploadService,
   });
 
   const ctx = {
@@ -82,6 +99,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   const governanceService = createGovernanceService(ctx);
   const domainService = createDomainService(ctx);
   const reviewService = createReviewService(ctx);
+  const statsService = createStatsService(ctx);
 
   // ── Build Express app ──────────────────────────────────────────────────────
   const app = express();
@@ -116,7 +134,8 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // the main logs at warn so it isn't buried. Internal probes are dropped.
   const httpLog = getLogger("tip.http");
   const _accessFmt = ":req-id :method :url :status :response-time ms";
-  const _isProbe = (req) => req.path === "/metrics" || req.path === "/health" || req.path === "/v1/health";
+  const _isProbe = (req) => req.path === "/metrics" || req.path === "/health" || req.path === "/v1/health"
+    || req.path === "/ready" || req.path === "/v1/ready";
   app.use(morgan(_accessFmt, { stream: { write: (l) => logAccess(l.trimEnd()) }, skip: (req, res) => _isProbe(req) || res.statusCode >= 400 }));
   app.use(morgan(_accessFmt, { stream: { write: (l) => httpLog.warn(l.trimEnd()) }, skip: (req, res) => res.statusCode < 400 }));
 
@@ -165,7 +184,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
 
   // Observability endpoints — detailed stats for dashboards (heavy-ish
   // payload; not on the /health path so load-balancer probes stay fast).
-  app.use(API_VERSION, statsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef }));
+  app.use(API_VERSION, statsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef, statsService }));
 
   // Prometheus /metrics — top-level (NOT under /v1) per Prometheus scraper
   // convention. Mounted before the consensus gate so the endpoint is
@@ -188,7 +207,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, governanceRoutes.createRouter({ governanceService }));
   app.use(API_VERSION, domainRoutes.createRouter({ domainService }));
   app.use(API_VERSION, reviewRoutes.createRouter({ reviewService }));
-  app.use(API_VERSION, mediaRoutes.createRouter({ mediaService }));
+  app.use(API_VERSION, mediaRoutes.createRouter({ mediaService, chunkedUploadService }));
   app.use(API_VERSION, dagRoutes.createRouter(ctx));
 
   // ── 404 catch-all (after all routes, before error handler) ─────────────────
@@ -215,6 +234,8 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.locals.mediaService = mediaService;
   app.locals.mediaStorage = mediaStorage;
   app.locals.governanceService = governanceService;
+  app.locals.chunkedUploadService = chunkedUploadService;
+  app.locals.cryptoPoolRef = cryptoPoolRef;
 
   return app;
 }

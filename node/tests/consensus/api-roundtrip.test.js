@@ -44,7 +44,7 @@ const {
 } = require(path.join(SHARED, "crypto"));
 const { nowMs } = require(path.join(SHARED, "time"));
 const { generateDedupProof } = require(path.join(SHARED, "zk"));
-const { TIP_ID_TYPES, DOMAIN_BINDING_STATUS } = require(path.join(SHARED, "constants"));
+const { TIP_ID_TYPES, DOMAIN_BINDING_STATUS, REGISTER_CREDIT } = require(path.join(SHARED, "constants"));
 
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
@@ -511,10 +511,11 @@ const CASES = [
     },
     readBack: (h, _ctx, tx) => h.dag.getTx(tx.tx_id) && h.dag.getTx(tx.tx_id).data,
     // Derived state beyond the verification record: the author's score moves by
-    // the verification's recorded weighted_delta (single-channel score effect).
+    // the verification's recorded weighted_delta plus the +1 registration credit
+    // seedRegisteredContent earned (both single-channel score effects).
     // This proves the commit actually applied state, not merely stored the tx.
     extraAsserts: (h, ctx, tx) => {
-      expect(h.scoring.getScore(ctx.authorTipId).score - 750).toBe(tx.data.weighted_delta);
+      expect(h.scoring.getScore(ctx.authorTipId).score - 750).toBe(REGISTER_CREDIT.BASE + tx.data.weighted_delta);
     },
   },
 

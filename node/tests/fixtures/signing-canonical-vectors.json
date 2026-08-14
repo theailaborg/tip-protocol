@@ -17,6 +17,18 @@
     },
     "canonical": "{\"author_tip_id\":\"tip://id/US-author\",\"ctid\":\"ctid-deadbeef\",\"new_origin_code\":\"AA\"}"
   },
+  "UPDATE_REGISTERED_URLS:base": {
+    "tx_type": "UPDATE_REGISTERED_URLS",
+    "data": {
+      "author_tip_id": "tip://id/US-author",
+      "ctid": "ctid-deadbeef",
+      "registered_urls": [
+        "https://example.com/a/",
+        "https://example.com/b/"
+      ]
+    },
+    "canonical": "{\"author_tip_id\":\"tip://id/US-author\",\"ctid\":\"ctid-deadbeef\",\"registered_urls\":[\"https://example.com/a/\",\"https://example.com/b/\"]}"
+  },
   "CONTENT_RETRACTED:base": {
     "tx_type": "CONTENT_RETRACTED",
     "data": {
@@ -172,5 +184,52 @@
       "revoked_at": 1767225600000
     },
     "canonical": "{\"domain\":\"example.com\",\"node_id\":\"tip://node/n1\",\"reason\":\"revoked\",\"revoked_at\":1767225600000}"
+  },
+  "REGISTER_CONTENT:required_only": {
+    "tx_type": "REGISTER_CONTENT",
+    "data": {
+      "signer_tip_id": "tip://id/US-author",
+      "origin_code": "OH",
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "attribution_mode": "self",
+      "extras": {},
+      "registered_urls": [
+        "https://example.com/post/"
+      ],
+      "authors": [
+        {
+          "key_mode": "attribution",
+          "role": "byline",
+          "signed": false,
+          "tip_id": "tip://id/US-author",
+          "tip_id_type": "personal"
+        }
+      ]
+    },
+    "canonical": "{\"attribution_mode\":\"self\",\"authors\":[{\"key_mode\":\"attribution\",\"role\":\"byline\",\"signed\":false,\"tip_id\":\"tip://id/US-author\",\"tip_id_type\":\"personal\"}],\"cna_version\":\"CNA-2.2\",\"content_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"extras\":{},\"origin_code\":\"OH\",\"registered_urls\":[\"https://example.com/post/\"],\"signer_tip_id\":\"tip://id/US-author\"}"
+  },
+  "REGISTER_CONTENT:with_parent_url": {
+    "tx_type": "REGISTER_CONTENT",
+    "data": {
+      "signer_tip_id": "tip://id/US-author",
+      "origin_code": "OH",
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "attribution_mode": "self",
+      "extras": {},
+      "registered_urls": [
+        "https://example.com/post/"
+      ],
+      "authors": [
+        {
+          "key_mode": "attribution",
+          "role": "byline",
+          "signed": false,
+          "tip_id": "tip://id/US-author",
+          "tip_id_type": "personal"
+        }
+      ],
+      "parent_url": "https://example.com/parent-post/"
+    },
+    "canonical": "{\"attribution_mode\":\"self\",\"authors\":[{\"key_mode\":\"attribution\",\"role\":\"byline\",\"signed\":false,\"tip_id\":\"tip://id/US-author\",\"tip_id_type\":\"personal\"}],\"cna_version\":\"CNA-2.2\",\"content_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"extras\":{},\"origin_code\":\"OH\",\"parent_url\":\"https://example.com/parent-post/\",\"registered_urls\":[\"https://example.com/post/\"],\"signer_tip_id\":\"tip://id/US-author\"}"
   }
 }

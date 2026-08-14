@@ -989,6 +989,52 @@ function fakeSnapshotHandler({ snapImpl } = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Stuck-syncing install-marker resolution (2026-07-19 wedge).
+// A wiped node whose failed install leaked `in_progress:<round>` has no attested
+// commit → resolveStaleInstallMarker returns "no_commit". Anti-entropy must
+// escalate to a real resync, NOT call exitSyncMode (which the narwhal marker
+// gate blocks → fake-ready loop forever).
+// ═══════════════════════════════════════════════════════════════════════════
+describe("checkAndReconcile stuck-syncing install-marker resolution", () => {
+  const snapHandler = (marker) => ({ resolveStaleInstallMarker: async () => marker });
+  const escalated = (warns) => warns.some(m => /state inconsistent.*snapshot resync/i.test(m));
+
+  async function runBehindStateMatch(marker) {
+    const warns = [];
+    const narwhal = fakeNarwhal({ joinState: "syncing" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(),
+      narwhal, snapshotHandler: snapHandler(marker),
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 5, state_merkle_root: "abc" }),
+      log: { info: () => { }, debug: () => { }, warn: (m) => warns.push(String(m)) },
+    });
+    await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 100, state_merkle_root: "abc", join_state: "ready" }),
+      selfState({ committed_round: 5, state_merkle_root: "abc" })
+    );
+    return { narwhal, warns };
+  }
+
+  test("no_commit marker (wiped node) → escalates to resync, not a fake-ready", async () => {
+    const { warns } = await runBehindStateMatch("no_commit");
+    expect(escalated(warns)).toBe(true);
+  });
+
+  test("inconsistent marker → escalates to resync", async () => {
+    const { warns } = await runBehindStateMatch("inconsistent");
+    expect(escalated(warns)).toBe(true);
+  });
+
+  test("no marker ('none') → normal escape via exitSyncMode, no resync escalation", async () => {
+    const { narwhal, warns } = await runBehindStateMatch("none");
+    expect(narwhal._calls.exit).toEqual([5]);
+    expect(escalated(warns)).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // catching_up → ready promotion via markCaughtUp.
 //
 // This is the second half of the tri-state contract: after snapshot-handler

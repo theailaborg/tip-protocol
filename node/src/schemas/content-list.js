@@ -13,6 +13,8 @@
  *   origin     one of ORIGIN_CODES
  *   status     one of CONTENT_STATUS values
  *   has_media  "1" | "true" → only rows with media attached
+ *   url        exact registered_urls entry
+ *   parent_url exact parent_url match; anti-spam gated in content-service.list
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -61,6 +63,7 @@ function validateRequest(query = {}) {
     status: null,
     hasMedia: null,
     url: null,
+    parentUrl: null,
   };
 
   if (query.limit !== undefined) {
@@ -114,6 +117,21 @@ function validateRequest(query = {}) {
       throw schemaError(400, "url must be an http(s) URL", "url_invalid");
     }
     out.url = s;
+  }
+  // Parent-context lookup: "what responses point at this post?". Unlike `url`
+  // this is a many-to-one match, so content-service.list applies the anti-spam
+  // gating before returning rows.
+  if (query.parent_url !== undefined && query.parent_url !== "") {
+    const s = String(query.parent_url);
+    if (s.length > 2048) {
+      throw schemaError(400, "parent_url must be 2048 characters or fewer", "parent_url_invalid");
+    }
+    let parsed;
+    try { parsed = new URL(s); } catch { throw schemaError(400, "parent_url must be a valid URL", "parent_url_invalid"); }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw schemaError(400, "parent_url must be an http(s) URL", "parent_url_invalid");
+    }
+    out.parentUrl = s;
   }
 
   return out;

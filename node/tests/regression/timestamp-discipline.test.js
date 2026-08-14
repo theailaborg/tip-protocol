@@ -258,33 +258,40 @@ describe("timestamp schema invariants — Knex parity", () => {
 // the knex schema). Both directions checked — adds to either store without
 // the mirror trip the test.
 
-// Parse the baseline migration's create-table blocks and return a
-// Map<tableName, Set<columnName>> of every bigInteger column. Matches both the
-// bare `knex.schema.createTable("<table>", t => {` form and the hasTable-guarded
-// `_createTable(knex, "<table>", t => {` wrapper the baseline uses now.
+// Every migration's create-table blocks -> Map<table, Set<bigInteger col>>.
+// Schema-of-record is the whole migrations dir (gen-schema.js), not just baseline;
+// resolves a `const NAME = "table"` createTable arg (002 uses a TABLE_NAME const).
 function _parseKnexBigIntegerColumns() {
-  const src = fs.readFileSync(
-    path.join(NODE_SRC, "db", "migrations", "000_baseline.js"), "utf8",
-  );
+  const dir = path.join(NODE_SRC, "db", "migrations");
+  const files = fs.readdirSync(dir).filter(f => f.endsWith(".js")).sort();
   const result = new Map();
-  const createRe = /await\s+(?:knex\.schema\.createTable\(|_createTable\(\s*knex\s*,)\s*["']([a-z_][a-z0-9_]*)["']\s*,\s*\(?t\)?\s*=>\s*\{/g;
-  let m;
-  while ((m = createRe.exec(src)) !== null) {
-    const tableName = m[1];
-    // Walk forward matching braces to find the end of this block.
-    let depth = 1;
-    let i = createRe.lastIndex;
-    while (i < src.length && depth > 0) {
-      if (src[i] === "{") depth++;
-      else if (src[i] === "}") depth--;
-      i++;
+  const createRe = /await\s+(?:knex\.schema\.createTable\(|_createTable\(\s*knex\s*,)\s*(?:["']([a-z_][a-z0-9_]*)["']|([A-Za-z_][A-Za-z0-9_]*))\s*,\s*\(?t\)?\s*=>\s*\{/g;
+  for (const f of files) {
+    const src = fs.readFileSync(path.join(dir, f), "utf8");
+    const consts = new Map();
+    for (const cm of src.matchAll(/const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([a-z_][a-z0-9_]*)["']/g)) {
+      consts.set(cm[1], cm[2]);
     }
-    const blockSrc = src.slice(createRe.lastIndex, i);
-    const cols = new Set();
-    const colRe = /t\.bigInteger\(\s*["']([a-z_][a-z0-9_]*)["']/g;
-    let cm;
-    while ((cm = colRe.exec(blockSrc)) !== null) cols.add(cm[1]);
-    result.set(tableName, cols);
+    createRe.lastIndex = 0;
+    let m;
+    while ((m = createRe.exec(src)) !== null) {
+      const tableName = m[1] || consts.get(m[2]);
+      if (!tableName) continue;
+      // Walk forward matching braces to find the end of this block.
+      let depth = 1;
+      let i = createRe.lastIndex;
+      while (i < src.length && depth > 0) {
+        if (src[i] === "{") depth++;
+        else if (src[i] === "}") depth--;
+        i++;
+      }
+      const blockSrc = src.slice(createRe.lastIndex, i);
+      const cols = result.get(tableName) || new Set();
+      const colRe = /t\.bigInteger\(\s*["']([a-z_][a-z0-9_]*)["']/g;
+      let cm2;
+      while ((cm2 = colRe.exec(blockSrc)) !== null) cols.add(cm2[1]);
+      result.set(tableName, cols);
+    }
   }
   return result;
 }
@@ -342,7 +349,7 @@ describe("timestamp schema invariants — cross-store drift", () => {
       throw new Error(
         `Found ${missingInKnex.length} timestamp column(s) present in SQLite but missing from knex schema:\n` +
         missingInKnex.join("\n") +
-        `\n\nAdd t.bigInteger("<col>").notNullable() to the matching createTable block in db/migrations/000_baseline.js.`,
+        `\n\nAdd t.bigInteger("<col>").notNullable() to the createTable block in db/migrations/ (the baseline or the incremental migration that adds the table).`,
       );
     }
     expect(missingInKnex).toEqual([]);

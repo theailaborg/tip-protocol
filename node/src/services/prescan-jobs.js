@@ -108,9 +108,10 @@ function createPrescanJobs({ dag, now: nowFn }) {
    * retries counter; the worker checks this against the genesis max
    * before deciding whether to retry or fail-open.
    */
-  function releaseForRetry(jobId, error) {
+  function releaseForRetry(jobId, error, retryAfter) {
     return dag.releasePrescanJobForRetry(jobId, {
       lastError: _errorMessage(error),
+      retryAfter: retryAfter || 0,
     });
   }
 

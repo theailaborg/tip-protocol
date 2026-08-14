@@ -20,7 +20,8 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT } = require("../../../shared/constants");
+const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -96,6 +97,7 @@ function _mapBusinessRuleReason(error) {
   if (error.includes("Identity already registered")) return TX_REJECTION_REASON.IDENTITY_ALREADY_REGISTERED;
   if (error.includes("Content already registered")) return TX_REJECTION_REASON.CONTENT_ALREADY_REGISTERED;
   if (error.includes("already bound to a different TIP-ID")) return TX_REJECTION_REASON.DOMAIN_ALREADY_CLAIMED;
+  if (error.includes("reg_credit rate cap reached")) return TX_REJECTION_REASON.REG_CREDIT_CAP_REACHED;
   return TX_REJECTION_REASON.REVALIDATION_FAILED;
 }
 
@@ -164,6 +166,7 @@ function _actorTipId(tx) {
       return d.verifier_tip_id ?? null;
     case TX_TYPES.CONTENT_RETRACTED:
     case TX_TYPES.UPDATE_ORIGIN:
+    case TX_TYPES.UPDATE_REGISTERED_URLS:
       return d.author_tip_id ?? null;
     case TX_TYPES.CONTENT_DISPUTED:
       return d.disputer_tip_id ?? null;
@@ -516,6 +519,20 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const inBatch = validated.find(t => t.tx_type === TX_TYPES.SCORE_UPDATE && tipMatch(t));
         if (inBatch) return { valid: false, error: `SCORE_UPDATE for (${d.tip_id}, ${d.ctid || "—"}, ${d.reason}) already in this batch` };
 
+        // reg_credit cap (commit-time authority): the emitter's headroom read
+        // lags under a burst, so re-check against committed + in-batch credits,
+        // windowed on the frozen tx.timestamp (deterministic, never nowMs).
+        const capActiveMs = config && Number.isFinite(config.regCreditCapActivationMs)
+          ? config.regCreditCapActivationMs : REGISTER_CREDIT.CAP_ENFORCE_ACTIVATION_MS;
+        if (tx.timestamp >= capActiveMs
+          && String(d.reason || "").startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX)) {
+          const priorCredits = dag.getTxsByType(TX_TYPES.SCORE_UPDATE)
+            .concat(validated.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE));
+          if (regCreditRemaining(regCreditSums(priorCredits, d.tip_id, tx.timestamp)) <= 0) {
+            return { valid: false, error: `reg_credit rate cap reached for ${d.tip_id} (${d.ctid})` };
+          }
+        }
+
         return { valid: true };
       }
 
@@ -622,8 +639,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           ? d.registered_urls.filter(u => typeof u === "string" && u)
           : [];
         if (urls.length > 0) {
+          // UPDATE_REGISTERED_URLS counts too: ordered before a register that
+          // claims the same url, its urls are not committed yet, so only this
+          // in-batch scan stops the url binding to two CTIDs.
           const urlHit = validated.find(t =>
-            t.tx_type === TX_TYPES.REGISTER_CONTENT
+            (t.tx_type === TX_TYPES.REGISTER_CONTENT || t.tx_type === TX_TYPES.UPDATE_REGISTERED_URLS)
             && Array.isArray(t.data?.registered_urls)
             && t.data.registered_urls.some(u => urls.includes(u)));
           if (urlHit) {
@@ -799,6 +819,37 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         return { valid: true };
       }
 
+      case TX_TYPES.UPDATE_REGISTERED_URLS: {
+        // One url update per ctid per batch. Not a content-status mutator, so
+        // no Family A sibling guard: it doesn't compete with dispute/verify.
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.UPDATE_REGISTERED_URLS && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate UPDATE_REGISTERED_URLS in batch for ${d.ctid}` };
+        // URL exclusivity for NEWLY-ADDED urls (not already on this ctid): a url
+        // must not be live-claimed by another ctid. Same listContent({url})
+        // primitive REGISTER_CONTENT uses (canRegisterContent committed side +
+        // in-batch scan), so committed + same-round enforcement is store-identical.
+        const rec = dag.getContent(d.ctid);
+        const owned = new Set(Array.isArray(rec?.registered_urls) ? rec.registered_urls : []);
+        const added = (Array.isArray(d.registered_urls) ? d.registered_urls : [])
+          .filter(u => typeof u === "string" && u && !owned.has(u));
+        for (const u of added) {
+          const claimants = typeof dag.listContent === "function" ? dag.listContent({ url: u, limit: 100 }) : [];
+          const live = claimants.find(c => c.ctid !== d.ctid && c.status !== CONTENT_STATUS.RETRACTED);
+          if (live) return { valid: false, error: `registered_url already claimed by another content (CTID: ${live.ctid}): ${u}` };
+        }
+        if (added.length > 0) {
+          const batchHit = validated.find(t =>
+            (t.tx_type === TX_TYPES.REGISTER_CONTENT || t.tx_type === TX_TYPES.UPDATE_REGISTERED_URLS)
+            && t.data?.ctid !== d.ctid
+            && Array.isArray(t.data?.registered_urls)
+            && t.data.registered_urls.some(u => added.includes(u)));
+          if (batchHit) return { valid: false, error: `registered_url already claimed in this batch (CTID: ${batchHit.data.ctid})` };
+        }
+        return { valid: true };
+      }
+
       case TX_TYPES.CONTENT_RETRACTED: {
         // State write is idempotent, and the paired SCORE_UPDATE is
         // already collapsed by the SCORE_UPDATE (tip_id, ctid, reason)
@@ -906,7 +957,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       }
 
       case TX_TYPES.CONTENT_VERIFIED: {
-        const r = rules.canVerify(dag, { ctid: d.ctid, verifier_tip_id: d.verifier_tip_id });
+        const r = rules.canVerify(dag, { ctid: d.ctid, verifier_tip_id: d.verifier_tip_id }, { now });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
@@ -914,6 +965,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const r = rules.canUpdateOrigin(dag, {
           ctid: d.ctid, author_tip_id: d.author_tip_id, new_origin_code: d.new_origin_code,
         }, { now });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.UPDATE_REGISTERED_URLS: {
+        const r = rules.canUpdateRegisteredUrls(dag, { ctid: d.ctid, author_tip_id: d.author_tip_id, registered_urls: d.registered_urls });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
@@ -948,7 +1004,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // the disputer-score / state predicates because the issuer is the node
         // itself, not a TIP-ID with a score. They still pass through dedup.
         if (d.auto) return { valid: true };
-        const r = rules.canDispute(dag, scoring, { ctid: d.ctid, disputer_tip_id: d.disputer_tip_id });
+        const r = rules.canDispute(dag, scoring, { ctid: d.ctid, disputer_tip_id: d.disputer_tip_id }, { now });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
@@ -1118,6 +1174,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
             creator_name: d.creator_name || null,
+            org_type: d.org_type || null,
           });
         }
         // Score effect (initial score for new identity) is applied in
@@ -1316,6 +1373,9 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
             registered_urls: Array.isArray(d.registered_urls) ? d.registered_urls : [],
+            // Signed parent context; stored here (not only on the API path) so
+            // a replaying node's read model matches the receiving node's.
+            parent_url: d.parent_url || null,
             // M3 — media refs + canonical hash. Not signed individually:
             // content_hash binds them via CNA-MIX-1 (mch + textHash).
             media: Array.isArray(d.media) ? d.media : [],
@@ -1348,6 +1408,12 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
               decided_at_round: round,
             });
           }
+        }
+        break;
+
+      case TX_TYPES.UPDATE_REGISTERED_URLS:
+        if (d.ctid && Array.isArray(d.registered_urls)) {
+          dag.updateContentUrls(d.ctid, d.registered_urls);
         }
         break;
 
@@ -1469,6 +1535,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           if (content && content.status === CONTENT_STATUS.REGISTERED) {
             dag.updateContentStatus(d.ctid, CONTENT_STATUS.VERIFIED);
           }
+          // Read-model counter (unhashed): distinct verifiers, already deduped in _dedupCheck.
+          dag.incrementContentCounter(d.ctid, "verification_count");
         }
         break;
 
@@ -1476,6 +1544,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       case TX_TYPES.CONTENT_DISPUTED:
         if (d.ctid) {
           dag.updateContentStatus(d.ctid, CONTENT_STATUS.DISPUTED);
+          // Read-model counter (unhashed): one dispute per ctid per batch via _dedupCheck.
+          dag.incrementContentCounter(d.ctid, "dispute_count");
           // Phase 2.5: if this dispute lands while a review is in
           // state=confirmed (the creator's 24h decision window), the
           // review is now resolved by auto-escalation. Flip its state
@@ -1587,6 +1657,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             public_key: d.public_key || "",
             algorithm: d.algorithm || "ml-dsa-65",
             api_endpoint: typeof d.api_endpoint === "string" ? d.api_endpoint : null,
+            operated_by: typeof d.operated_by === "string" ? d.operated_by : null,
             status: "active",
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,

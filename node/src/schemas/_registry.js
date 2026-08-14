@@ -78,6 +78,13 @@ const REVOKE_CONTRACT = Object.freeze({
   }),
 });
 
+// Shared by NODE_REGISTERED's primary payload and its operator cosignature so
+// the VP-signed bytes and the operator-signed bytes cannot drift apart.
+const nodeRegisteredPayload = (data) => buildSignedPayload(
+  { ...data, algorithm: data.algorithm ?? "ml-dsa-65" },
+  { required: ["algorithm", "approving_vp_id", "name", "public_key"], optional: ["api_endpoint", "operated_by"] },
+);
+
 const TX_SIGNATURE_REGISTRY = Object.freeze({
   // ─── Pure node-signed envelopes ───────────────────────────────────────────
   [TX_TYPES.SCORE_UPDATE]: NODE_ENVELOPE,
@@ -111,6 +118,15 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.AUTHOR_TIP_ID,
     buildSigningPayload: (data) => buildSignedPayload(data, {
       required: ["author_tip_id", "ctid", "new_origin_code"],
+    }),
+  },
+
+  [TX_TYPES.UPDATE_REGISTERED_URLS]: {
+    SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
+    SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
+    SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.AUTHOR_TIP_ID,
+    buildSigningPayload: (data) => buildSignedPayload(data, {
+      required: ["author_tip_id", "ctid", "registered_urls"],
     }),
   },
 
@@ -245,14 +261,20 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
-    // api_endpoint is optional — omitted on legacy txs; included in
-    // canonical bytes only when present so old committed txs keep
+    // api_endpoint and operated_by are optional: omitted on legacy txs;
+    // included in canonical bytes only when present so old committed txs keep
     // verifying byte-for-byte. GH #85: null/undefined is stripped by
     // buildSignedPayload, preserving the "omit on missing" behaviour.
-    buildSigningPayload: (data) => buildSignedPayload(
-      { ...data, algorithm: data.algorithm ?? "ml-dsa-65" },
-      { required: ["algorithm", "approving_vp_id", "name", "public_key"], optional: ["api_endpoint"] },
-    ),
+    buildSigningPayload: nodeRegisteredPayload,
+    // operated_by names a third party, so the named identity cosigns the same
+    // bytes: an approving VP alone cannot attribute a node to an organization
+    // that never agreed to operate it. Empty contract when the field is absent,
+    // so genesis members and pre-existing txs are unaffected.
+    getCosignatureContract: (tx) => {
+      const d = tx?.data || {};
+      if (!d.operated_by) return [];
+      return [{ kind: SIGNED_BY_KIND.SUBJECT, ref: d.operated_by, body: nodeRegisteredPayload(d) }];
+    },
   },
 
   // ─── COMMITTEE_ROTATION ───────────────────────────────────────────────────

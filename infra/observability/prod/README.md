@@ -135,6 +135,70 @@ In Grafana: the federation dashboard shows all nodes; Explore → Loki →
 `{node="node2"}` isolates one host. Metric spike → same-minute logs is the
 core workflow.
 
+## Gotchas that produce "No data" on a healthy stack
+
+Every one of these has bitten a real deploy. The symptom is always panels
+reading "No data" or erroring while the nodes and the chain are perfectly fine.
+
+**`TIP_API_BASE_URL` must reach a node API from inside the Grafana container.**
+The Infinity datasource resolves this variable; if it is unset the datasource
+URL is empty and every Infinity-backed panel (all the TIP dashboards) shows
+"No data". Setting it in `.env` is not enough: the compose service must also
+pass it into the container's `environment:` block, or it only exists for
+compose substitution. Use a private IP, not `host.docker.internal`, which does
+not resolve on Linux.
+
+```
+docker exec tip-obs-grafana printenv TIP_API_BASE_URL   # must be non-empty
+```
+
+**Pin the Infinity plugin version.** `GF_INSTALL_PLUGINS` without a version
+installs "latest", so the same compose file produces a different result
+depending on the day. Infinity 3.7.2 and later require Grafana >= 11.6, and
+4.0.0 requires >= 11.6.11, while this stack pins Grafana 11.3.0. An
+incompatible plugin fails in the browser, not the server: Grafana starts
+cleanly and the panel shows `SystemJS Error#7 ... loading react/jsx-runtime`
+with a 404 on `module.js`. Pinned here to 3.7.1, the newest release compatible
+with Grafana 11.3.0. Bump both together, never one alone.
+
+**Loki needs `limits_config.volume_enabled: true`** or Grafana's Logs Drilldown
+reports "Log volume has not been configured". Already set in `loki-config.yml`.
+
+**Only four dashboards appear starred by default.** The rest are provisioned and
+live under Dashboards; run `../grafana/star-dashboards.sh` to surface them all.
+
+## Using this stack for a test cluster
+
+There is no separate "test" or "simple" variant, and there should not be. This
+is the only stack: point `.env` at test values and deploy the same files.
+
+Test clusters get their own Loki and their own Prometheus. Do not point a test
+cluster at the production monitoring host.
+
+Sharing one Loki looks tempting because labels can separate the queries, but
+labels do not separate anything that matters:
+
+- `ingestion_rate_mb` and `ingestion_burst_size_mb` are global. A load test on
+  the test cluster can saturate the write path and cause Loki to reject
+  production log lines, during exactly the window you would want them.
+- Retention is shared, so test volume consumes the production window.
+- Any query or alert that omits a cluster filter silently spans both. The
+  runbook's own `{job="tip-node"} |= "ERROR"` would return test errors during a
+  production incident.
+
+Deploy these same files a second time with test values:
+
+```
+OBS_DOMAIN=<test grafana host>
+LOGS_DOMAIN=<test loki host>
+TIP_NODE_TARGETS=<test node IPs>:4000
+TIP_API_BASE_URL=http://<a test node private IP>:4000
+```
+
+and point the test nodes' `agent/promtail.env` at the test `LOKI_URL`. The node
+agent is otherwise identical. Two stacks is the cost of keeping production data
+clean; it is the right trade.
+
 ## Operations
 
 - **Retention**: metrics 30d (`--storage.tsdb.retention.time`), logs 14d

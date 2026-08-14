@@ -181,6 +181,9 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
         verification_tier: canonicalPayload.verification_tier,
         vp_id: canonicalPayload.vp_id,
         zk_proof: canonicalPayload.zk_proof,
+        // Organization-only, absent on persons. buildSignedPayload strips it
+        // when unset, so identities without it hash exactly as before.
+        ...(canonicalPayload.org_type ? { org_type: canonicalPayload.org_type } : {}),
       },
       // GH #51 — VP signature lives at tx.signature (unified storage).
       signature: vp_signature,
@@ -222,6 +225,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       tier: scoreData.tier.name, tier_color: scoreData.tier.color,
       content_count: content.length, registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
+      org_type: rec.org_type || null,
       verification: { tx_exists: !!tx, tx_id_valid: txValid, on_dag: true },
     };
   }

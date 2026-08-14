@@ -10,14 +10,16 @@
  *     if (!r.valid) throw r.error;            // 4xx response
  *
  *   commit-handler (DeliverTx role):
- *     const r = rules.canVerify(dag, args, { now: certTimestamp });
+ *     const r = rules.canVerify(dag, args, { now: tx.timestamp });
  *     if (!r.valid) { log.warn(r.error.message); drop; return; }
  *
  * `now` is the only difference between the two call sites:
  *   - API time uses local wall-clock (nowMs()) — fine for early
  *     rejection.
- *   - Commit time uses `cert.timestamp` (BFT-Time median of acks) so the
- *     accept/reject decision is identical on every node.
+ *   - Commit time uses `tx.timestamp` (frozen in the signed payload; see
+ *     _validateBusinessRules in commit-handler) so the accept/reject
+ *     decision is identical on every node. Never read the local clock
+ *     inside a rule.
  *
  * Each rule returns `{ valid: true }` on success or
  * `{ valid: false, error: { status, message } }` on failure. `status` is
@@ -29,13 +31,25 @@
 
 "use strict";
 
-const { nowMs } = require("../../../shared/time");
-
 const {
   TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
+  TIP_ID_TYPES, ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
 } = require("../../../shared/constants");
 const { DISPUTE, APPEAL, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
+
+// Consensus gate: must be IDENTICAL fleet-wide or nodes diverge. Env override
+// exists to activate it on an isolated cluster before the mainnet date.
+const _ADJUDICATION_GATE_MS = Number.isFinite(parseInt(process.env.TIP_ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS, 10))
+  ? parseInt(process.env.TIP_ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS, 10)
+  : ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS;
+
+// Adjudication (verify / dispute / review) is personal-only; see the constant.
+// `atMs` is the frozen tx.timestamp so every node decides identically.
+function _adjudicationBlocked(identity, atMs) {
+  if (!Number.isFinite(atMs) || atMs < _ADJUDICATION_GATE_MS) return false;
+  return (identity?.tip_id_type || TIP_ID_TYPES.PERSONAL) !== TIP_ID_TYPES.PERSONAL;
+}
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 
@@ -53,8 +67,10 @@ function ok() {
   return { valid: true };
 }
 
-function fail(status, message, code) {
-  return { valid: false, error: code ? { status, message, code } : { status, message } };
+function fail(status, message, code, details) {
+  const error = code ? { status, message, code } : { status, message };
+  if (details) error.details = details;
+  return { valid: false, error };
 }
 
 // ─── Identity / VP ─────────────────────────────────────────────────────────
@@ -149,6 +165,7 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
           409,
           `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
           "url_already_registered",
+          { url: u, conflict_ctid: live.ctid },
         );
       }
     }
@@ -178,12 +195,15 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
   return ok();
 }
 
-function canVerify(dag, { ctid, verifier_tip_id }) {
+function canVerify(dag, { ctid, verifier_tip_id }, { now } = {}) {
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
 
   const verifier = dag.getIdentity(verifier_tip_id);
   if (!verifier) return fail(404, "Verifier TIP-ID not found");
+  if (_adjudicationBlocked(verifier, now)) {
+    return fail(403, "Organizations cannot verify content", "adjudication_personal_only");
+  }
   if (dag.isRevoked(verifier_tip_id)) return fail(403, "Verifier TIP-ID is revoked");
   if (verifier_tip_id === rec.author_tip_id) return fail(403, "Cannot verify your own content");
   if (dag.isRevoked(rec.author_tip_id)) return fail(403, "Content author has been revoked — verification not allowed");
@@ -204,8 +224,8 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   // freely change the origin (PRESCAN_COMPLETED will classify against
   // whatever origin is recorded when it lands).
   if (rec.status !== CONTENT_STATUS.REGISTERED
-      && rec.status !== CONTENT_STATUS.PENDING_REVIEW
-      && rec.status !== CONTENT_STATUS.PENDING_PRESCAN) {
+    && rec.status !== CONTENT_STATUS.PENDING_REVIEW
+    && rec.status !== CONTENT_STATUS.PENDING_PRESCAN) {
     return fail(403, `Cannot update origin — content status is '${rec.status}'`);
   }
   if (!ORIGIN_CODES.includes(new_origin_code)) {
@@ -281,6 +301,51 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   return ok();
 }
 
+// Statuses whose URLs the owner may still edit. Exported so the content
+// projection's `can_update_urls` flag cannot drift from the rule enforced here.
+const UPDATE_URLS_ALLOWED_STATUSES = Object.freeze([
+  CONTENT_STATUS.REGISTERED,
+  CONTENT_STATUS.PENDING_REVIEW,
+  CONTENT_STATUS.PENDING_PRESCAN,
+  CONTENT_STATUS.VERIFIED,
+]);
+
+function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) {
+  // The update endpoint exists to SET published URLs, so an empty array is a
+  // no-op with no legitimate use. Enforced here (not in the shared
+  // validateRegisteredUrls, which stays 0-16 for REGISTER_CONTENT) so it
+  // rejects deterministically at both API time and commit time.
+  if (!Array.isArray(registered_urls) || registered_urls.length < 1) {
+    return fail(400, "at least one registered URL is required", "registered_urls_required");
+  }
+  const rec = dag.getContent(ctid);
+  if (!rec) return fail(404, "Content record not found");
+  if (author_tip_id !== rec.author_tip_id) return fail(403, "Only the content author can update registered URLs");
+  if (!UPDATE_URLS_ALLOWED_STATUSES.includes(rec.status)) {
+    return fail(403, `Cannot update registered URLs: content status is '${rec.status}'`);
+  }
+  // URL exclusivity, same predicate + dual call sites as canRegisterContent.
+  // Only urls NEW to this ctid are checked, so re-declaring your own is valid;
+  // a retracted claimant releases its url.
+  const owned = new Set(Array.isArray(rec.registered_urls) ? rec.registered_urls : []);
+  if (typeof dag.listContent === "function") {
+    for (const u of registered_urls) {
+      if (typeof u !== "string" || !u || owned.has(u)) continue;
+      const claimants = dag.listContent({ url: u, limit: 100 });
+      const live = claimants.find(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
+      if (live) {
+        return fail(
+          409,
+          `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
+          "url_already_registered",
+          { url: u, conflict_ctid: live.ctid },
+        );
+      }
+    }
+  }
+  return ok();
+}
+
 function canRetract(dag, { ctid, author_tip_id }) {
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
@@ -314,7 +379,7 @@ function canRetract(dag, { ctid, author_tip_id }) {
 
 // ─── Dispute / Jury ────────────────────────────────────────────────────────
 
-function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason, claimed_origin }) {
+function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason, claimed_origin }, { now }) {
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
   if (rec.status === CONTENT_STATUS.RETRACTED) return fail(403, "Content has been retracted — dispute not allowed");
@@ -329,6 +394,9 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
 
   const disputer = dag.getIdentity(disputer_tip_id);
   if (!disputer) return fail(404, "Disputer TIP-ID not found");
+  if (_adjudicationBlocked(disputer, now)) {
+    return fail(403, "Organizations cannot file disputes", "adjudication_personal_only");
+  }
   if (dag.isRevoked(disputer_tip_id)) return fail(403, "Disputer TIP-ID is revoked");
 
   // No self-disputes — covers author of record, the signer (relevant in
@@ -381,8 +449,10 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
   // (excluding auto-cascade txs, which carry node_id, not a user
   // disputer_tip_id). A user-filed dispute that already failed
   // validation never lands as a tx, so this count only sees committed
-  // filings — same value at CheckTx and DeliverTx.
-  const windowCutoffMs = nowMs() - DISPUTE.FILER_WINDOW_MS;
+  // filings — same value at CheckTx and DeliverTx. The cutoff derives
+  // from the caller's `now` (tx.timestamp at commit), never the local
+  // clock: a wall-clock read here forks state at the window edge.
+  const windowCutoffMs = now - DISPUTE.FILER_WINDOW_MS;
   const filerCount = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
     .filter(t => t.data?.disputer_tip_id === disputer_tip_id
       && !t.data?.auto
@@ -643,6 +713,8 @@ module.exports = {
   canRegisterContent,
   canVerify,
   canUpdateOrigin,
+  canUpdateRegisteredUrls,
+  UPDATE_URLS_ALLOWED_STATUSES,
   canRetract,
   canDispute,
   canCommitVote,

@@ -28,6 +28,7 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const { TX_TYPES, ORIGIN, VERDICT, CONTENT_STATUS } = require(SHARED + "/constants");
+const { nowMs } = require(SHARED + "/time");
 const { adjudicationDelta, applyScoreEffect, scoreTargetTipId } = require(path.join(SRC, "score-effects"));
 const rules = require(path.join(SRC, "validators", "business-rules"));
 const { initDAG } = require(path.join(SRC, "dag"));
@@ -116,7 +117,7 @@ describe("canDispute — eligible origin transitions land", () => {
     const r = rules.canDispute(dag, _stubScoring(1000), {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: claimed,
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(true);
   });
 });
@@ -136,7 +137,7 @@ describe("canDispute — ineligible origin transitions rejected up-front", () =>
     const r = rules.canDispute(dag, _stubScoring(1000), {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: claimed,
-    });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(msgRe);
   });

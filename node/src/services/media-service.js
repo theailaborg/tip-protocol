@@ -31,7 +31,7 @@ const mediaUploadSchema = require("../schemas/media-upload");
 const mediaAccessSchema = require("../schemas/media-access");
 const { canAccessMedia } = require("./media-access-policy");
 
-function createMediaService({ storage, dag, log, selfNodeId = null }) {
+function createMediaService({ storage, dag, log, selfNodeId = null, cryptoPoolRef = { current: null }, chunkedUploadService = null }) {
   if (!storage) throw new Error("media-service: storage required");
   // dag is optional: read-only callers (worker fetch path) don't need
   // identity / revocation lookups. upload() will assert dag itself.
@@ -359,7 +359,12 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
     };
   }
 
-  return { upload, uploadStream, fetchBytes, presignedGet, head, delete: deleteMedia, resolveRefs, fetchForClassifier, presignForClassifier, fetchForReviewer };
+  return {
+    upload, uploadStream, fetchBytes, presignedGet, head, delete: deleteMedia,
+    resolveRefs, fetchForClassifier, presignForClassifier, fetchForReviewer,
+    chunkedUploadService,
+    setCryptoPool(pool) { if (cryptoPoolRef) cryptoPoolRef.current = pool; },
+  };
 }
 
 module.exports = { createMediaService };

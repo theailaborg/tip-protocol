@@ -75,14 +75,22 @@ describe("containsTipId", () => {
   });
 });
 
+const https = require("https");
+const dns = require("dns");
+
+function mockDns(addresses) {
+  return jest.spyOn(dns, "lookup").mockImplementation((host, opts, cb) =>
+    process.nextTick(() => cb(null, addresses)));
+}
+
 describe("fetchProfileHtml error mapping", () => {
   // A profile site blocking our scraper (Medium 403s repeated fetches) must NOT
   // surface as a 502: a 5xx makes Cloudflare serve its own gateway page WITHOUT
   // the node's CORS header, so the browser can't even read the error. Map these
   // to a client-readable 4xx with a clear code/message instead.
-  const https = require("https");
   const { fetchProfileHtml } = bioFetcher;
 
+  beforeEach(() => mockDns([{ address: "93.184.216.34", family: 4 }]));
   afterEach(() => jest.restoreAllMocks());
 
   function mockStatus(statusCode) {
@@ -144,5 +152,95 @@ describe("fetchProfileHtml error mapping", () => {
       const err = await fetchProfileHtml("https://medium.com/@x").catch((e) => e);
       expect(err.status).toBeLessThan(500);
     }
+  });
+});
+
+describe("fetchProfileHtml SSRF guard", () => {
+  // The mastodon platform pattern accepts any host, so the fetcher itself must
+  // refuse to connect to non-public address space, and must connect only to
+  // the address it validated (DNS-rebinding pin).
+  const { fetchProfileHtml } = bioFetcher;
+
+  let requestSpy;
+  beforeEach(() => {
+    requestSpy = jest.spyOn(https, "request").mockImplementation(() => {
+      throw new Error("https.request must not be reached");
+    });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test.each([
+    "https://10.0.0.5/@x",
+    "https://127.0.0.1/@x",
+    "https://[::1]/@x",
+    "https://169.254.169.254/@x",
+  ])("IP-literal host %s rejected before DNS or connect", async (url) => {
+    const lookupSpy = jest.spyOn(dns, "lookup");
+    await expect(fetchProfileHtml(url))
+      .rejects.toMatchObject({ status: 400, code: "profile_url_not_allowed" });
+    expect(lookupSpy).not.toHaveBeenCalled();
+    expect(requestSpy).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [{ address: "10.0.0.5", family: 4 }],
+    [{ address: "127.0.0.1", family: 4 }],
+    [{ address: "192.168.1.10", family: 4 }],
+    [{ address: "169.254.169.254", family: 4 }],
+    [{ address: "::1", family: 6 }],
+    [{ address: "fd00::1", family: 6 }],
+    [{ address: "fe80::1", family: 6 }],
+    [{ address: "::ffff:10.0.0.5", family: 6 }],
+  ])("host resolving to %o rejected before connect", async (addr) => {
+    mockDns([addr]);
+    await expect(fetchProfileHtml("https://evil.example/@x"))
+      .rejects.toMatchObject({ status: 400, code: "profile_url_not_allowed" });
+    expect(requestSpy).not.toHaveBeenCalled();
+  });
+
+  test("rebinding host (public + private A records) rejected before connect", async () => {
+    mockDns([
+      { address: "93.184.216.34", family: 4 },
+      { address: "10.0.0.5", family: 4 },
+    ]);
+    await expect(fetchProfileHtml("https://rebind.example/@x"))
+      .rejects.toMatchObject({ status: 400, code: "profile_url_not_allowed" });
+    expect(requestSpy).not.toHaveBeenCalled();
+  });
+
+  test("unresolvable host maps to opaque profile_fetch_failed", async () => {
+    jest.spyOn(dns, "lookup").mockImplementation((host, opts, cb) =>
+      process.nextTick(() => cb(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }))));
+    await expect(fetchProfileHtml("https://nxdomain.example/@x"))
+      .rejects.toMatchObject({ status: 422, code: "profile_fetch_failed" });
+    expect(requestSpy).not.toHaveBeenCalled();
+  });
+
+  test("public host connects with the socket pinned to the validated address", async () => {
+    mockDns([{ address: "93.184.216.34", family: 4 }]);
+    let seenOptions;
+    requestSpy.mockImplementation((options, cb) => {
+      seenOptions = options;
+      const handlers = {};
+      const res = {
+        statusCode: 200,
+        destroy() {},
+        on(name, fn) { handlers[name] = fn; return res; },
+      };
+      process.nextTick(() => {
+        cb(res);
+        handlers.data(Buffer.from("<html>tip://id/US-aabb</html>"));
+        handlers.end();
+      });
+      return { on() { return this; }, end() {}, destroy() {} };
+    });
+
+    const html = await fetchProfileHtml("https://mastodon.social/@alice");
+    expect(html).toContain("tip://id/US-aabb");
+    expect(typeof seenOptions.lookup).toBe("function");
+    const pinned = await new Promise((res, rej) =>
+      seenOptions.lookup("mastodon.social", {}, (err, address, family) =>
+        (err ? rej(err) : res({ address, family }))));
+    expect(pinned).toEqual({ address: "93.184.216.34", family: 4 });
   });
 });

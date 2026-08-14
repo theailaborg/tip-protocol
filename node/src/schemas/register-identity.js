@@ -204,6 +204,17 @@ function buildSigningPayload(input) {
     );
   }
 
+  // org_type describes an organization, so it is meaningless on a person and
+  // rejected there rather than silently dropped. Public registry data, unlike
+  // the registration number, which stays hashed into dedup_hash.
+  const orgType = input.org_type == null ? undefined : input.org_type;
+  if (orgType !== undefined && tipIdType !== TIP_ID_TYPES.ORGANIZATION) {
+    throw schemaError(400, "org_type is only valid for organizations", "org_field_on_person");
+  }
+  if (orgType !== undefined && (typeof orgType !== "string" || !/^[a-z0-9-]{2,64}$/.test(orgType))) {
+    throw schemaError(400, "org_type must be 2-64 chars, lowercase letters, digits or hyphens", "org_type_invalid");
+  }
+
   const normalised = {
     algorithm,
     dedup_hash: input.dedup_hash,
@@ -214,13 +225,14 @@ function buildSigningPayload(input) {
     vp_id: input.vp_id,
     zk_proof: input.zk_proof,
     creator_name: input.creator_name,
+    org_type: orgType,
   };
   return buildSignedPayload(normalised, {
     required: [
       "algorithm", "dedup_hash", "public_key", "region",
       "tip_id_type", "verification_tier", "vp_id", "zk_proof",
     ],
-    optional: ["creator_name"],
+    optional: ["creator_name", "org_type"],
   });
 }
 

@@ -13,7 +13,7 @@
 
 const { shake256 } = require("../../shared/crypto");
 const { nowMs, nowPlusMs } = require("../../shared/time");
-const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
+const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES, PRESCAN_REVIEW_STATES, REGISTER_CREDIT } = require("../../shared/constants");
 const { JURY, APPEAL, DISPUTE, REVIEWER } = require("../../shared/protocol-constants");
 const { nodeSignedAuto } = require("./services/helpers");
 const { getLogger } = require("./logger");
@@ -532,6 +532,24 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     }));
   }
 
+  // Reverse the author's registration credit for this content on UPHELD:
+  // reclaim exactly what was awarded (0 or +1), once (idempotent via the
+  // reversal marker), floored so it never double-claws.
+  if (verdict === VERDICT.UPHELD && authorTipId) {
+    const su = dag.getTxsByTypeAndCtid(TX_TYPES.SCORE_UPDATE, ctid);
+    const awarded = su
+      .filter(t => t.data?.tip_id === authorTipId && String(t.data?.reason || "").startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX))
+      .reduce((s, t) => s + (t.data?.delta || 0), 0);
+    const alreadyReversed = su.some(t => String(t.data?.reason || "").startsWith(REGISTER_CREDIT.REVERSAL_REASON_PREFIX));
+    if (awarded > 0 && !alreadyReversed) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: authorTipId, delta: -awarded,
+        reason: `${REGISTER_CREDIT.REVERSAL_REASON_PREFIX}${ctid}`,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
+      }));
+    }
+  }
+
   // ── Juror score effects ───────────────────────────────────────────────────
   // Ties returned via the no-result branch above, so a decisive majority
   // exists here. (isTie is computed once near the vote tallies.)
@@ -844,6 +862,33 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
     },
   }, config, dag);
   txs.push(resultTx);
+
+  // Registration credit follows the FINAL verdict. Stage-2 reclaims the +1
+  // only on UPHELD, so a Stage-3 flip (or a NO_QUORUM→UPHELD escalation, which
+  // is not "overturned") must reconcile: reclaim outstanding credit when the
+  // final verdict is UPHELD, restore it otherwise. Idempotent — emits only on a
+  // real delta, so a confirm or a re-run is a no-op.
+  if (authorTipId) {
+    const su = dag.getTxsByTypeAndCtid(TX_TYPES.SCORE_UPDATE, ctid)
+      .filter(t => t.data?.tip_id === authorTipId);
+    const isCredit = (r) => r.startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX)
+      || r.startsWith(REGISTER_CREDIT.REVERSAL_REASON_PREFIX)
+      || r.startsWith(REGISTER_CREDIT.RESTORE_REASON_PREFIX);
+    const awarded = su
+      .filter(t => String(t.data?.reason || "").startsWith(REGISTER_CREDIT.AWARD_REASON_PREFIX))
+      .reduce((s, t) => s + (t.data?.delta || 0), 0);
+    const net = su
+      .filter(t => isCredit(String(t.data?.reason || "")))
+      .reduce((s, t) => s + (t.data?.delta || 0), 0);
+    const delta = (verdict === VERDICT.UPHELD ? 0 : awarded) - net;
+    if (delta !== 0) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: authorTipId, delta,
+        reason: `${delta < 0 ? REGISTER_CREDIT.REVERSAL_REASON_PREFIX : REGISTER_CREDIT.RESTORE_REASON_PREFIX}${ctid}`,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
+      }));
+    }
+  }
 
   // ── Appellant outcome ─────────────────────────────────────────────────────
   // Stake-on-file model: APPELLANT_STAKE was deducted at fileAppeal time

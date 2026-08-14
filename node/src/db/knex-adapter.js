@@ -470,6 +470,7 @@ class KnexAdapter {
         extras: (extras && typeof extras === "object" && !Array.isArray(extras)) ? extras : {},
         media: Array.isArray(media) ? media : [],
         media_canonical_hash: typeof row.media_canonical_hash === "string" ? row.media_canonical_hash : null,
+        parent_url: typeof row.parent_url === "string" ? row.parent_url : null,
       };
       delete mapped.tip_ctid;
       this.mirror._content.set(mapped.ctid, mapped);
@@ -499,6 +500,27 @@ class KnexAdapter {
         last_error: row.last_error,
         created_at: row.created_at,
         completed_at: row.completed_at,
+      });
+    }
+
+    // Upload sessions — node-local ephemeral chunked-upload state.
+    // Hydrating the mirror lets reads stay sync while writes are async.
+    const uploadSessionRows = await this.knex("upload_sessions").select("*");
+    for (const row of uploadSessionRows) {
+      this.mirror._uploadSessions.set(row.session_id, {
+        session_id: row.session_id,
+        upload_id: row.upload_id,
+        s3_key: row.s3_key,
+        content_hash: row.content_hash,
+        mime: row.mime,
+        size: row.size,
+        signer_tip_id: row.signer_tip_id,
+        timestamp: row.timestamp,
+        signature: row.signature,
+        parts_json: row.parts_json,
+        completed_size: row.completed_size,
+        created_at: row.created_at,
+        expires_at: row.expires_at,
       });
     }
 
@@ -863,6 +885,7 @@ class KnexAdapter {
       registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
       tx_id: rec.tx_id || null,
+      org_type: rec.org_type || null,
     };
     this._ff(() => this._dbInsert("identities", "tip_id", row, "merge"));
   }
@@ -955,6 +978,7 @@ class KnexAdapter {
       media: JSON.stringify(Array.isArray(rec.media) ? rec.media : []),
       media_canonical_hash: typeof rec.media_canonical_hash === "string" ? rec.media_canonical_hash : null,
       tx_id: rec.tx_id || null,
+      parent_url: typeof rec.parent_url === "string" ? rec.parent_url : null,
     };
     this._ff(() => this._dbInsert("content", "tip_ctid", row, "merge"));
   }
@@ -1103,6 +1127,7 @@ class KnexAdapter {
   }
   getPrescanJob(jobId) { return this.mirror.getPrescanJob(jobId); }
   getPrescanJobByCtid(ctid) { return this.mirror.getPrescanJobByCtid(ctid); }
+  countPendingPrescanJobs() { return this.mirror.countPendingPrescanJobs(); }
   claimPrescanJob(opts) {
     const claimed = this.mirror.claimPrescanJob(opts);
     if (claimed) {
@@ -1150,6 +1175,60 @@ class KnexAdapter {
     return changed;
   }
 
+  // ── Upload sessions (node-local ephemeral chunked-upload state) ───────────
+  createUploadSession(session) {
+    const row = {
+      session_id: session.session_id,
+      upload_id: session.upload_id,
+      s3_key: session.s3_key,
+      content_hash: session.content_hash,
+      mime: session.mime,
+      size: session.size,
+      signer_tip_id: session.signer_tip_id,
+      timestamp: session.timestamp,
+      signature: session.signature,
+      parts_json: JSON.stringify(session.parts || []),
+      completed_size: session.completed_size || 0,
+      created_at: session.created_at,
+      expires_at: session.expires_at,
+    };
+    this.mirror.createUploadSession(session);
+    this._ff(() => this._k("upload_sessions").insert(row));
+    return session;
+  }
+  getUploadSession(sessionId) {
+    return this.mirror.getUploadSession(sessionId);
+  }
+  updateUploadSession(sessionId, patch) {
+    const updated = this.mirror.updateUploadSession(sessionId, patch);
+    if (updated) {
+      const updates = {};
+      if (patch.parts !== undefined) updates.parts_json = JSON.stringify(patch.parts || []);
+      if (patch.completed_size !== undefined) updates.completed_size = patch.completed_size;
+      if (patch.expires_at !== undefined) updates.expires_at = patch.expires_at;
+      if (Object.keys(updates).length > 0) {
+        this._ff(() => this._k("upload_sessions").where("session_id", sessionId).update(updates));
+      }
+    }
+    return updated;
+  }
+  deleteUploadSession(sessionId) {
+    this.mirror.deleteUploadSession(sessionId);
+    this._ff(() => this._k("upload_sessions").where("session_id", sessionId).del());
+  }
+  cleanupExpiredUploadSessions(beforeMs = nowMs()) {
+    const removed = this.mirror.cleanupExpiredUploadSessions(beforeMs);
+    this._ff(() => this._k("upload_sessions").where("expires_at", "<", beforeMs).del());
+    return removed;
+  }
+  listExpiredUploadSessions(beforeMs = nowMs()) {
+    // Read-only: caller deletes each row via deleteUploadSession after aborting S3.
+    return this.mirror.listExpiredUploadSessions(beforeMs);
+  }
+  generateUploadSessionId() {
+    return this.mirror.generateUploadSessionId();
+  }
+
   updateContentStatus(ctid, status) {
     this.mirror.updateContentStatus(ctid, status);
     this._ff(() => this._k("content").where("tip_ctid", ctid).update({ status }));
@@ -1158,6 +1237,18 @@ class KnexAdapter {
   updateContentOrigin(ctid, originCode, status) {
     this.mirror.updateContentOrigin(ctid, originCode, status);
     this._ff(() => this._k("content").where("tip_ctid", ctid).update({ origin_code: originCode, status }));
+  }
+
+  updateContentUrls(ctid, registeredUrls) {
+    this.mirror.updateContentUrls(ctid, registeredUrls);
+    const urls = Array.isArray(registeredUrls) ? registeredUrls : [];
+    this._ff(() => this._k("content").where("tip_ctid", ctid).update({ registered_urls: JSON.stringify(urls) }));
+  }
+
+  incrementContentCounter(ctid, field) {
+    if (field !== "verification_count" && field !== "dispute_count") return;
+    this.mirror.incrementContentCounter(ctid, field);
+    this._ff(() => this._k("content").where("tip_ctid", ctid).increment(field, 1));
   }
 
   // ── Scores ─────────────────────────────────────────────────────────────────
@@ -1420,6 +1511,7 @@ class KnexAdapter {
       name: rec.name || null,
       status: rec.status || "active",
       api_endpoint: rec.api_endpoint || null,
+      operated_by: rec.operated_by || null,
       updated_at: null,  // null for new nodes (no update committed yet)
       registered_at: rec.registered_at,
     };

@@ -24,6 +24,7 @@
 
 const path = require("path");
 const fs = require("fs");
+const { randomUUID } = require("crypto");
 const { computeTxId, verifyTxId, canonicalJson } = require("../../shared/crypto");
 const { shake256 } = require("../../shared/crypto");
 const { createSMT } = require("../../shared/smt");
@@ -113,6 +114,11 @@ function _canonContent(r) {
   // writer that updates them non-deterministically. Re-add if/when they
   // start being incremented from commit-handler with tx context.
   //
+  // Optional columns are folded in under the STRIP RULE (see parent_url at the
+  // bottom): emitted only when set, so canonicalJson omits the key and every
+  // pre-existing row hashes byte-identically. That is how a new optional field
+  // joins the state root without an activation gate or a genesis reset.
+  //
   // Every other column is included — fields are populated from tx.data
   // (deterministic across nodes), so any divergence on the persisted
   // row would indicate a code bug, and the merkle-root mismatch is
@@ -143,6 +149,10 @@ function _canonContent(r) {
     media: Array.isArray(r.media) ? r.media : [],
     media_canonical_hash: typeof r.media_canonical_hash === "string" ? r.media_canonical_hash : null,
     tx_id: r.tx_id || null,
+    // Strip rule: absent unless set, so rows predating the column hash exactly
+    // as before. Only rows carrying one differ, and those cannot exist until
+    // the whole fleet accepts the signed field.
+    ...(r.parent_url ? { parent_url: r.parent_url } : {}),
   };
 }
 // Canonical projection for the `scores` table — included in
@@ -530,6 +540,7 @@ class MemoryStore {
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
     this._prescanJobs = new Map();     // job_id -> prescan-job row (node-local async classifier queue, NOT consensus state)
+    this._uploadSessions = new Map();  // session_id -> upload session row (node-local ephemeral, NOT consensus state)
     this._domainBindings = new SmtMap(this, "domain_bindings");  // domain
     this._ownerHeads = new SmtMap(this, "owner_heads");  // entity_key -> tx_id (owner-chain heads, canonical) -> binding record (canonical, in state_merkle_root)
     // Off-DAG perceptual similarity index (advisory; NOT consensus state, NOT in
@@ -654,6 +665,16 @@ class MemoryStore {
     const rec = this._content.get(ctid);
     if (rec) this._content.set(ctid, { ...rec, origin_code: originCode, status });
   }
+  updateContentUrls(ctid, registeredUrls) {
+    const rec = this._content.get(ctid);
+    if (rec) this._content.set(ctid, { ...rec, registered_urls: Array.isArray(registeredUrls) ? registeredUrls : [] });
+  }
+  // Read-model only (never hashed): CONTENT_VERIFIED/CONTENT_DISPUTED volume per ctid.
+  incrementContentCounter(ctid, field) {
+    if (field !== "verification_count" && field !== "dispute_count") return;
+    const rec = this._content.get(ctid);
+    if (rec) this._content.set(ctid, { ...rec, [field]: (rec[field] || 0) + 1 });
+  }
   getContentByStatus(status) {
     return [...this._content.values()].filter(c => c.status === status);
   }
@@ -662,13 +683,14 @@ class MemoryStore {
   // query. Cursor is an exclusive (registered_at, ctid) tuple; the
   // composite tiebreak makes pagination stable when several rows share
   // a timestamp.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
     let rows = [...this._content.values()];
     if (author) rows = rows.filter(c => c.author_tip_id === author);
     if (origin) rows = rows.filter(c => c.origin_code === origin);
     if (status) rows = rows.filter(c => c.status === status);
     if (hasMedia === true) rows = rows.filter(c => Array.isArray(c.media) && c.media.length > 0);
     if (url) rows = rows.filter(c => Array.isArray(c.registered_urls) && c.registered_urls.includes(url));
+    if (parentUrl) rows = rows.filter(c => c.parent_url === parentUrl);
     rows.sort((a, b) => (b.registered_at - a.registered_at) || (a.ctid < b.ctid ? 1 : -1));
     if (cursor) {
       rows = rows.filter(c =>
@@ -927,7 +949,7 @@ class MemoryStore {
     }
     const { public_key, algorithm, ...rest } = rec;
     void public_key; void algorithm;
-    this._nodes.set(rec.node_id, { api_endpoint: null, ...rest });
+    this._nodes.set(rec.node_id, { api_endpoint: null, operated_by: null, ...rest });
   }
   updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
     const row = this._nodes.get(nodeId);
@@ -1651,14 +1673,17 @@ class MemoryStore {
   // forking the state root. The snapshot serve sets contentRaw:true; the
   // receiver re-derives the root via computeStateMerkleRoot after install, so
   // hashing still canonicalizes and determinism is preserved.
-  *iterateCanonicalState({ contentRaw = false } = {}) {
+  *iterateCanonicalState({ rawTransfer = false, contentRaw = false } = {}) {
+    // contentRaw is the old name, kept so an un-updated caller cannot silently
+    // opt out of raw transfer and reintroduce the #132 re-quantization fork.
+    const raw = rawTransfer || contentRaw;
     for (const r of [...this._identities.values()]
       .sort((a, b) => cmpBin(a.tip_id, b.tip_id))) {
-      yield { table: "identities", row: _canonIdentity(r) };
+      yield { table: "identities", row: raw ? r : _canonIdentity(r) };
     }
     for (const r of [...this._content.values()]
       .sort((a, b) => cmpBin(a.ctid, b.ctid))) {
-      yield { table: "content", row: contentRaw ? r : _canonContent(r) };
+      yield { table: "content", row: raw ? r : _canonContent(r) };
     }
     for (const [tip_id, v] of [...this._scores.entries()]
       .sort((a, b) => cmpBin(a[0], b[0]))) {
@@ -1691,7 +1716,7 @@ class MemoryStore {
     }
     for (const r of [...this._nodes.values()]
       .sort((a, b) => cmpBin(a.node_id, b.node_id))) {
-      yield { table: "nodes", row: _canonNode(r) };
+      yield { table: "nodes", row: raw ? r : _canonNode(r) };
     }
     // GH #60 — entity_keys participates in state_merkle_root so the
     // federation agrees byte-for-byte on every identity/node/VP's key
@@ -1996,6 +2021,16 @@ class MemoryStore {
     }
     return null;
   }
+  // Backlog depth = jobs still awaiting a real verdict (done rows are deleted).
+  // Gates the prescan-worker's fail-open: below the cap it waits for the real
+  // classifier, at/above it overflows to the local fallback.
+  countPendingPrescanJobs() {
+    let n = 0;
+    for (const row of this._prescanJobs.values()) {
+      if (row.status === "queued" || row.status === "claimed") n++;
+    }
+    return n;
+  }
   // Atomic claim: prefer queued jobs (oldest first), then recover stuck
   // claimed jobs whose claimed_at is past the timeout. Returns the
   // claimed row or null if no work is available.
@@ -2007,8 +2042,10 @@ class MemoryStore {
       // the content row exists no-ops at apply and the real verdict is lost
       // to the 1h fail-open valve.
       if (!this._content.get(row.ctid)) continue;
-      if (row.status === "queued") queued.push(row);
-      else if (row.status === "claimed" && row.claimed_at < now - claimTimeoutMs) stuck.push(row);
+      if (row.status === "queued") {
+        if (row.retry_after && row.retry_after > now) continue; // retry backoff not yet elapsed
+        queued.push(row);
+      } else if (row.status === "claimed" && row.claimed_at < now - claimTimeoutMs) stuck.push(row);
     }
     queued.sort((a, b) => a.created_at - b.created_at);
     stuck.sort((a, b) => a.created_at - b.created_at);
@@ -2034,7 +2071,7 @@ class MemoryStore {
     row.completed_at = completedAt;
     return true;
   }
-  releasePrescanJobForRetry(jobId, { lastError }) {
+  releasePrescanJobForRetry(jobId, { lastError, retryAfter }) {
     const row = this._prescanJobs.get(jobId);
     if (!row) return false;
     row.status = "queued";
@@ -2042,7 +2079,88 @@ class MemoryStore {
     row.claimed_by = null;
     row.last_error = lastError || null;
     row.retries = (row.retries || 0) + 1;
+    row.retry_after = retryAfter || 0;
     return true;
+  }
+
+  // ── Upload sessions (node-local ephemeral chunked-upload state) ───────
+  createUploadSession(session) {
+    this._uploadSessions.set(session.session_id, {
+      session_id: session.session_id,
+      upload_id: session.upload_id,
+      s3_key: session.s3_key,
+      content_hash: session.content_hash,
+      mime: session.mime,
+      size: session.size,
+      signer_tip_id: session.signer_tip_id,
+      timestamp: session.timestamp,
+      signature: session.signature,
+      parts_json: JSON.stringify(session.parts || []),
+      completed_size: session.completed_size || 0,
+      created_at: session.created_at,
+      expires_at: session.expires_at,
+    });
+    return session;
+  }
+  getUploadSession(sessionId) {
+    const row = this._uploadSessions.get(sessionId);
+    if (!row) return null;
+    if (row.expires_at < nowMs()) {
+      this._uploadSessions.delete(sessionId);
+      return null;
+    }
+    return {
+      session_id: row.session_id,
+      upload_id: row.upload_id,
+      s3_key: row.s3_key,
+      content_hash: row.content_hash,
+      mime: row.mime,
+      size: row.size,
+      signer_tip_id: row.signer_tip_id,
+      timestamp: row.timestamp,
+      signature: row.signature,
+      parts: JSON.parse(row.parts_json || "[]"),
+      completed_size: row.completed_size,
+      created_at: row.created_at,
+      expires_at: row.expires_at,
+    };
+  }
+  updateUploadSession(sessionId, patch) {
+    const row = this._uploadSessions.get(sessionId);
+    if (!row) return null;
+    for (const key of Object.keys(patch)) {
+      if (key === "parts") {
+        row.parts_json = JSON.stringify(patch.parts || []);
+      } else if (row[key] !== undefined) {
+        row[key] = patch[key];
+      }
+    }
+    return this.getUploadSession(sessionId);
+  }
+  deleteUploadSession(sessionId) {
+    this._uploadSessions.delete(sessionId);
+  }
+  cleanupExpiredUploadSessions(beforeMs = nowMs()) {
+    let removed = 0;
+    for (const [id, row] of this._uploadSessions) {
+      if (row.expires_at < beforeMs) {
+        this._uploadSessions.delete(id);
+        removed++;
+      }
+    }
+    return removed;
+  }
+  // Return (without deleting) expired sessions so the caller can abort their S3
+  // multipart before dropping the row — prevents orphaned, billable S3 parts.
+  listExpiredUploadSessions(beforeMs = nowMs()) {
+    const out = [];
+    for (const row of this._uploadSessions.values()) {
+      if (row.expires_at < beforeMs) out.push({ ...row });
+    }
+    return out;
+  }
+  generateUploadSessionId() {
+    return randomUUID().replace(/-/g, "");
   }
 
   // No-op for parity with SQLiteStore.backfillSubjectTipId. MemoryStore
@@ -2163,6 +2281,12 @@ class SQLiteStore {
       this.db.exec("ALTER TABLE tx_rejections ADD COLUMN subject_tip_id TEXT");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_tx_rej_subject ON tx_rejections(subject_tip_id)");
+
+    const contentCols = this.db.prepare("PRAGMA table_info(content)").all().map(c => c.name);
+    if (!contentCols.includes("parent_url")) {
+      this.db.exec("ALTER TABLE content ADD COLUMN parent_url TEXT");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_content_parent_url ON content(parent_url)");
   }
 
 
@@ -2301,8 +2425,9 @@ class SQLiteStore {
             verification_tier,tip_id_type,founding,status,
             reviewer_consent,juror_consent,expert_consent,
             interests,
-            registered_at,creator_name,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            registered_at,creator_name,tx_id,
+            org_type)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       // GH #60 — JOIN with active entity_keys row so existing callers
       // of getIdentity(id).public_key keep working. valid_to_ts IS NULL
@@ -2324,6 +2449,10 @@ class SQLiteStore {
       ),
       identityCount: this.db.prepare("SELECT COUNT(*) AS n FROM identities"),
 
+      // verification_count/dispute_count (read-model counters) persisted here so a
+      // re-save/snapshot-install preserves them, matching Knex. Callers pass the full
+      // record (registration = fresh 0; prescan re-save spreads ...existing; install
+      // ships the raw row), so `|| 0` never clobbers a live count.
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
            (tip_ctid,origin_code,content_hash,author_tip_id,signer_tip_id,
@@ -2331,13 +2460,17 @@ class SQLiteStore {
             status,prescan_flagged,prescan_probability,prescan_tier,
             prescan_status,prescan_completed_at,prescan_assigned_node_id,
             prescan_content_type,prescan_overall_degraded,content_type_hint,
-            override,registered_at,registered_urls,media,media_canonical_hash,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            override,registered_at,registered_urls,media,media_canonical_hash,tx_id,
+            verification_count,dispute_count,parent_url)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE tip_ctid=?"),
       contentCount: this.db.prepare("SELECT COUNT(*) AS n FROM content"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE tip_ctid=?"),
       updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE tip_ctid=?"),
+      updateContentUrls: this.db.prepare("UPDATE content SET registered_urls=? WHERE tip_ctid=?"),
+      incVerificationCount: this.db.prepare("UPDATE content SET verification_count = verification_count + 1 WHERE tip_ctid=?"),
+      incDisputeCount: this.db.prepare("UPDATE content SET dispute_count = dispute_count + 1 WHERE tip_ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
       contentByStatus: this.db.prepare("SELECT * FROM content WHERE status=?"),
       // Register-time near-duplicate warning (exact normalized match).
@@ -2457,8 +2590,8 @@ class SQLiteStore {
       ),
 
       saveNode: this.db.prepare(
-        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,updated_at,registered_at)
-         VALUES (?,?,?,?,?,?)`
+        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,operated_by,updated_at,registered_at)
+         VALUES (?,?,?,?,?,?,?)`
       ),
       updateNodeEndpoint: this.db.prepare(
         "UPDATE nodes SET api_endpoint=?, updated_at=? WHERE node_id=?"
@@ -2875,6 +3008,36 @@ class SQLiteStore {
                 last_error=?, retries=retries+1
           WHERE job_id=?`
       ),
+      countPendingPrescanJobs: this.db.prepare(
+        "SELECT COUNT(*) AS n FROM prescan_jobs WHERE status IN ('queued','claimed')"
+      ),
+
+      // Upload sessions (node-local ephemeral chunked-upload state).
+      createUploadSession: this.db.prepare(
+        `INSERT OR REPLACE INTO upload_sessions
+           (session_id, upload_id, s3_key, content_hash, mime, size,
+            signer_tip_id, timestamp, signature, parts_json, completed_size,
+            created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ),
+      getUploadSession: this.db.prepare(
+        "SELECT * FROM upload_sessions WHERE session_id=?"
+      ),
+      updateUploadSession: this.db.prepare(
+        `UPDATE upload_sessions
+            SET parts_json=?, completed_size=?, expires_at=?
+          WHERE session_id=?`
+      ),
+      deleteUploadSession: this.db.prepare(
+        "DELETE FROM upload_sessions WHERE session_id=?"
+      ),
+      cleanupExpiredUploadSessions: this.db.prepare(
+        "DELETE FROM upload_sessions WHERE expires_at<?"
+      ),
+      listExpiredUploadSessions: this.db.prepare(
+        "SELECT * FROM upload_sessions WHERE expires_at<?"
+      ),
+
       // Perceptual index (off-DAG, advisory).
       savePerceptualFingerprint: this.db.prepare(
         `INSERT OR REPLACE INTO perceptual_fingerprint
@@ -2996,7 +3159,8 @@ class SQLiteStore {
       rec.juror_consent ? 1 : 0,
       rec.expert_consent ? 1 : 0,
       JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
-      rec.registered_at, rec.creator_name || null, rec.tx_id || null
+      rec.registered_at, rec.creator_name || null, rec.tx_id || null,
+      rec.org_type || null
     );
   }
   getIdentity(id) {
@@ -3053,7 +3217,10 @@ class SQLiteStore {
       rec.registered_at, JSON.stringify(urls),
       JSON.stringify(media),
       typeof rec.media_canonical_hash === "string" ? rec.media_canonical_hash : null,
-      rec.tx_id || null
+      rec.tx_id || null,
+      rec.verification_count || 0,
+      rec.dispute_count || 0,
+      typeof rec.parent_url === "string" ? rec.parent_url : null
     );
   }
   // SQL returns array/object columns as JSON-encoded TEXT. Decode all
@@ -3079,6 +3246,14 @@ class SQLiteStore {
   contentCount() { return this._stmts.contentCount.get().n; }
   updateContentStatus(ctid, status) { this._stmts.updateContentStatus.run(status, ctid); }
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
+  updateContentUrls(ctid, registeredUrls) {
+    this._stmts.updateContentUrls.run(JSON.stringify(Array.isArray(registeredUrls) ? registeredUrls : []), ctid);
+  }
+  incrementContentCounter(ctid, field) {
+    const stmt = field === "verification_count" ? this._stmts.incVerificationCount
+      : field === "dispute_count" ? this._stmts.incDisputeCount : null;
+    if (stmt) stmt.run(ctid);
+  }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
   getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
   getContentByHash(contentHash) {
@@ -3088,7 +3263,7 @@ class SQLiteStore {
   // Explorer list — see MemoryStore.listContent for the contract.
   // Filters vary per call, so the statement is built dynamically; the
   // (status, author, origin) columns are indexed.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
     const where = [];
     const params = [];
     if (author) { where.push("author_tip_id = ?"); params.push(author); }
@@ -3112,6 +3287,7 @@ class SQLiteStore {
       where.push("instr(registered_urls, ?) > 0");
       params.push('"' + jsonInner + '"');
     }
+    if (parentUrl) { where.push("parent_url = ?"); params.push(parentUrl); }
     if (cursor) {
       where.push("(registered_at < ? OR (registered_at = ? AND tip_ctid < ?))");
       params.push(cursor.t, cursor.t, cursor.c);
@@ -3317,6 +3493,7 @@ class SQLiteStore {
       rec.node_id, rec.name || null,
       rec.status || "active",
       rec.api_endpoint || null,
+      rec.operated_by || null,
       null,  // updated_at: null for new nodes (no update committed yet)
       rec.registered_at || nowMs()
     );
@@ -3745,10 +3922,12 @@ class SQLiteStore {
     return smt.root();
   }
   rebuildStateTree() { return this.stateRoot(); }
-  *iterateCanonicalState() {
+  *iterateCanonicalState({ rawTransfer = false, contentRaw = false } = {}) {
+    // Mirrors MemoryStore: raw rows for transfer, whitelists for hashing.
+    const raw = rawTransfer || contentRaw;
     const db = this.db;
     for (const r of db.prepare("SELECT * FROM identities ORDER BY tip_id").iterate()) {
-      yield { table: "identities", row: _canonIdentity(r) };
+      yield { table: "identities", row: raw ? r : _canonIdentity(r) };
     }
     for (const r of db.prepare("SELECT * FROM content ORDER BY tip_ctid").iterate()) {
       // _hydrateContent decodes JSON columns (authors, extras, registered_urls)
@@ -3759,7 +3938,7 @@ class SQLiteStore {
       // Boolean/int normalization (founding, prescan_flagged, override, etc.)
       // is handled inside _canonContent/_canonIdentity via `? 1 : 0` — works
       // for both SQLite int (0/1) and MemoryStore bool (true/false).
-      yield { table: "content", row: _canonContent(this._hydrateContent(r)) };
+      yield { table: "content", row: raw ? this._hydrateContent(r) : _canonContent(this._hydrateContent(r)) };
     }
     for (const r of db.prepare("SELECT tip_id, score, offense_count, last_updated FROM scores ORDER BY tip_id").iterate()) {
       yield { table: "scores", row: _canonScore(r.tip_id, r) };
@@ -3783,7 +3962,7 @@ class SQLiteStore {
       yield { table: "verification_providers", row: _canonVP(r) };
     }
     for (const r of db.prepare("SELECT * FROM nodes ORDER BY node_id").iterate()) {
-      yield { table: "nodes", row: _canonNode(r) };
+      yield { table: "nodes", row: raw ? r : _canonNode(r) };
     }
     // GH #60 — entity_keys participates in state_merkle_root.
     for (const r of this._stmts.iterateEntityKeys.iterate()) {
@@ -4005,6 +4184,75 @@ class SQLiteStore {
   getPrescanJobByCtid(ctid) {
     return this._hydratePrescanJob(this._stmts.getPrescanJobByCtid.get(ctid));
   }
+  countPendingPrescanJobs() {
+    return this._stmts.countPendingPrescanJobs.get().n;
+  }
+
+  // ── Upload sessions (node-local ephemeral chunked-upload state) ─────────
+  _hydrateUploadSession(row) {
+    if (!row) return null;
+    return {
+      session_id: row.session_id,
+      upload_id: row.upload_id,
+      s3_key: row.s3_key,
+      content_hash: row.content_hash,
+      mime: row.mime,
+      size: row.size,
+      signer_tip_id: row.signer_tip_id,
+      timestamp: row.timestamp,
+      signature: row.signature,
+      parts: JSON.parse(row.parts_json || "[]"),
+      completed_size: row.completed_size,
+      created_at: row.created_at,
+      expires_at: row.expires_at,
+    };
+  }
+  createUploadSession(session) {
+    this._stmts.createUploadSession.run(
+      session.session_id, session.upload_id, session.s3_key,
+      session.content_hash, session.mime, session.size,
+      session.signer_tip_id, session.timestamp, session.signature,
+      JSON.stringify(session.parts || []), session.completed_size || 0,
+      session.created_at, session.expires_at,
+    );
+    return session;
+  }
+  getUploadSession(sessionId) {
+    const row = this._stmts.getUploadSession.get(sessionId);
+    if (!row) return null;
+    if (row.expires_at < nowMs()) {
+      this._stmts.deleteUploadSession.run(sessionId);
+      return null;
+    }
+    return this._hydrateUploadSession(row);
+  }
+  updateUploadSession(sessionId, patch) {
+    const session = this.getUploadSession(sessionId);
+    if (!session) return null;
+    const partsJson = patch.parts !== undefined ? JSON.stringify(patch.parts || []) : JSON.stringify(session.parts);
+    const completedSize = patch.completed_size !== undefined ? patch.completed_size : session.completed_size;
+    const expiresAt = patch.expires_at !== undefined ? patch.expires_at : session.expires_at;
+    this._stmts.updateUploadSession.run(partsJson, completedSize, expiresAt, sessionId);
+    return {
+      ...session,
+      parts: JSON.parse(partsJson),
+      completed_size: completedSize,
+      expires_at: expiresAt,
+    };
+  }
+  deleteUploadSession(sessionId) {
+    this._stmts.deleteUploadSession.run(sessionId);
+  }
+  cleanupExpiredUploadSessions(beforeMs = nowMs()) {
+    return this._stmts.cleanupExpiredUploadSessions.run(beforeMs).changes;
+  }
+  listExpiredUploadSessions(beforeMs = nowMs()) {
+    return this._stmts.listExpiredUploadSessions.all(beforeMs).map(r => this._hydrateUploadSession(r));
+  }
+  generateUploadSessionId() {
+    return randomUUID().replace(/-/g, "");
+  }
+
   // ── Perceptual index writes (off-DAG, advisory) ───────────────────────────
   savePerceptualFingerprint(rec) {
     this._stmts.savePerceptualFingerprint.run(
@@ -4215,6 +4463,10 @@ function _buildDagHandle(store, config) {
 
   // ── Public DAG API ────────────────────────────────────────────────────────
   const dag = {
+    // Expose the underlying store so services (e.g. chunked upload session
+    // store) can reuse the same Knex connection without opening a second pool.
+    _store: store,
+
     // ── Core transaction ops ───────────────────────────────────────────────
     addTx(tx) {
       // Order matters:
@@ -4283,6 +4535,8 @@ function _buildDagHandle(store, config) {
     contentCount: () => store.contentCount(),
     updateContentStatus: (ctid, s) => store.updateContentStatus(ctid, s),
     updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
+    updateContentUrls: (ctid, urls) => store.updateContentUrls(ctid, urls),
+    incrementContentCounter: (ctid, f) => store.incrementContentCounter(ctid, f),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
     getContentByStatus: (s) => store.getContentByStatus(s),
     // Register-time near-duplicate warning (exact normalized content_hash).
@@ -4519,10 +4773,20 @@ function _buildDagHandle(store, config) {
     getAudioClip: (clipId) => store.getAudioClip(clipId),
     getPrescanJob: (jobId) => store.getPrescanJob(jobId),
     getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
+    countPendingPrescanJobs: () => store.countPendingPrescanJobs(),
     claimPrescanJob: (opts) => store.claimPrescanJob(opts),
     markPrescanJobDone: (jobId, opts) => store.markPrescanJobDone(jobId, opts),
     markPrescanJobFailed: (jobId, opts) => store.markPrescanJobFailed(jobId, opts),
     releasePrescanJobForRetry: (jobId, opts) => store.releasePrescanJobForRetry(jobId, opts),
+
+    // ── Upload sessions (node-local ephemeral chunked-upload state) ─────
+    createUploadSession: (session) => store.createUploadSession(session),
+    getUploadSession: (sessionId) => store.getUploadSession(sessionId),
+    updateUploadSession: (sessionId, patch) => store.updateUploadSession(sessionId, patch),
+    deleteUploadSession: (sessionId) => store.deleteUploadSession(sessionId),
+    cleanupExpiredUploadSessions: (beforeMs) => store.cleanupExpiredUploadSessions(beforeMs),
+    listExpiredUploadSessions: (beforeMs) => store.listExpiredUploadSessions(beforeMs),
+    generateUploadSessionId: () => store.generateUploadSessionId(),
 
     // ── DB Transactions ──────────────────────────────────────────────────
     runInTransaction: (fn) => store.runInTransaction(fn),

@@ -5,8 +5,9 @@ const {
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
-const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT, PARENT_URL_LOOKUP } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
+const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const contentRegisterSchema = require("../schemas/content-register");
 const contentListSchema = require("../schemas/content-list");
 const { ingestFingerprint } = require("../perceptual/ingest");
@@ -217,6 +218,24 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return null;
   }
 
+  // Author reward +REGISTER_CREDIT.BASE per registration. Best-effort only: the
+  // committed-only read lags under a burst, so the commit-handler is the real
+  // cap authority and drops any that raced past.
+  function _emitRegistrationCredit(authorTipId, ctid, relatedTxId) {
+    const now = nowMs();
+    if (!authorTipId || now < REGISTER_CREDIT.ACTIVATION_MS) return;
+
+    const credits = dag.getTxsByType(TX_TYPES.SCORE_UPDATE);
+    const delta = regCreditRemaining(regCreditSums(credits, authorTipId, now));
+    if (delta <= 0) return;
+
+    submitTx(scoring.buildScoreUpdateTx({
+      tipId: authorTipId, delta,
+      reason: `${REGISTER_CREDIT.AWARD_REASON_PREFIX}${ctid}`,
+      ctid, relatedTxId, timestamp: now, config,
+    }));
+  }
+
   async function register(body) {
     contentRegisterSchema.validateRequest(body, { mediaLimits: config.mediaLimits, dag });
 
@@ -287,7 +306,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       signer_tip_id, ctid, origin_code,
       registered_urls: canonicalPayload.registered_urls,
     });
-    if (!valid) throw schemaError(error.status, error.message, error.code);
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
 
     // In-flight dedup (committed dedup is canRegisterContent above).
     if (_isRegistrationPending(ctid, signer_tip_id)) {
@@ -358,6 +377,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         ...(canonicalPayload.fingerprint_commit
           ? { fingerprint_commit: canonicalPayload.fingerprint_commit }
           : {}),
+        // ── Optional signed parent context. Same strip rule as the
+        //    commit above: absent when the client didn't send it, so
+        //    tx.data stays byte-identical to pre-parent_url registrations.
+        ...(canonicalPayload.parent_url
+          ? { parent_url: canonicalPayload.parent_url }
+          : {}),
       },
       // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
       signature,
@@ -367,6 +392,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
     submitTx(signedTx);
+
+    // Paired registration reward (single-channel): capped +1 to the author.
+    _emitRegistrationCredit(signer_tip_id, ctid, signedTx.tx_id);
 
     // Near-dup advisory rides the register response; computed before this
     // registration's own ingest, so only pre-existing content can surface.
@@ -411,6 +439,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       near_duplicates: nearDuplicates,
       author_name: identity?.creator_name || null,
       registered_urls: canonicalPayload.registered_urls,
+      parent_url: canonicalPayload.parent_url || null,
       // ── Async prescan ─────────────────────────────────────────────
       // No verdict yet — client polls the prescan_status endpoint until
       // PRESCAN_COMPLETED commits and the row's prescan_status flips
@@ -507,8 +536,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const authorValid = !!author && author.status === "active" && !revocation;
     const authorRevocation = _buildAuthorRevocation(revocation);
 
-    const verifyCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_VERIFIED, ctid).length;
-    const disputeCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid).length;
+    // Materialized read-model columns (maintained in commit-handler, rebuildable
+    // from the DAG). O(1) vs an O(n) tx scan per content-detail read.
+    const verifyCount = rec.verification_count || 0;
+    const disputeCount = rec.dispute_count || 0;
 
     // The ctid embeds the original origin_code at registration time
     // (see crypto.generateCTID). That's an immutable record of what
@@ -536,6 +567,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
       original_origin_code: originalOriginCode,
       origin_changed: originChanged,
+      parent_url: rec.parent_url || null,
       author_name: (author && author.creator_name) || null,
       author_score: scoring.getScore(rec.author_tip_id).score,
       author_tier: scoring.getScore(rec.author_tip_id).tier.name,
@@ -547,6 +579,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       },
       review_history: _projectReviewHistory(ctid),
       appeal_pending: _isAppealPending(ctid),
+      // Content-state half of the update-urls gate, from the same list the rule
+      // enforces. The caller still adds "am I the author?" (resolve is public).
+      can_update_urls: rules.UPDATE_URLS_ALLOWED_STATUSES.includes(rec.status),
       prescan: buildPrescanDescriptor({
         preScan: {
           tier: rec.prescan_tier,
@@ -665,8 +700,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const { verifier_tip_id, verdict, signature } = body;
 
     // Stateful pre-conditions — same predicate as commit-handler.
-    const { valid, error } = rules.canVerify(dag, { ctid, verifier_tip_id });
-    if (!valid) throw schemaError(error.status, error.message, error.code);
+    const { valid, error } = rules.canVerify(dag, { ctid, verifier_tip_id }, { now: nowMs() });
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const rec = dag.getContent(ctid);
     const verifier = dag.getIdentity(verifier_tip_id);
 
@@ -749,7 +784,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // Stateful + time-window pre-conditions. Time-window uses nowMs()
     // at API call; commit-handler re-checks with cert.timestamp.
     const { valid, error } = rules.canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now: nowMs() });
-    if (!valid) throw schemaError(error.status, error.message, error.code);
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 
@@ -772,12 +807,39 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return { success: true, ctid, old_origin_code: rec.origin_code, new_origin_code, tx_id: updateTx.tx_id, confirmation: "proposed" };
   }
 
+  function updateRegisteredUrls(ctid, body) {
+    validate(body, { author_tip_id: { required: true }, registered_urls: { required: true }, signature: { required: true } });
+    contentRegisterSchema.validateRegisteredUrls(body.registered_urls);
+
+    const { valid, error } = rules.canUpdateRegisteredUrls(dag, { ctid, author_tip_id: body.author_tip_id, registered_urls: body.registered_urls });
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
+    const author = dag.getIdentity(body.author_tip_id);
+
+    // Bind the signature to the specific ctid being acted on (replay
+    // protection, see updateOrigin above for the same pattern).
+    const UPDATE_FIELDS = ["author_tip_id", "ctid", "registered_urls"];
+    const updatePayload = { ...body, ctid };
+    if (!verifyBodySignature(updatePayload, body.signature, author.public_key, UPDATE_FIELDS)) {
+      throw schemaError(403, "Author signature verification failed", "signature_invalid");
+    }
+
+    const updateTx = withTxId({
+      tx_type: TX_TYPES.UPDATE_REGISTERED_URLS, timestamp: nowMs(),
+      data: { ctid, registered_urls: body.registered_urls, author_tip_id: body.author_tip_id },
+      signature: body.signature,
+    }, dag);
+    submitTx(updateTx);
+
+    log.info(`Registered URLs update proposed: ${ctid} (${body.registered_urls.length} urls, by ${body.author_tip_id})`);
+    return { success: true, ctid, registered_urls: body.registered_urls, tx_id: updateTx.tx_id, confirmation: "proposed" };
+  }
+
   function retract(ctid, body) {
     validate(body, { author_tip_id: { required: true }, signature: { required: true } });
     const { author_tip_id, signature } = body;
 
     const { valid, error } = rules.canRetract(dag, { ctid, author_tip_id });
-    if (!valid) throw schemaError(error.status, error.message, error.code);
+    if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 
@@ -842,15 +904,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     };
   }
 
-  // Explorer list — slim rows, cursor-paginated, newest first. Heavy
-  // fields (authors[], extras, media[]) stay out of list rows; clients
+  // Slim list row. Heavy fields (authors[], extras, media[]) stay out; clients
   // follow the ctid to resolve() for the full record.
-  function list(query) {
-    const opts = contentListSchema.validateRequest(query);
-    const rows = dag.listContent(opts);
-    const hasMore = rows.length > opts.limit;
-    const page = hasMore ? rows.slice(0, opts.limit) : rows;
-    const items = page.map(c => ({
+  function _listRow(c) {
+    return {
       ctid: c.ctid,
       author_tip_id: c.author_tip_id,
       origin_code: c.origin_code,
@@ -859,8 +916,42 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       prescan_tier: c.prescan_tier,
       media_count: Array.isArray(c.media) ? c.media.length : 0,
       registered_urls: Array.isArray(c.registered_urls) ? c.registered_urls : [],
+      parent_url: c.parent_url || null,
       registered_at: c.registered_at,
-    }));
+    };
+  }
+
+  // Responses pointing at one parent. parent_url is an unverified assertion and
+  // is never exclusivity-checked, so the read is gated: retracted/disputed rows
+  // and sub-VERIFIED authors drop out, and the one-entry-per-author rule is the
+  // real Sybil bound (flooding a parent buys an attacker nothing). Uncursored:
+  // the ranking is score-ordered and deduped, capped at MAX_RESULTS.
+  function _listByParentUrl(opts) {
+    const rows = dag.listContent({ parentUrl: opts.parentUrl, limit: PARENT_URL_LOOKUP.SCAN_LIMIT });
+    const best = new Map();
+    for (const c of rows) {
+      if (c.status === CONTENT_STATUS.RETRACTED || c.status === CONTENT_STATUS.DISPUTED) continue;
+      const sc = scoring.getScore(c.author_tip_id);
+      if (!PARENT_URL_LOOKUP.MIN_TIERS.includes(sc.tier.name)) continue;
+      const prev = best.get(c.author_tip_id);
+      if (prev && prev.registered_at <= c.registered_at) continue;
+      best.set(c.author_tip_id, { ...c, author_score: sc.score });
+    }
+    const items = [...best.values()]
+      .sort((a, b) => (b.author_score - a.author_score) || (a.registered_at - b.registered_at))
+      .slice(0, PARENT_URL_LOOKUP.MAX_RESULTS)
+      .map(c => ({ ..._listRow(c), author_score: c.author_score }));
+    return { items, next_cursor: null };
+  }
+
+  // Explorer list: cursor-paginated, newest first.
+  function list(query) {
+    const opts = contentListSchema.validateRequest(query);
+    if (opts.parentUrl) return _listByParentUrl(opts);
+    const rows = dag.listContent(opts);
+    const hasMore = rows.length > opts.limit;
+    const page = hasMore ? rows.slice(0, opts.limit) : rows;
+    const items = page.map(_listRow);
     const next_cursor = hasMore ? contentListSchema.encodeCursor(page[page.length - 1]) : null;
     return { items, next_cursor };
   }
@@ -905,7 +996,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return { ctid, count: similar.length, similar };
   }
 
-  return { register, resolve, resolveForOg, list, verify, updateOrigin, retract, getPrescanStatus, findSimilar };
+  return { register, resolve, resolveForOg, list, verify, updateOrigin, updateRegisteredUrls, retract, getPrescanStatus, findSimilar };
 }
 
 module.exports = { createContentService };
