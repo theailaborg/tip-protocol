@@ -75,7 +75,7 @@ This is the fastest path to a running node with PostgreSQL.
 ### Step 1: Clone the repository
 
 ```bash
-git clone https://github.com/theailab-org/tip-protocol.git
+git clone https://github.com/theailaborg/tip-protocol.git
 cd tip-protocol
 ```
 
@@ -85,34 +85,31 @@ cd tip-protocol
 cp .env.example .env
 ```
 
-Open `.env` and set the following values. Everything else can stay as the
-default for a development node.
+Open `.env` and set the following. Everything else can stay as the default
+for a development node. The chain id and genesis are carried by the baked
+`genesis-data/genesis.json`, not by env vars.
 
 ```bash
-# REQUIRED: Generate a random 256-bit secret
-# Run: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-TIP_JWT_SECRET=<your_random_256_bit_hex>
-TIP_ADMIN_API_KEY=<your_random_256_bit_hex>
+NODE_ENV=production                # development for a dev node
+# Node identity: a .tip.json holding the node keypair (founding nodes are minted
+# by scripts/seed.js; new nodes register via scripts/register-node.js).
+TIP_NODE_ID=tip://node/<id>
+TIP_NODE_CREDENTIALS_FILE=genesis-data/backups/tip-node-<id>.tip.json
 
-# REQUIRED: Set your chain (use tip-devnet-v2 for testing)
-TIP_CHAIN_ID=tip-devnet-v2
-
-# REQUIRED for mainnet: Get the canonical genesis hash from theailab.org/genesis
-# TIP_GENESIS_HASH=<mainnet_genesis_hash>
-
-# OPTIONAL: Connect to the main network bootstrap peers
-# TIP_BOOTSTRAP_PEERS=node.theailab.org:4001,node2.theailab.org:4001
-
-# OPTIONAL: Set your public URL (needed for correct gossip peer advertising)
+# Network
+TIP_PUBLIC_IP=<your public/Elastic IP>          # for peer dial-back
+# TIP_BOOTSTRAP_PEERS=/ip4/<seed-ip>/tcp/4001/p2p/<seed-peer-id>   # empty on the seed
 # TIP_PUBLIC_URL=https://your-node-hostname.com
 ```
 
-Also set the PostgreSQL credentials in `.env`:
+Database credentials in `.env` (each node has its own local postgres):
 
 ```bash
-POSTGRES_DB=tip_protocol
-POSTGRES_USER=tip
-POSTGRES_PASSWORD=<choose_a_strong_password>
+DB_DRIVER=postgres
+DB_HOST=postgres
+DB_NAME=tip_node1                  # tip_node2 / tip_node3 on the other nodes
+DB_USER=tip
+DB_PASSWORD=<choose_a_strong_password>
 ```
 
 ### Step 3: Start the stack
@@ -177,7 +174,7 @@ or another process manager.
 ### Step 1: Install dependencies
 
 ```bash
-git clone https://github.com/theailab-org/tip-protocol.git
+git clone https://github.com/theailaborg/tip-protocol.git
 cd tip-protocol
 cd node && npm install
 ```
@@ -218,7 +215,7 @@ node scripts/seed.js
 ## Option C: Manual Setup (Python)
 
 ```bash
-git clone https://github.com/theailab-org/tip-protocol.git
+git clone https://github.com/theailaborg/tip-protocol.git
 cd tip-protocol/python
 pip install cryptography click fastapi "uvicorn[standard]" pydantic websockets
 
@@ -236,6 +233,173 @@ python -m scripts.seed
 
 ---
 
+## Production Federation Deploy (0 to live)
+
+The reproducible steps used for the mainnet launch: fresh cloud hosts to a
+live, converged federation, plus observability. The container runs as **uid
+1001** (`tipnode`); every file it reads/writes must be owned by `1001`. The
+genesis is **baked into the image**, so rebuild after any genesis change.
+Deploy code with **git**, never a code copy.
+
+Prereqs: one Ubuntu host per node (4-core / 8 GB, stable Elastic IP), one obs
+host, the genesis already minted and merged to `main`, and the per-node key
+files `genesis-data/backups/tip-node-<id>.tip.json` (gitignored).
+
+**1. Install Docker (every host)**
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker ubuntu
+```
+
+**2. Clone via git (every node)** , `main` already carries the baked genesis.
+
+```bash
+git clone https://x-access-token:<TOKEN>@github.com/theailaborg/tip-protocol.git ~/tip-protocol
+git -C ~/tip-protocol remote set-url origin https://github.com/theailaborg/tip-protocol.git
+```
+
+**3. Node identity + env (every node)** , owner must be uid 1001.
+
+```bash
+scp tip-node-<id>.tip.json ubuntu@<node-ip>:~/tip-protocol/genesis-data/backups/
+sudo chown 1001:1001 ~/tip-protocol/genesis-data/backups/tip-node-<id>.tip.json
+sudo chmod 600      ~/tip-protocol/genesis-data/backups/tip-node-<id>.tip.json
+scp <node>.env ubuntu@<node-ip>:~/tip-protocol/.env   # per node; see Step 2 above
+```
+
+Keep `.env` at parity with `.env.example`; missing keys silently fall back to
+protocol defaults. Prod values: `NODE_ENV=production`, `TIP_CORS_ORIGINS`
+listing every browser client (the VP app; NOT `*`), a shared `TIP_METRICS_TOKEN`
+identical on all nodes, `TIP_CRYPTO_POOL_SIZE=2` on 4-core hosts.
+
+**Media storage (S3)** , the node writes media bytes to S3 (SSE-KMS) and hands
+the classifier presigned URLs. Provision the bucket + KMS key + IAM role once
+and set `TIP_MEDIA_BACKEND=s3`, `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`,
+`TIP_MEDIA_S3_KMS_KEY_ID` in each node's `.env`. Full step-by-step (Terraform or
+console/CLI, IAM policy, VPC endpoint, smoke tests): **[`PROD_S3_SETUP.md`](PROD_S3_SETUP.md)**.
+Credentials come from the instance role (EC2) / IRSA (EKS), never a long-lived
+`AWS_ACCESS_KEY_ID` in the env.
+
+**4. Log directory permissions (GOTCHA)** , the compose bind-mounts
+`./logs/node-1`, which docker creates root-owned, so the container cannot write
+its per-level log files. Fix before first boot:
+
+```bash
+mkdir -p ~/tip-protocol/logs && sudo chown -R 1001:1001 ~/tip-protocol/logs
+```
+
+Skip this and the log dir stays empty (logs only reach docker stdout) and Loki
+never gets the `level` label.
+
+**5. Build (every node)** , bakes the genesis into the image.
+
+```bash
+cd ~/tip-protocol && sudo docker compose build tip-node
+```
+
+**6. Bring up, seed node first.** The seed (node1) has empty
+`TIP_BOOTSTRAP_PEERS`; the others dial its libp2p multiaddr (stable across
+reboots).
+
+```bash
+# node1 (seed):
+cd ~/tip-protocol && sudo docker compose up -d
+curl -s http://<node1-ip>:4000/health | grep -o '"bootstrap_addr":"[^"]*"'   # -> multiaddr
+# set TIP_BOOTSTRAP_PEERS on node2/3 to that multiaddr, then `docker compose up -d`
+```
+
+> Re-deploying an existing chain? STOP tip-node on ALL nodes before wiping any
+> DB, then DROP/CREATE each DB, then bring up node1 first. A running node
+> half-rewrites a fresh DB and byzantine-halts at round 0.
+
+**6b. Schema migrations run automatically on first boot.** Knex applies
+anything in `node/src/db/migrations/` that the node's `knex_migrations` table
+has not seen, before consensus starts. A deploy is therefore a schema change
+whenever new migrations have landed since that node last booted. They are
+additive and fast (nullable columns on small tables), but on the first node of
+a rollout watch the boot logs and confirm the expected set applied:
+
+```bash
+docker exec tip-postgres psql -U tip -d "$DB_NAME" -tAc \
+  "SELECT name FROM knex_migrations ORDER BY id;"
+```
+
+**7. Validate** , across all nodes: `/health` shows `byzantineForkHalt=none`,
+`joinState=ready`, `peers=<N-1>`, rounds advancing; the same
+`state_merkle_root` at the same round from `/v1/state-root` (`/health` does not
+return `genesis_hash`),
+identities = genesis ring size, and the same committed tx count (converged).
+
+**8. Observability** (obs host: Prometheus + Grafana + Loki + Caddy)
+
+Full step-by-step , monitoring host, per-node agent, verify, operations , is the
+runbook at **[`infra/observability/prod/README.md`](../infra/observability/prod/README.md)**.
+The load-bearing gotchas to not relearn the hard way:
+
+- **Metrics**: `infra/observability/prod/prometheus.yml` (gitignored) , job
+  `tip-federation` (do NOT rename), targets = the nodes' **private** IPs `:4000`,
+  `Bearer` = the shared `TIP_METRICS_TOKEN`, and `chmod 644` the file (a `sudo`
+  edit that leaves it `root:600` crash-loops Prometheus). Verify
+  `count(up{job="tip-federation"}==1)` returns N.
+- **Logs**: promtail per node (`infra/observability/agent/`) , requires Step 4.
+  `promtail.env`: `LOKI_URL=logs.<domain>`, `LOKI_PASSWORD=<plaintext>`,
+  `NODE_LABEL=node<n>`; then `docker compose -f docker-compose.promtail.yml up -d`.
+  It tags `node` + derives `level` from the per-level filenames. Set the Loki
+  basic-auth (`LOKI_BASIC_AUTH_HASH` via `caddy hash-password`) in the obs `.env`.
+- **DNS (GOTCHA)**: `logs.<domain>` must be **DNS-only (grey cloud), NOT
+  Cloudflare-proxied** , Caddy owns TLS + basic-auth for the push; a proxy in
+  front breaks the ACME challenge and the push times out. `grafana.<domain>`
+  proxied is fine (browser UI).
+
+---
+
+## Upgrading a Running Federation (rolling)
+
+The section above is a cold start. Upgrading a live chain is different: the
+chain must keep quorum throughout, so nodes go one at a time and each is
+verified before the next is touched. With 3 nodes quorum is 2, so exactly one
+node may be down at a time. Never two.
+
+Per node, in order (leave the seed until last so peers always have a bootstrap
+target):
+
+```bash
+# 1. back up genesis BEFORE touching git; a checkout can clobber a local edit
+cp genesis-data/genesis.json /tmp/genesis-backup.json
+
+# 2. move to the target commit, keeping the local genesis
+git stash push -q genesis-data/genesis.json
+git fetch origin && git checkout <sha>
+git stash pop -q
+diff -q genesis-data/genesis.json /tmp/genesis-backup.json   # MUST be identical
+
+# 3. rebuild (genesis is baked into the image) and recreate this node only
+docker compose build tip-node
+docker compose up -d --no-deps --force-recreate tip-node
+```
+
+Then verify **before** moving on:
+
+- `/ready` returns `ready:true, db_ok:true, halted:false`
+- `RestartCount` is still 0 and no `persistence lost, fail-stop` in the logs
+- `/v1/state-root` matches the untouched nodes at the same round
+- expected migrations applied (step 6b)
+
+Give it a few minutes rather than seconds. A node that comes up and then dies
+on its second cycle looks healthy at t+30s.
+
+Two things that are normal and should not stop a rollout:
+
+- Nodes on different commits reporting **identical** state roots. The canonical
+  projections used for hashing are explicit whitelists, so a column added by a
+  new migration does not enter the root. Mixed versions agree by design.
+- A single `HALT (byzantine_fork)` about 8-10s after boot that clears itself
+  via snapshot resync. The node is behind, not forked; anti-entropy compares its
+  catching-up root against peers that are further ahead. It self-heals and
+  `halted` returns to `false`.
+
+Anything else, stop and investigate before touching the next node.
+
 ## Production Checklist
 
 Before exposing your node to the public internet or connecting to the
@@ -243,10 +407,11 @@ mainnet bootstrap peers, complete this checklist.
 
 **Security**
 
-- [ ] `TIP_JWT_SECRET` is a random 256-bit hex value (not the placeholder)
-- [ ] `TIP_ADMIN_API_KEY` is a random 256-bit hex value (not the placeholder)
-- [ ] `.env` is in `.gitignore` and has never been committed to any repository
-- [ ] PostgreSQL password is strong and not the default `changeme_in_production`
+- [ ] The node key (`genesis-data/backups/tip-node-<id>.tip.json`) and the log
+  dir (`logs/`) are owned by **uid 1001** (the container user)
+- [ ] `.env` and `genesis-data/backups/*.tip.json` are gitignored and never committed
+- [ ] `DB_PASSWORD` is strong; `TIP_METRICS_TOKEN` is a random shared secret
+- [ ] `TIP_CORS_ORIGINS` is an explicit allowlist (not `*`) including the VP app
 - [ ] Ports 4000 and 4001 are behind a firewall; only open to intended traffic
 - [ ] TLS is configured (Let's Encrypt or AWS Certificate Manager) for port 4000
 - [ ] The node process runs as a non-root user (handled automatically by Docker)
@@ -260,10 +425,11 @@ mainnet bootstrap peers, complete this checklist.
 
 **Chain**
 
-- [ ] `TIP_CHAIN_ID=tip-mainnet-v2` (not `tip-devnet-v2`)
-- [ ] `TIP_GENESIS_HASH` is set to the canonical mainnet genesis hash from theailab.org/genesis
-- [ ] The genesis block and founding VP transactions are present in your DAG
-  (verify: `curl http://localhost:4000/v1/dag/stats` shows `vp_count >= 1`)
+- [ ] The image was built from the correct `genesis-data/genesis.json` (the chain
+  id and genesis are baked into the image, not set via env vars)
+- [ ] Every node reports the **same `state_merkle_root` at the same round** on `/v1/state-root`
+- [ ] The genesis founding identities are present (identities count = ring size)
+  and consensus is advancing with `byzantineForkHalt=none`
 
 **Monitoring**
 
@@ -352,9 +518,11 @@ The `build` stage in `Dockerfile` installs native build tools. If you are
 pulling a pre-built image from a registry, this should not occur. If
 building locally, ensure Docker has internet access during the build.
 
-**Node exits with "CHANGE_THIS_IN_PRODUCTION" error**
-Set `TIP_JWT_SECRET` and `TIP_ADMIN_API_KEY` in your `.env` file to
-random 256-bit hex values. The node refuses to start with placeholder secrets.
+**Node can't read its key (EACCES) or the log dir is empty**
+The container runs as uid 1001; a scp'd key lands owned by `ubuntu` and a
+bind-mounted log dir is created root-owned. `sudo chown 1001:1001` the node
+key and `sudo chown -R 1001:1001 ~/tip-protocol/logs`, then restart the node.
+An empty log dir also means Loki gets no `level` label.
 
 ---
 
@@ -365,7 +533,7 @@ random 256-bit hex values. The node refuses to start with placeholder secrets.
 | General questions | chairman@theailab.org |
 | VP accreditation | accreditation@theailab.org |
 | Security issues | security@theailab.org |
-| Bug reports | github.com/theailab-org/tip-protocol/issues |
+| Bug reports | github.com/theailaborg/tip-protocol/issues |
 | Documentation | docs: see docs/ directory in this repository |
 
 ---
