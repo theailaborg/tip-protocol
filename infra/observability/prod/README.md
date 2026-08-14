@@ -130,6 +130,55 @@ In Grafana: the federation dashboard shows all nodes; Explore → Loki →
 `{node="node2"}` isolates one host. Metric spike → same-minute logs is the
 core workflow.
 
+## Gotchas that produce "No data" on a healthy stack
+
+Every one of these has bitten a real deploy. The symptom is always panels
+reading "No data" or erroring while the nodes and the chain are perfectly fine.
+
+**`TIP_API_BASE_URL` must reach a node API from inside the Grafana container.**
+The Infinity datasource resolves this variable; if it is unset the datasource
+URL is empty and every Infinity-backed panel (all the TIP dashboards) shows
+"No data". Setting it in `.env` is not enough: the compose service must also
+pass it into the container's `environment:` block, or it only exists for
+compose substitution. Use a private IP, not `host.docker.internal`, which does
+not resolve on Linux.
+
+```
+docker exec tip-obs-grafana printenv TIP_API_BASE_URL   # must be non-empty
+```
+
+**Pin the Infinity plugin version.** `GF_INSTALL_PLUGINS` without a version
+installs "latest", so the same compose file produces a different result
+depending on the day. Infinity 3.7.2 and later require Grafana >= 11.6, and
+4.0.0 requires >= 11.6.11, while this stack pins Grafana 11.3.0. An
+incompatible plugin fails in the browser, not the server: Grafana starts
+cleanly and the panel shows `SystemJS Error#7 ... loading react/jsx-runtime`
+with a 404 on `module.js`. Pinned here to 3.7.1, the newest release compatible
+with Grafana 11.3.0. Bump both together, never one alone.
+
+**Loki needs `limits_config.volume_enabled: true`** or Grafana's Logs Drilldown
+reports "Log volume has not been configured". Already set in `loki-config.yml`.
+
+**Only four dashboards appear starred by default.** The rest are provisioned and
+live under Dashboards; run `../grafana/star-dashboards.sh` to surface them all.
+
+## Using this stack for a test cluster
+
+There is no separate "test" or "simple" variant, and there should not be. This
+is the only stack: point `.env` at test values and deploy the same files.
+
+```
+OBS_DOMAIN=test-grafana.example.org
+LOGS_DOMAIN=test-logs.example.org
+TIP_NODE_TARGETS=<test node IPs>:4000
+TIP_API_BASE_URL=http://<a test node private IP>:4000
+```
+
+Node agents are identical: same `agent/docker-compose.promtail.yml`, with
+`NODE_LABEL=testnet-node1` and so on so test and production logs stay
+distinguishable in one Loki. A hand-rolled variant drifts from this one and
+silently loses whichever fixes landed here.
+
 ## Operations
 
 - **Retention**: metrics 30d (`--storage.tsdb.retention.time`), logs 14d

@@ -52,7 +52,7 @@ services:
       - GF_USERS_DEFAULT_THEME=dark
       - GF_LOG_LEVEL=warn
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/tip-home.json
-      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource 3.7.1
       - TIP_API_BASE_URL=${TIP_API_BASE_URL:-http://host.docker.internal:4000}
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
