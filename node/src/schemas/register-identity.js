@@ -9,12 +9,13 @@
  * and commit-handler (consensus replay) import this module — the field
  * list, default-fill rules, and verifier all live here.
  *
- * Quick summary of the 10 signed fields (alphabetical):
+ * Quick summary of the 11 signed fields (alphabetical):
  *
  *   algorithm         string,       new key's algorithm (default ml-dsa-65)
  *   biometric_commit  string,       optional (VP-attested face-template SHAKE-256 hex; strip-when-absent)
  *   creator_name      string,       optional (VP-attested display name)
  *   dedup_hash        string,       required (Poseidon field element from ZK proof)
+ *   org_type          string,       optional (organization identities only; strip-when-absent)
  *   public_key        string,       required (raw ML-DSA-65 hex, 3904 chars)
  *   region            string,       default "US", uppercased
  *   tip_id_type       string,       default "personal" (enum: personal/organization)
@@ -155,9 +156,9 @@ function validateRequest(body, deps) {
 
 /**
  * Build the canonical signed payload (8 required fields always present;
- * defaults fill in for omitted optionals). The 2 optional fields
- * (creator_name, biometric_commit) are stripped when absent, so the
- * payload carries 8-10 keys. Reject-on-extra: picks exactly these keys.
+ * defaults fill in for omitted optionals). The 3 optional fields
+ * (biometric_commit, creator_name, org_type) are stripped when absent, so the
+ * payload carries 8-11 keys. Reject-on-extra: picks exactly these keys.
  */
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {
