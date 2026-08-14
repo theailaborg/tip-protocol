@@ -133,7 +133,9 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // debug/error logs). A failed request (>=400) is the exception: it surfaces in
   // the main logs at warn so it isn't buried. Internal probes are dropped.
   const httpLog = getLogger("tip.http");
-  const _accessFmt = ":req-id :method :url :status :response-time ms";
+  // :remote-addr resolves to req.ip, the same value the rate limiter keys on, so
+  // per-IP demand can be measured from the access log before tuning the limit.
+  const _accessFmt = ":remote-addr :req-id :method :url :status :response-time ms";
   const _isProbe = (req) => req.path === "/metrics" || req.path === "/health" || req.path === "/v1/health"
     || req.path === "/ready" || req.path === "/v1/ready";
   app.use(morgan(_accessFmt, { stream: { write: (l) => logAccess(l.trimEnd()) }, skip: (req, res) => _isProbe(req) || res.statusCode >= 400 }));
