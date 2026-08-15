@@ -493,6 +493,21 @@ function verifyTx(tx, dag) {
   // unsigned tx metadata. Re-derive the mch from media[] so a proposing
   // node can't attach refs that don't match what the client hashed.
   if (Array.isArray(d.media) && d.media.length > 0) {
+    // The mch concatenates media_ids with no separator, which is only injective
+    // because every id is exactly 64 hex. validateRequest enforces that on the
+    // API path; a gossiped tx never passes through it, so re-check here or a
+    // proposing node could re-split the same concatenation (32+96 for 64+64)
+    // into refs the author never signed.
+    for (let i = 0; i < d.media.length; i++) {
+      const m = d.media[i];
+      if (!m || typeof m.media_id !== "string" || !/^[0-9a-f]{64}$/.test(m.media_id)) {
+        return {
+          ok: false, status: 400,
+          error: `media[${i}].media_id must be 64-char lowercase hex`,
+          code: "media_id_invalid",
+        };
+      }
+    }
     if (mediaCanonicalHash(d.media) !== d.media_canonical_hash) {
       return {
         ok: false, status: 400,
