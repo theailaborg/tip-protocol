@@ -48,6 +48,8 @@
   button.done { background: var(--ok); }
   .body { padding: 20px 24px; }
   .warn { font-size: 13px; color: var(--muted); padding: 10px 24px 0; }
+  .alert { font-size: 14px; margin: 0 0 22px; padding: 11px 14px; border-radius: 8px;
+           background: rgba(217,48,37,.10); border: 1px solid rgba(217,48,37,.45); }
   .ph { background: rgba(255,196,0,.22); border-radius: 3px; padding: 0 2px; }
   .ph.filled { background: none; padding: 0; }
 </style>
@@ -55,10 +57,12 @@
 <body>
 <div class="wrap">
   <h1>Node operator onboarding emails</h1>
-  <p class="lede">Fill in the fields, click <b>Copy email</b>, paste into your mail client. It pastes as
-     formatted text, not markdown source. Highlighted values are the ones still unfilled.
-     Never attach the <code>.tip.json</code> key files to the email: send them as a password-protected
-     zip, with the password over a different channel.</p>
+  <p class="lede">Fill in the fields, click <b>Copy email</b>, then paste with <b>Cmd/Ctrl+V</b>. Do not use
+     paste-as-plain-text (Cmd/Ctrl+Shift+V), which throws away the formatting. Highlighted values are the
+     ones still unfilled.</p>
+  <p class="alert"><b>Attach one partner's zip and no other.</b> The archives are named per partner and sit
+     in the same folder, so it is easy to attach two. Check the attachment list against the partner in the
+     To field before sending. Send the password by phone or Signal, never in this thread.</p>
 
   <div class="fields">
     <h2>Details</h2>
@@ -100,22 +104,22 @@
         completely separate from production: its own genesis, its own identities, its own data. Nothing you
         do here can affect the live chain, so it is a safe place to get familiar with running a node.</p>
 
-        <p><b>Attached</b></p>
+        <p><b>Attached: one password-protected zip</b> (AES-256). The password comes over a separate
+        channel, not in this thread. Everything is inside it because two of the files are credentials.</p>
         <ul>
-          <li><b>node.env</b> - your node configuration, mostly filled in</li>
-          <li><b>genesis.json</b> - the test network genesis</li>
-          <li><b>README.md</b> - what to do, in order</li>
-        </ul>
-
-        <p><b>Sent as a password-protected zip</b> (private keys). The password comes over a separate
-        channel, not in this thread.</p>
-        <ul>
-          <li><b>tip-node-&lt;id&gt;.tip.json</b> - your <b>node</b> key. Runs the node. Treat it like an SSH
+          <li><b>node.env</b> - your node configuration, mostly filled in. Holds live API credentials, so
+          keep it <span style="font-family:monospace">chmod 600</span> and never commit it.</li>
+          <li><b>&lt;node-id&gt;.tip.json</b> - your <b>node</b> key. Runs the node. Treat it like an SSH
           host key: <span style="font-family:monospace">chmod 600</span>, never commit it, never forward it.</li>
           <li><b>id-&lt;REGION&gt;-&lt;id&gt;.tip.json</b> - your <b>organization identity</b>. This is your
           company on the network; it signs content as you. It is not needed to run the node, so keep it off
           the node host, wherever you keep company signing material.</li>
+          <li><b>genesis.json</b> - the test network genesis</li>
+          <li><b>README.md</b> - what to do, in order</li>
         </ul>
+
+        <p>To open the zip you need a tool that supports AES: 7-Zip on Windows, Keka or The Unarchiver on
+        macOS. The built-in extractors on both do not.</p>
 
         <p>Please store both in whatever you use for company secrets and keep an offline backup before you
         deploy. If either is ever lost or exposed, tell us straight away so we can act on it with you.</p>
@@ -235,25 +239,25 @@ curl -s localhost:4000/v1/state-root</pre>
         signing material, and tell us immediately if either is ever lost or exposed so we can act on it with
         you.</p>
 
-        <p><b>Attached</b></p>
+        <p><b>Attached: one password-protected zip</b> (AES-256). The password comes over a separate
+        channel, not in this thread. Everything is inside it because two of the files are credentials.</p>
         <ul>
-          <li><b>node.env</b> - your node configuration</li>
-          <li><b>genesis.json</b> - the production genesis
-          (<span class="ph" data-ph="GENESIS">{{GENESIS}}</span>...). This is not the test genesis; do not mix
-          the two, and do not reuse your test data directory.</li>
-          <li><b>README.md</b> - setup steps</li>
-        </ul>
-
-        <p><b>Sent as a password-protected zip</b> (private keys). The password comes over a separate
-        channel, not in this thread.</p>
-        <ul>
+          <li><b>node.env</b> - your node configuration. Holds live API credentials, so keep it
+          <span style="font-family:monospace">chmod 600</span> and never commit it.</li>
           <li><b>NODE-KEY__tip-node-&lt;id&gt;.tip.json</b> - your <b>node</b> key. Lives on the node host,
           read by the process at boot. <span style="font-family:monospace">chmod 600</span>, owned by uid 1001.</li>
           <li><b>ORG-IDENTITY__id-&lt;REGION&gt;-&lt;id&gt;.tip.json</b> - your <b>organization identity</b>,
           <span class="ph" data-ph="ORG_TIP_ID">{{ORG_TIP_ID}}</span>. Signs content as
           <span class="ph" data-ph="PARTNER">{{PARTNER}}</span>. <b>Not</b> needed to run the node, so please
           keep it off the node host entirely, wherever you keep company signing material.</li>
+          <li><b>genesis.json</b> - the production genesis
+          (<span class="ph" data-ph="GENESIS">{{GENESIS}}</span>...). This is not the test genesis; do not mix
+          the two, and do not reuse your test data directory.</li>
+          <li><b>README.md</b> - setup steps</li>
         </ul>
+
+        <p>To open the zip you need a tool that supports AES: 7-Zip on Windows, Keka or The Unarchiver on
+        macOS. The built-in extractors on both do not.</p>
 
         <p><b>Your registered details</b>, as you confirmed them:</p>
         <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">Legal name          : <span class="ph" data-ph="LEGAL_NAME">{{LEGAL_NAME}}</span>
@@ -360,12 +364,47 @@ FIELDS.forEach((i) => {
   i.addEventListener("input", () => apply(i));
 });
 
+// The source is hard-wrapped for readability, so every line break inside a <p>
+// would otherwise survive into the clipboard and arrive as ragged mid-sentence
+// newlines. Collapse runs of whitespace everywhere except <pre>, where the
+// command blocks must stay verbatim.
+function collapseWhitespace(root) {
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walk.nextNode()) nodes.push(walk.currentNode);
+  for (const n of nodes) {
+    if (n.parentElement && n.parentElement.closest("pre")) continue;
+    n.nodeValue = n.nodeValue.replace(/\s+/g, " ");
+  }
+}
+
+// innerText drops list markers, which makes the plain-text fallback read as a
+// wall of indented fragments. Build it by hand instead.
+function toPlainText(root) {
+  const out = [];
+  for (const el of root.querySelectorAll("p, ul, ol, pre")) {
+    if (el.closest("li")) continue;
+    if (el.tagName === "PRE") { out.push(el.textContent.replace(/\s+$/, "")); continue; }
+    if (el.tagName === "UL" || el.tagName === "OL") {
+      const ordered = el.tagName === "OL";
+      [...el.children].forEach((li, i) => {
+        out.push((ordered ? `${i + 1}. ` : "- ") + li.textContent.replace(/\s+/g, " ").trim());
+      });
+      continue;
+    }
+    const t = el.textContent.replace(/\s+/g, " ").trim();
+    if (t) out.push(t);
+  }
+  return out.join("\n\n").replace(/\n{3,}/g, "\n\n");
+}
+
 async function copyEmail(id, btn) {
   const node = document.getElementById(id);
   // Strip the highlight so an unfilled placeholder does not paste with a background.
   const clone = node.cloneNode(true);
   clone.querySelectorAll(".ph").forEach((el) => el.replaceWith(document.createTextNode(el.textContent)));
-  const html = clone.innerHTML, text = clone.innerText;
+  collapseWhitespace(clone);
+  const html = clone.innerHTML, text = toPlainText(clone);
   try {
     await navigator.clipboard.write([new ClipboardItem({
       "text/html": new Blob([html], { type: "text/html" }),
