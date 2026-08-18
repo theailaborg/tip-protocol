@@ -223,12 +223,12 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     let classifierVersion;
     let skipped = false;
     try {
-      const fanOut = await _fanOutClassifierCalls(payload);
-      modalityResults = fanOut.modalityResults;
-      mediaResults = fanOut.mediaResults || [];
-      providersUsed = fanOut.providersUsed;
-      classifierVersion = fanOut.classifierVersion;
-      skipped = !!fanOut.skipped;
+      const scan = await _runClassifierScan(payload);
+      modalityResults = scan.modalityResults;
+      mediaResults = scan.mediaResults || [];
+      providersUsed = scan.providersUsed;
+      classifierVersion = scan.classifierVersion;
+      skipped = !!scan.skipped;
     } catch (err) {
       _handleHardFailure(job, err);
       return;
@@ -421,12 +421,12 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
   }
 
   /**
-   * Fan out N classifier calls — text+media[0] in the first call, then
-   * one call per remaining media item. Return the union of all
-   * per-modality result entries, with provider + version strings drawn
-   * from the responses (worker reports the most informative one).
+   * Run the classifier scan: ONE POST /v1/prescan carrying text plus a
+   * presigned files[] entry per media item (v2 by-reference contract, no
+   * per-media fan-out, no base64). Returns the per-modality result
+   * entries, attributed per file via the echoed media_id.
    */
-  async function _fanOutClassifierCalls(payload) {
+  async function _runClassifierScan(payload) {
     const text = typeof payload.text === "string" ? payload.text : "";
     const originCode = payload.origin_code;
     const media = Array.isArray(payload.media) ? payload.media : [];
