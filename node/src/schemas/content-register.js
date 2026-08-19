@@ -38,8 +38,16 @@
 
 const zlib = require("zlib");
 const {
-  payloadHashHex, signPayload, verifyPayload, schemaError, canonicalJson,
+  payloadHashHex, signPayload, verifyPayload, schemaError, canonicalJson, assertBounded,
 } = require("./_common");
+
+// content.media_canonical_hash is varchar(64); a client-supplied value that
+// overflows it is accepted into memory and refused by the DB, which fail-stops
+// the node. Enforced on both the API and gossip paths.
+const MCH_SPEC = Object.freeze({
+  field: "media_canonical_hash", max: 64,
+  pattern: /^[0-9a-f]{64}$/, describe: "a 64-char lowercase hex string",
+});
 const {
   TX_TYPES, ORIGIN, CNA_VERSIONS, CNA22_AUTHOR_KEYS,
   ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
@@ -171,6 +179,9 @@ function validateRequest(body, deps) {
   if (!body.content && !body.media_canonical_hash && !Array.isArray(body.media)) {
     throw schemaError(400, "content, media_canonical_hash, or media[] required", "content_required");
   }
+  // Legacy path: with no media[] to derive from, the client value is stored
+  // verbatim, so this is the only thing standing between it and the column.
+  assertBounded(body.media_canonical_hash, MCH_SPEC);
   if (body.content) validateContentSize(body.content, body.content_type, deps.mediaLimits);
 
   // M3 — media[] references to uploaded media (POST /v1/media/upload).
@@ -471,6 +482,15 @@ function verifyTx(tx, dag) {
   }
   if (!d.signer_tip_id) {
     return { ok: false, status: 400, error: "signer_tip_id missing", code: "signer_tip_id_missing" };
+  }
+  // Bound the mch before ANY write and before the ML-DSA verify: the column is
+  // varchar(64), and an overlong value commits to memory then fails the DB
+  // insert, fail-stopping every node. Cheap string test, so it runs first and
+  // a gossiped tx cannot skip it the way it skips validateRequest.
+  try {
+    assertBounded(d.media_canonical_hash, MCH_SPEC);
+  } catch (err) {
+    return { ok: false, status: 400, error: err.error, code: err.code };
   }
 
   let identity;

@@ -38,8 +38,24 @@
 "use strict";
 
 const {
-  signPayload, verifyPayload, schemaError, canonicalJson,
+  signPayload, verifyPayload, schemaError, canonicalJson, assertBounded,
 } = require("./_common");
+
+// identities.region is varchar(8). Bound + charset only, deliberately NOT
+// ISO 3166-1 alpha-2: every value today is 2 chars but the column allows 8,
+// so narrowing the semantics is a separate product decision. This exists to
+// stop an overlong value reaching the column and fail-stopping the node.
+const REGION_SPEC = Object.freeze({
+  field: "region", max: 8,
+  pattern: /^[A-Z0-9-]{2,8}$/, describe: "2-8 uppercase letters, digits or hyphens",
+});
+
+function _boundedRegion(region) {
+  if (typeof region !== "string") return "US";
+  const upper = region.toUpperCase();
+  assertBounded(upper, REGION_SPEC);
+  return upper;
+}
 const { buildSignedPayload } = require("../../../shared/crypto");
 const {
   TX_TYPES, TIP_ID_TYPES, TIP_ID_TYPE_VALUES,
@@ -90,6 +106,8 @@ function validateRequest(body, deps) {
   if (!body || typeof body !== "object") {
     throw schemaError(400, "request body is required", "body_invalid");
   }
+  // Uppercased before the bound check so the client may send either case.
+  if (typeof body.region === "string") assertBounded(body.region.toUpperCase(), REGION_SPEC);
   if (typeof body.public_key !== "string" || body.public_key.length === 0) {
     throw schemaError(400, "public_key is required (hex-encoded ML-DSA-65)", "public_key_required");
   }
@@ -219,7 +237,9 @@ function buildSigningPayload(input) {
     algorithm,
     dedup_hash: input.dedup_hash,
     public_key: input.public_key,
-    region: typeof input.region === "string" ? input.region.toUpperCase() : "US",
+    // buildSigningPayload runs on BOTH the API and verifyTx paths, so bounding
+    // here is what stops a gossiped tx carrying an overlong region.
+    region: _boundedRegion(input.region),
     tip_id_type: tipIdType,
     verification_tier: verificationTier,
     vp_id: input.vp_id,

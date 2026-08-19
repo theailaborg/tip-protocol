@@ -68,14 +68,30 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   // each component's `perceptual` object keyed by position. Per-component
   // fire-and-forget (async, off-DAG, advisory) — a failure must not affect the
   // registration. No-op when the request carried no fingerprints.
-  function _ingestRequestFingerprints(ctid, fingerprints, createdAt) {
-    if (fingerprints == null) return;
+  function _ingestRequestFingerprints(ctid, fingerprints, createdAt, mediaCount = 0) {
+    // A media registration that lands with fewer media fingerprints than media
+    // items is invisible to near-duplicate matching, and today it fails
+    // silently — the only way to notice is joining content against phash_code
+    // by hand. Cannot be a rejection: the envelope is optional by design, a
+    // reject-tier component is a legitimate answer, and the blob never rides
+    // the tx so consensus could not enforce it anyway. So: report it. See #262
+    // for the counter this warn is a stand-in for.
+    if (fingerprints == null) {
+      if (mediaCount > 0) {
+        log.warn(`perceptual: ${ctid} has ${mediaCount} media but sent NO fingerprints envelope — not near-dup indexable`);
+      }
+      return;
+    }
     let items;
     try {
       items = contentRegisterSchema.parseFingerprintItems(fingerprints);
     } catch (err) {
       log.warn(`perceptual ingest: recover failed for ${ctid}: ${err.error || err.message}`);
       return;
+    }
+    const mediaFps = items.filter(it => it?.perceptual && it.perceptual.kind !== "text").length;
+    if (mediaCount > mediaFps) {
+      log.warn(`perceptual: ${ctid} has ${mediaCount} media but only ${mediaFps} media fingerprint(s) — ${mediaCount - mediaFps} dropped`);
     }
     // Fast-path skip if this ctid is already indexed (it was registered before;
     // the commit-handler is first-wins, so a re-registration never creates a new
@@ -410,7 +426,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // validateRequest), never on tx.data — so only this receiving node indexes
     // it for now. Fire-and-forget: advisory, must not delay the response;
     // reject-tier items skip themselves in buildIngestRows.
-    _ingestRequestFingerprints(ctid, body.fingerprints, registeredAt);
+    _ingestRequestFingerprints(ctid, body.fingerprints, registeredAt, resolvedMedia.length);
 
     _enqueuePrescanJob({
       ctid, content, origin_code, signer_tip_id, ctypeResolution,
