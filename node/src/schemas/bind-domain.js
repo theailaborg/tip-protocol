@@ -37,8 +37,17 @@
 "use strict";
 
 const {
-  signPayload, verifyPayload, schemaError, canonicalJson, verifyCosignatures,
+  signPayload, verifyPayload, schemaError, canonicalJson, verifyCosignatures, assertBounded,
 } = require("./_common");
+
+// domain_bindings.domain is varchar(253) (the DNS name limit). Only a
+// non-empty check existed, so a longer name reached the column and
+// fail-stopped the node on the write.
+const DOMAIN_SPEC = Object.freeze({
+  field: "domain", max: 253,
+  pattern: /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/,
+  describe: "a lowercase DNS name of at most 253 chars, labels up to 63",
+});
 const {
   TX_TYPES, TIP_ID_TYPES,
   DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHOD_VALUES,
@@ -86,6 +95,7 @@ function buildSigningPayload(input) {
   if (typeof input.domain !== "string" || input.domain.length === 0) {
     throw schemaError(400, "domain is required", "domain_required");
   }
+  assertBounded(input.domain, DOMAIN_SPEC);
   if (typeof input.node_id !== "string" || input.node_id.length === 0) {
     throw schemaError(400, "node_id is required", "node_id_required");
   }
@@ -193,15 +203,15 @@ function getCosignatureContract(tx) {
   if (!d.tip_id) return [];
   return [{
     kind: SIGNED_BY_KIND.SUBJECT,
-    ref:  d.tip_id,
+    ref: d.tip_id,
     // Rebuild with the method the user CLAIMED (claimed_method), not the
     // node's resolved method: an `auto` claim signs `auto`, so verifying
     // against the resolved http/dns would fail the cosignature.
     body: registerDomainSchema.buildSigningPayload({
       claimed_at: d.claimed_at,
-      domain:     d.domain,
-      method:     d.claimed_method,
-      tip_id:     d.tip_id,
+      domain: d.domain,
+      method: d.claimed_method,
+      tip_id: d.tip_id,
     }),
   }];
 }
@@ -224,6 +234,7 @@ function buildUnbindSigningPayload(input) {
   if (typeof input.domain !== "string" || input.domain.length === 0) {
     throw schemaError(400, "domain is required", "domain_required");
   }
+  assertBounded(input.domain, DOMAIN_SPEC);
   if (typeof input.node_id !== "string" || input.node_id.length === 0) {
     throw schemaError(400, "node_id is required", "node_id_required");
   }

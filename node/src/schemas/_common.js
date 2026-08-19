@@ -35,8 +35,8 @@ const { SIGNED_BY_KIND, SIGNED_BY_KIND_VALUES, SIGNATURE_SCOPE, SIGNATURE_ALGORI
 // named field on its tx_type.
 const COSIGNER_ENTITY_TYPE = Object.freeze({
   [SIGNED_BY_KIND.SUBJECT]: "identity",
-  [SIGNED_BY_KIND.NODE]:    "node",
-  [SIGNED_BY_KIND.VP]:      "vp",
+  [SIGNED_BY_KIND.NODE]: "node",
+  [SIGNED_BY_KIND.VP]: "vp",
 });
 
 /**
@@ -100,6 +100,43 @@ function schemaError(status, message, code, details) {
   if (code) e.code = code;
   if (details) e.details = details;
   return e;
+}
+
+/**
+ * Reject a client-supplied string that a size-constrained DB column would
+ * reject. MUST run on BOTH validateRequest (API) and verifyTx (gossip):
+ * a value that only the database refuses gets accepted into the in-memory
+ * mirror first, and the resulting memory-vs-DB mismatch fail-stops every
+ * node on the write. Backends also disagree — Postgres rejects, SQLite
+ * stores the overlong value, MySQL non-strict truncates — so an
+ * unvalidated field is a cross-backend fork, not merely an outage.
+ *
+ * @param {*} value              the client-supplied value
+ * @param {Object} spec
+ * @param {string} spec.field    field name, used in the error message
+ * @param {number} spec.max      the column's varchar(N)
+ * @param {RegExp} [spec.pattern] optional format the value must match
+ * @param {string} [spec.describe] human description of `pattern`
+ * @param {boolean} [spec.required] throw when null/undefined
+ */
+function assertBounded(value, { field, max, pattern, describe, required = false }) {
+  if (value === undefined || value === null) {
+    if (required) throw schemaError(400, `${field} is required`, `${field}_required`);
+    return;
+  }
+  if (typeof value !== "string") {
+    throw schemaError(400, `${field} must be a string`, `${field}_invalid`);
+  }
+  if (value.length > max) {
+    throw schemaError(
+      400,
+      `${field} must be at most ${max} characters (got ${value.length})`,
+      `${field}_too_long`,
+    );
+  }
+  if (pattern && !pattern.test(value)) {
+    throw schemaError(400, `${field} must be ${describe}`, `${field}_invalid`);
+  }
 }
 
 // ─── Unified-storage signature primitives (GH #51) ─────────────────────────
@@ -394,8 +431,8 @@ function sortCosignatures(arr) {
 function signCosignature(body, privateKeyHex, signerKind, signerRef, opts = {}) {
   return {
     signer_kind: signerKind,
-    signer_ref:  signerRef,
-    signature:   signPayload(body, privateKeyHex, opts),
+    signer_ref: signerRef,
+    signature: signPayload(body, privateKeyHex, opts),
   };
 }
 
@@ -521,6 +558,7 @@ module.exports = {
   verifyPayload,
   pickFields,
   schemaError,
+  assertBounded,
   // Re-exports so schema modules don't need to also import shared/crypto.
   canonicalJson,
   canonicalTx,
