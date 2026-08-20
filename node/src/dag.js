@@ -98,6 +98,15 @@ function _canonIdentity(r) {
     expert_consent: r.expert_consent ? 1 : 0,
     registered_at: r.registered_at,
     creator_name: r.creator_name || null,
+    // Strip-when-absent (deliberately `|| undefined`, NOT `|| null`). canonicalJson
+    // KEEPS null ("biometric_commit":null) but OMITS undefined keys — so an identity
+    // that never bound a commit (every identity registered before this feature, plus
+    // any ZK-only / no-commit registration) canonicalizes byte-identically to the
+    // pre-feature bytes, leaving its state_merkle_root leaf UNCHANGED. This is what
+    // lets the feature deploy onto a live chain with existing identities as a normal
+    // rolling upgrade — old-vs-new nodes agree on every pre-existing identity, and
+    // only identities that actually carry a commit contribute it to the root.
+    biometric_commit: r.biometric_commit || undefined,
     tx_id: r.tx_id || null,
   };
 }
@@ -2238,6 +2247,10 @@ class SQLiteStore {
     if (!idCols.includes("creator_name")) {
       this.db.exec("ALTER TABLE identities ADD COLUMN creator_name TEXT");
     }
+    // Backfill biometric_commit column for pre-existing identities tables
+    if (!idCols.includes("biometric_commit")) {
+      this.db.exec("ALTER TABLE identities ADD COLUMN biometric_commit TEXT");
+    }
     // #50: backfill anchor_batch_hash column for pre-existing commits tables.
     // Older rows (written before #50) have NULL — snapshot serving still
     // tries the cert lookup as a fallback for them, which fails if the
@@ -2426,8 +2439,8 @@ class SQLiteStore {
             reviewer_consent,juror_consent,expert_consent,
             interests,
             registered_at,creator_name,tx_id,
-            org_type)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            org_type,biometric_commit)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       // GH #60 — JOIN with active entity_keys row so existing callers
       // of getIdentity(id).public_key keep working. valid_to_ts IS NULL
@@ -3160,7 +3173,7 @@ class SQLiteStore {
       rec.expert_consent ? 1 : 0,
       JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
       rec.registered_at, rec.creator_name || null, rec.tx_id || null,
-      rec.org_type || null
+      rec.org_type || null, rec.biometric_commit || null
     );
   }
   getIdentity(id) {
