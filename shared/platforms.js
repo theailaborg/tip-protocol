@@ -79,6 +79,12 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   "threads.net":     "MIXED",
   "bsky.app":        "MIXED",
   "truthsocial.com": "MIXED",
+  // Discord, chat. MIXED because a Discord message genuinely varies: a long
+  // written message is the work, a message carrying a clip is the clip. Note
+  // that message permalinks are member-gated, so the VP skips URL
+  // reachability for Discord the way it does for Facebook; the content hash
+  // and signature are what bind the record, not an openable URL.
+  "discord.com":     "MIXED",
   "weibo.com":       "MIXED",
   "wechat.com":      "MIXED",
   // Top Mastodon instances — federated platform; long-tail instances
