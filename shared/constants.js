@@ -113,6 +113,13 @@ const SNAPSHOT_INSTALL_BATCH_ROWS = 2000;
 // kept well under Postgres's ~65535 bind-parameter cap.
 const SNAPSHOT_BULK_CHUNK_ROWS = 500;
 
+// Rows per chunk of a bulk perceptual insert. 500 is SQLite's compound-SELECT
+// term limit (knex compiles multi-row upserts as UNION ALL) and sits far under
+// Postgres's 65535 bind-parameter cap. A long audio clip's landmark set
+// (~45k rows) as one statement failed whole and fail-stopped the node
+// (incident 2026-08-25).
+const BULK_INSERT_CHUNK_ROWS = 500;
+
 // Cadence of the state-root integrity self-check (reference walk vs incremental
 // SMT, halt on divergence). Local-only, cannot fork the chain, hence not genesis;
 // throttled because the walk is O(state).
@@ -960,6 +967,7 @@ module.exports = {
   SNAPSHOT_INSTALL_MARKER_KEY,
   SNAPSHOT_INSTALL_BATCH_ROWS,
   SNAPSHOT_BULK_CHUNK_ROWS,
+  BULK_INSERT_CHUNK_ROWS,
   STATE_ROOT_INTEGRITY_CHECK_MS,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,

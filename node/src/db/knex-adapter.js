@@ -23,7 +23,7 @@ const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx }
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
-const { SNAPSHOT_BULK_CHUNK_ROWS } = require("../../../shared/constants");
+const { SNAPSHOT_BULK_CHUNK_ROWS, BULK_INSERT_CHUNK_ROWS } = require("../../../shared/constants");
 const { DB_WRITE_BACKPRESSURE_MS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/local-config");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
@@ -1051,19 +1051,27 @@ class KnexAdapter {
     const { ctid, ...rest } = rec;
     this._ff(() => this._dbInsert("perceptual_fingerprint", ["tip_ctid", "component_idx"], { tip_ctid: ctid, ...rest }, "merge"));
   }
+  // One statement per chunk: a full perceptual set as a single insert exceeds
+  // per-statement limits (Postgres 65535 bind params; SQLite 500 UNION ALL
+  // terms), failing the whole write and fail-stopping the node.
+  async _chunkedInsertIgnore(table, rows, conflictCols) {
+    for (let i = 0; i < rows.length; i += BULK_INSERT_CHUNK_ROWS) {
+      await this._k(table).insert(rows.slice(i, i + BULK_INSERT_CHUNK_ROWS)).onConflict(conflictCols).ignore();
+    }
+  }
   saveMinhashBands(rows) {
     if (!rows || !rows.length) return;
     const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
-    this._ff(() => this._k("minhash_band").insert(mapped)
-      .onConflict(["profile", "band_idx", "band_hash", "tip_ctid"]).ignore());
+    this._ff(() => this._chunkedInsertIgnore("minhash_band", mapped,
+      ["profile", "band_idx", "band_hash", "tip_ctid"]));
   }
   savePhashCodes(rows) {
     if (!rows || !rows.length) return;
     const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
     // INSERT OR IGNORE on (tip_ctid, component_idx, frame): a re-ingest of the
     // same content (frames fixed per ctid) is skipped, not duplicated.
-    this._ff(() => this._k("phash_code").insert(mapped)
-      .onConflict(["tip_ctid", "component_idx", "frame"]).ignore());
+    this._ff(() => this._chunkedInsertIgnore("phash_code", mapped,
+      ["tip_ctid", "component_idx", "frame"]));
   }
   async getPerceptualFingerprint(ctid, componentIdx = 0) {
     const row = await this.knex("perceptual_fingerprint").where({ tip_ctid: ctid, component_idx: componentIdx }).first();
@@ -1110,8 +1118,8 @@ class KnexAdapter {
   }
   saveAudioLandmarks(rows) {
     if (!rows || !rows.length) return;
-    this._ff(() => this._k("audio_landmark").insert(rows)
-      .onConflict(["profile", "hash", "clip_id", "t"]).ignore());
+    this._ff(() => this._chunkedInsertIgnore("audio_landmark", rows,
+      ["profile", "hash", "clip_id", "t"]));
   }
   async findAudioCandidates(profile, hashes) {
     if (!hashes || !hashes.length) return [];
