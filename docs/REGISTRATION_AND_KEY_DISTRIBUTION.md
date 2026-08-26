@@ -114,8 +114,8 @@ non-negotiables:
    ```bash
    ORG_ID='tip://id/<REGION>-<id>'
    ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$ORG_ID")
-   curl -s "https://node.theailab.org/v1/identity/$ENC"  | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"tip_id_type"|"org_type"'
-   curl -s "https://node2.theailab.org/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"tip_id_type"|"org_type"'
+   curl -s "https://node.theailab.org/v1/identity/$ENC"  | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"org_type"'
+   curl -s "https://node2.theailab.org/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"org_type"'
    ```
 
    `status` must be `active`, `tip_id_type` `organization`, `creator_name`
@@ -348,8 +348,8 @@ node scripts/register-org.js \
 # R3 , verify from two local nodes (both must agree)
 ORG_ID='tip://id/GB-xxxxxxxxxxxxxxxx'
 ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$ORG_ID")
-curl -s "http://localhost:4000/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"status"|"tip_id_type"|"org_type"'
-curl -s "http://localhost:4100/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"status"|"tip_id_type"|"org_type"'
+curl -s "http://localhost:4000/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"status"|"org_type"'
+curl -s "http://localhost:4100/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"status"|"org_type"'
 ```
 
 ```bash
