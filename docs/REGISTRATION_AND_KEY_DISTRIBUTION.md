@@ -137,7 +137,7 @@ node scripts/register-node.js \
   --partner <partner-slug> \
   --node-url https://node.theailab.org \
   --operated-by "tip://id/<REGION>-<org-id>" \
-  --operator-key-file generated_orgs/<slug>-<short-id>/<org-tip-id>.tip.json \
+  --operator-key-file generated/<partner-slug>/org/<org-tip-id>.tip.json \
   --production \
   --api-endpoint "https://<their-node-domain>" \
   --public-url "https://<their-node-domain>" \
@@ -340,6 +340,7 @@ node scripts/register-org.js \
   --incorporated 2025-11-11 \
   --region GB \
   --org-type private-limited-company \
+  --partner pachyderm \
   --node-url http://localhost:4000
 ```
 
@@ -357,7 +358,8 @@ node scripts/register-node.js \
   --name "Pachyderm Node" \
   --node-url http://localhost:4000 \
   --operated-by "$ORG_ID" \
-  --operator-key-file generated_orgs/the-prescient-pachyderm-ltd-<id>/<org-tip-id>.tip.json \
+  --partner pachyderm \
+  --operator-key-file generated/pachyderm/org/<org-tip-id>.tip.json \
   --production \
   --api-endpoint "https://tipnode.pachyderm.example" \
   --public-url "https://tipnode.pachyderm.example" \
@@ -369,18 +371,12 @@ curl -s -H "Authorization: Bearer $TOK" http://localhost:4000/metrics | grep tip
 ```
 
 ```bash
-# R6 , rehearse the bundle: assemble outside the repo, build, inspect, clean up
-mkdir -p ~/partners/pachyderm
-cp generated/pachyderm/node/pachyderm-node.env             ~/partners/pachyderm/node.env
-cp generated/pachyderm/node/tip-node-*.tip.json            ~/partners/pachyderm/NODE-KEY__tip-node.tip.json
-cp generated/pachyderm/org/*.tip.json                      ~/partners/pachyderm/ORG-IDENTITY__id-GB.tip.json
-cp genesis-data/genesis.json                                ~/partners/pachyderm/genesis.json
-echo rehearsal > ~/partners/pachyderm/README.md
-scripts/make-secure-bundle.sh ~/partners/pachyderm Pachyderm
-ls -la ~/partners/deliveries/            # the zip; password was printed + logged
-rm -rf ~/partners                        # rehearsal cleanup
+# R6 , rehearse the bundle: one command, staged straight from the partner dir
+scripts/make-secure-bundle.sh generated/pachyderm Pachyderm
+ls -la generated/deliveries/             # the zip; password was printed + logged
+rm -rf generated/pachyderm generated/deliveries generated/ZIP-PASSWORDS.md   # rehearsal cleanup
 ```
 
 What changes on mainnet, and nothing else: `--node-url https://node.theailab.org`,
 `--vp-file <mainnet VP key>`, verification against `node`/`node2.theailab.org`,
-and the bundle carries the **mainnet** genesis and production secrets (section 5.2).
+and the env is hand-filled with production secrets before bundling (section 5.2).
