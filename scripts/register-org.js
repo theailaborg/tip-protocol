@@ -33,11 +33,12 @@
  *   --vp-file PATH            Founding VP .tip.json. Defaults to the VP found in
  *                             genesis-data/backups, which is the LOCAL/TEST VP.
  *                             Pass the mainnet VP explicitly for mainnet.
- *   --out-dir PATH            Override output dir (default generated_orgs/<slug>-<short-id>/)
+ *   --partner SLUG            Partner folder name; org and node runs sharing it land together
+ *   --out-dir PATH            Override output dir (default generated/<partner|slug-short-id>/org/)
  *   --dry-run                 Build and print everything, but do not POST
  *
  * Output:
- *   generated_orgs/<slug>-<short-tip-id>/
+ *   generated/<partner>/org/
  *     └── <tip-id>.tip.json   Keypair + org metadata (mode 0600)
  *
  * The private key is written locally and never transmitted: registration sends
@@ -96,10 +97,42 @@ const orgType = getArg("--org-type", null);
 const nodeUrl = getArg("--node-url", "http://localhost:4000");
 const vpFile = getArg("--vp-file", null);
 const outDirOverride = getArg("--out-dir", null);
+// Group outputs by PARTNER, not by artifact type: org and node keys for the
+// same partner belong together (they ship in one bundle). --partner names the
+// folder; without it the org name slug is used.
+const partnerSlug = getArg("--partner", null);
 const dryRun = args.includes("--dry-run");
 
 function slugify(s) {
   return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "org";
+}
+
+// One README at the partner root explaining every credential type it may hold.
+// Overwritten on each run so it always reflects the current layout.
+function writePartnerReadme(partnerRoot) {
+  const text = `# Partner credentials , handling rules
+
+Everything for one partner lives under this directory.
+
+## org/  (organization identity)
+The .tip.json here IS the organization on the network: it signs content as them.
+It is NOT needed to run a node. Keep it OFF the node host, with company signing
+material. Mode 0600, never committed, never emailed in the clear.
+
+## node/  (node identity + env)
+The .tip.json here runs the node: it lives on the node host, read at boot
+(mode 0600, owned by the container user). The .env is the node configuration ,
+secrets (classifier key, metrics token) are filled by hand at bundle time, never
+generated here.
+
+## vp/  (verification provider , rarely present)
+A VP key approves registrations. If one exists here, it is the most sensitive
+file in this tree; it never leaves the registration machine.
+
+Delivery: docs/REGISTRATION_AND_KEY_DISTRIBUTION.md section 5 , one AES-256 zip
+via scripts/make-secure-bundle.sh, password over a separate channel.
+`;
+  fs.writeFileSync(path.join(partnerRoot, "README.md"), text);
 }
 
 // ─── Which identifier IS the company's identity, per jurisdiction ─────────────
@@ -292,8 +325,10 @@ async function main() {
   // 7. Credential file for delivery.
   const shortId = String(result.tip_id || tipId)
     .replace(/^tip:\/\/id\//, "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "unknown";
-  const outDir = path.resolve(outDirOverride || `./generated_orgs/${slugify(orgName)}-${shortId}`);
+  const partnerRoot = path.resolve(`./generated/${partnerSlug || `${slugify(orgName)}-${shortId}`}`);
+  const outDir = path.resolve(outDirOverride || path.join(partnerRoot, "org"));
   fs.mkdirSync(outDir, { recursive: true });
+  if (!outDirOverride) writePartnerReadme(partnerRoot);
 
   const fileName = String(result.tip_id || tipId)
     .replace(/^tip:\/\//, "").replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-") + ".tip.json";

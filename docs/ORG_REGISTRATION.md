@@ -106,7 +106,8 @@ approval step does:
 | `--org-type` | no | the legal form as the jurisdiction names it, freeform by design (forms differ per country), but must be 2-64 chars of lowercase letters, digits and hyphens. Common values: `private-limited-company`, `public-limited-company`, `llp`, `llc`, `gmbh`, `nonprofit` | `--org-type private-limited-company` |
 | `--node-url` | for mainnet | the node to register through. Default `http://localhost:4000` (local rehearsal) | `--node-url https://node.theailab.org` |
 | `--vp-file` | **for mainnet** | path to the mainnet founding VP `.tip.json`. When omitted the script picks up whatever VP sits in `genesis-data/backups`, which on a dev machine is the test VP , mainnet rejects it | `--vp-file <VP_KEY_FILE>` |
-| `--out-dir` | no | where the org key file is written. Default `generated_orgs/<slug>-<short-id>/` | `--out-dir /secure/azlogics` |
+| `--partner` | recommended | partner folder name under `generated/`; use the same value for the node registration so both land together | `--partner azlogics` |
+| `--out-dir` | no | full override of the output dir. Default `generated/<partner|slug-short-id>/org/` | `--out-dir /secure/azlogics` |
 | `--dry-run` | no | boolean, no value. Validates the identifier, builds the real proof, prints everything, registers nothing , always run this first | `--dry-run` |
 
 `--org-type` note: use lowercase-hyphen spelling of the form on the certificate
@@ -159,7 +160,8 @@ than one node: they must agree.
 
 ## 5. Deliver the credential
 
-The script writes `generated_orgs/<slug>-<short-id>/<tip-id>.tip.json` at mode `0600`,
+The script writes `generated/<partner>/org/<tip-id>.tip.json` at mode `0600`
+(pass `--partner <slug>` so the later node registration lands in the same folder),
 containing both keys plus the registry inputs.
 
 Whoever holds that file can sign as the organization, so it is treated like an SSH

@@ -134,6 +134,7 @@ must agree to it.
 ```bash
 node scripts/register-node.js \
   --name "<Partner> Node" \
+  --partner <partner-slug> \
   --node-url https://node.theailab.org \
   --operated-by "tip://id/<REGION>-<org-id>" \
   --operator-key-file generated_orgs/<slug>-<short-id>/<org-tip-id>.tip.json \
@@ -157,11 +158,17 @@ The script generates the env **only** from `.env.example` plus these flags , it
 reads nothing from your shell, so nothing from the registration machine can leak
 into the partner's file. Secrets are added by hand in step 5.
 
-Output lands in `generated_nodes/<slug>-<short-id>/`:
+Pass the same `--partner <slug>` to both the org and node runs and everything
+lands in one folder:
 
-- `<node-id>.tip.json` , the node keypair (mode 0600)
-- `<slug>.env` , the drop-in env file
-- `data/` , empty per-node data dir (not shipped)
+```
+generated/<partner>/
+├── README.md          <- auto-written handling rules for every credential type
+├── org/<org-id>.tip.json
+└── node/
+    ├── <node-id>.tip.json
+    └── <slug>.env
+```
 
 **Verify** the registration. There is no `/v1/nodes` HTTP endpoint; the node
 roster is exposed by the `tip_node_registry_info` metric (needs the metrics
@@ -185,9 +192,9 @@ Create a directory (outside the repo checkout) containing exactly five files:
 
 ```
 <partner>/
-├── node.env                                   <- the generated <slug>.env, renamed
-├── NODE-KEY__tip-node-<id>.tip.json           <- from generated_nodes/, renamed with prefix
-├── ORG-IDENTITY__id-<REGION>-<id>.tip.json    <- from generated_orgs/, renamed with prefix
+├── node.env                                   <- generated/<partner>/node/<slug>.env, renamed
+├── NODE-KEY__tip-node-<id>.tip.json           <- from generated/<partner>/node/, renamed with prefix
+├── ORG-IDENTITY__id-<REGION>-<id>.tip.json    <- from generated/<partner>/org/, renamed with prefix
 ├── genesis.json                               <- the MAINNET genesis
 └── README.md                                  <- partner setup steps
 ```
@@ -352,9 +359,9 @@ curl -s -H "Authorization: Bearer $TOK" http://localhost:4000/metrics | grep tip
 ```bash
 # R6 , rehearse the bundle: assemble outside the repo, build, inspect, clean up
 mkdir -p ~/partners/pachyderm
-cp generated_nodes/pachyderm-node-*/pachyderm-node.env      ~/partners/pachyderm/node.env
-cp generated_nodes/pachyderm-node-*/tip-node-*.tip.json     ~/partners/pachyderm/NODE-KEY__tip-node.tip.json
-cp generated_orgs/the-prescient-pachyderm-ltd-*/*.tip.json  ~/partners/pachyderm/ORG-IDENTITY__id-GB.tip.json
+cp generated/pachyderm/node/pachyderm-node.env             ~/partners/pachyderm/node.env
+cp generated/pachyderm/node/tip-node-*.tip.json            ~/partners/pachyderm/NODE-KEY__tip-node.tip.json
+cp generated/pachyderm/org/*.tip.json                      ~/partners/pachyderm/ORG-IDENTITY__id-GB.tip.json
 cp genesis-data/genesis.json                                ~/partners/pachyderm/genesis.json
 echo rehearsal > ~/partners/pachyderm/README.md
 scripts/make-secure-bundle.sh ~/partners/pachyderm Pachyderm
