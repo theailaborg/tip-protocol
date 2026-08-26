@@ -10,15 +10,19 @@ built from the company's registry details rather than a person's government ID.
 
 ### Ready-to-send request
 
-Copy, fill the brackets, send. Item 2 is the India wording; for another country
-take the identifier from the table in section 2.
+Copy, fill the brackets, send. Item 2 depends on the partner's country: take
+the identifier from the table in section 2 and use the matching wording, e.g.
+
+- India: `CIN (21-char) or LLPIN (7-char), and which one it is`
+- UK: `Companies House company number (8 chars, exactly as printed, keep leading zeros)`
+- US: `federal EIN (9 digits, not a state entity number)`
 
 > Hi [partner] team, we're ready to register [ORGANIZATION NAME] on TIP mainnet.
 > Since mainnet records are permanent and cannot be corrected, please confirm the
 > following from your official documents (not from memory):
 >
 > 1. Full legal name, exactly as registered
-> 2. CIN (21-char) or LLPIN (7-char), and which one it is
+> 2. [registration number wording for their country, from the section 2 table]
 > 3. Date of incorporation
 > 4. Country of registration
 > 5. Production node's static public IP (new host, not the testnet box)
