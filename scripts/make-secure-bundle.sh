@@ -83,13 +83,14 @@ chmod 600 "$ZIP"
 # rows rather than overwriting, and record the checksum to prove which archive
 # a given password belongs to.
 LOG="$BASE/ZIP-PASSWORDS.md"
-if [ -f "$LOG" ]; then
-  grep -q '^## Build log$' "$LOG" || printf '\n## Build log\n' >> "$LOG"
-  printf '\n- `%s`  %s  password `%s`  sha256 `%s`\n' \
-    "$(date '+%Y-%m-%d %H:%M %Z')" "$ORG" "$PASS" \
-    "$(shasum -a 256 "$ZIP" | cut -c1-16)" >> "$LOG"
-  chmod 600 "$LOG"
-fi
+# ALWAYS log: a console-only password is unrecoverable the moment the terminal
+# clears, and the zip with it. Create the log on first use.
+[ -f "$LOG" ] || printf '# Zip passwords , local record only, never commit or attach\n' > "$LOG"
+grep -q '^## Build log$' "$LOG" || printf '\n## Build log\n' >> "$LOG"
+printf '\n- `%s`  %s  password `%s`  sha256 `%s`\n' \
+  "$(date '+%Y-%m-%d %H:%M %Z')" "$ORG" "$PASS" \
+  "$(shasum -a 256 "$ZIP" | cut -c1-16)" >> "$LOG"
+chmod 600 "$LOG"
 
 echo
 echo "  zip      : $ZIP"
