@@ -107,13 +107,15 @@ non-negotiables:
      --vp-file <VP_KEY_FILE>
    ```
 
-3. **Verify from two different nodes** , they must agree:
+3. **Verify from two different nodes** , they must agree. Set the ID on its own
+   line first (no trailing backslash , pasting the assignment and the loop as
+   one line is a shell parse error):
 
    ```bash
-   for h in node node2; do
-     curl -s "https://$h.theailab.org/v1/identity/$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" 'tip://id/<REGION>-<id>')" \
-       | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"tip_id_type"'
-   done
+   ORG_ID='tip://id/<REGION>-<id>'
+   ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$ORG_ID")
+   curl -s "https://node.theailab.org/v1/identity/$ENC"  | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"tip_id_type"|"org_type"'
+   curl -s "https://node2.theailab.org/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"tip_id_type"|"org_type"'
    ```
 
    `status` must be `active`, `tip_id_type` `organization`, `creator_name`
@@ -161,9 +163,19 @@ Output lands in `generated_nodes/<slug>-<short-id>/`:
 - `<slug>.env` , the drop-in env file
 - `data/` , empty per-node data dir (not shipped)
 
-**Verify** the node row from two nodes: it must appear with `status: active` and
-the correct `operated_by`. Nothing else needs to be live yet , the partner's
-machine is not involved in this step.
+**Verify** the registration. There is no `/v1/nodes` HTTP endpoint; the node
+roster is exposed by the `tip_node_registry_info` metric (needs the metrics
+token) , check it on two nodes:
+
+```bash
+TOK=<production TIP_METRICS_TOKEN>
+curl -s -H "Authorization: Bearer $TOK" https://node.theailab.org/metrics  | grep tip_node_registry_info
+curl -s -H "Authorization: Bearer $TOK" https://node2.theailab.org/metrics | grep tip_node_registry_info
+```
+
+The new node must appear with the partner's name and `status="active"` on both.
+Nothing on the partner's machine needs to be live yet , this step involves only
+our nodes.
 
 ## 5. Build and deliver the credentials bundle
 
@@ -205,8 +217,10 @@ scripts/make-secure-bundle.sh <path-to-partner-dir> <OrgName>
 ```
 
 One AES-256 zip containing all five files, a fresh 20-character password per
-run, printed once and appended to a `ZIP-PASSWORDS.md` build log next to the
-partner directory. The zip and the log are created outside any repo checkout.
+run, printed once and appended to a `ZIP-PASSWORDS.md` build log. Both land
+next to the partner directory: every zip collects in a single **`deliveries/`**
+folder there, with the password log beside it , one place to look, outside any
+repo checkout, and `deliveries/` is gitignored as a backstop.
 
 ### 5.4 Deliver
 
@@ -280,3 +294,74 @@ new identity. The org identity key is rotatable via `KEY_ROTATED`.
 | partner node: 0 peers and stuck at `join_state: syncing` despite open ports | almost always the wrong `genesis.json`. There is no clean "wrong network" error; this is what it looks like. Check the genesis before debugging firewalls |
 | endpoint announce failed at boot | their DNS does not resolve, or 4000 is not reachable from the internet. Fix, then `POST /v1/node/endpoint/announce` on their node re-announces without a restart |
 | partner cannot open the zip | OS built-in extractor; they need 7-Zip / Keka / The Unarchiver |
+
+---
+
+## Appendix A , worked example: full local rehearsal
+
+Rehearse the entire flow on the local cluster before any mainnet run. Fictional
+company throughout; local cluster must be up (`curl -s localhost:4000/ready`).
+The local VP key in `genesis-data/backups` is picked up automatically , no
+`--vp-file` locally, which is exactly why mainnet **must** pass it.
+
+```bash
+# R1 , dry-run: validates the identifier, builds the proof, registers nothing
+node scripts/register-org.js \
+  --name "THE PRESCIENT PACHYDERM LTD" \
+  --reg-number 16846775 \
+  --incorporated 2025-11-11 \
+  --region GB \
+  --org-type private-limited-company \
+  --dry-run
+
+# R2 , register the org locally (note the printed tip://id/GB-... for R3/R4)
+node scripts/register-org.js \
+  --name "THE PRESCIENT PACHYDERM LTD" \
+  --reg-number 16846775 \
+  --incorporated 2025-11-11 \
+  --region GB \
+  --org-type private-limited-company \
+  --node-url http://localhost:4000
+```
+
+```bash
+# R3 , verify from two local nodes (both must agree)
+ORG_ID='tip://id/GB-xxxxxxxxxxxxxxxx'
+ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$ORG_ID")
+curl -s "http://localhost:4000/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"status"|"tip_id_type"|"org_type"'
+curl -s "http://localhost:4100/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"status"|"tip_id_type"|"org_type"'
+```
+
+```bash
+# R4 , register the node, org cosigning (use the exact key path R2 printed)
+node scripts/register-node.js \
+  --name "Pachyderm Node" \
+  --node-url http://localhost:4000 \
+  --operated-by "$ORG_ID" \
+  --operator-key-file generated_orgs/the-prescient-pachyderm-ltd-<id>/<org-tip-id>.tip.json \
+  --production \
+  --api-endpoint "https://tipnode.pachyderm.example" \
+  --public-url "https://tipnode.pachyderm.example" \
+  --public-ip 203.0.113.10
+
+# R5 , verify the roster (there is no /v1/nodes endpoint; use the metric)
+TOK=$(grep '^TIP_METRICS_TOKEN=' .env | cut -d= -f2-)
+curl -s -H "Authorization: Bearer $TOK" http://localhost:4000/metrics | grep tip_node_registry_info
+```
+
+```bash
+# R6 , rehearse the bundle: assemble outside the repo, build, inspect, clean up
+mkdir -p ~/partners/pachyderm
+cp generated_nodes/pachyderm-node-*/pachyderm-node.env      ~/partners/pachyderm/node.env
+cp generated_nodes/pachyderm-node-*/tip-node-*.tip.json     ~/partners/pachyderm/NODE-KEY__tip-node.tip.json
+cp generated_orgs/the-prescient-pachyderm-ltd-*/*.tip.json  ~/partners/pachyderm/ORG-IDENTITY__id-GB.tip.json
+cp genesis-data/genesis.json                                ~/partners/pachyderm/genesis.json
+echo rehearsal > ~/partners/pachyderm/README.md
+scripts/make-secure-bundle.sh ~/partners/pachyderm Pachyderm
+ls -la ~/partners/deliveries/            # the zip; password was printed + logged
+rm -rf ~/partners                        # rehearsal cleanup
+```
+
+What changes on mainnet, and nothing else: `--node-url https://node.theailab.org`,
+`--vp-file <mainnet VP key>`, verification against `node`/`node2.theailab.org`,
+and the bundle carries the **mainnet** genesis and production secrets (section 5.2).

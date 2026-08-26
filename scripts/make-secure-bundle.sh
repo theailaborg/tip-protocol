@@ -23,8 +23,9 @@ command -v 7zz >/dev/null || { echo "7zz missing: brew install sevenzip" >&2; ex
 
 # Outputs live next to the partner dir (typically under gitignored my-notes),
 # NEVER next to this script , a repo checkout must not accumulate credential zips.
+# All partner zips collect in one deliveries/ directory beside the partner dirs.
 BASE="$(cd "$(dirname "$PARTNER")" && pwd)"
-OUT="$BASE/out"
+OUT="$BASE/deliveries"
 mkdir -p "$OUT"
 ZIP="$OUT/${ORG}-credentials.zip"
 rm -f "$ZIP"
