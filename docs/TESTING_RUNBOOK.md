@@ -139,7 +139,7 @@ docker exec shared-postgres psql -U tip -d tip_node1 -tAc "SELECT reason, count(
 
 ## 6. Prod validation
 
-Nodes: see `my-notes/prd-env/ACCESS.md` (SSH key, IPs; never commit that
+Nodes: see `my-notes/mainnet-prod/ACCESS.md` (SSH key, IPs; never commit that
 directory). Per node: `git pull`, `sudo docker compose build tip-node`,
 `sudo docker compose up -d --force-recreate tip-node`, verify a marker inside
 the container, wait for `/health` ok, then next node. Finish with the
