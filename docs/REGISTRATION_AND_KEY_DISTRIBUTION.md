@@ -186,26 +186,31 @@ our nodes.
 
 ## 5. Build and deliver the credentials bundle
 
-### 5.1 Assemble the partner directory
+### 5.1 The bundle contents , assembled automatically
 
-Create a directory (outside the repo checkout) containing exactly five files:
+Point the bundler (5.3) at `generated/<partner>/` and it stages the deliverable
+itself from whatever the registrations produced:
 
 ```
-<partner>/
-├── node.env                                   <- generated/<partner>/node/<slug>.env, renamed
-├── NODE-KEY__tip-node-<id>.tip.json           <- from generated/<partner>/node/, renamed with prefix
-├── ORG-IDENTITY__id-<REGION>-<id>.tip.json    <- from generated/<partner>/org/, renamed with prefix
-├── genesis.json                               <- the MAINNET genesis
-└── README.md                                  <- partner setup steps
+<Partner>/                                     inside the zip
+├── node.env                                   <- generated/<partner>/node/<slug>.env
+├── NODE-KEY__tip-node-<id>.tip.json           <- generated/<partner>/node/
+├── ORG-IDENTITY__id-<REGION>-<id>.tip.json    <- generated/<partner>/org/
+├── genesis.json                               <- the repo's genesis (the MAINNET genesis on the registration machine)
+└── README.md                                  <- the partner-root README
 ```
 
-The `NODE-KEY__` / `ORG-IDENTITY__` prefixes exist so the partner cannot confuse
-the two: the node key lives on the node host; the org identity must stay **off**
-the node host entirely.
+Anything absent is reported with a WARNING and skipped, so an org-only or
+node-only delivery also works; a directory with no credentials at all refuses to
+build. The `NODE-KEY__` / `ORG-IDENTITY__` prefixes exist so the partner cannot
+confuse the two: the node key lives on the node host; the org identity stays
+**off** the node host entirely.
 
 ### 5.2 Hand-fill the secrets in `node.env`
 
-The generator leaves these empty on purpose. Fill in:
+The generator leaves these empty on purpose , edit
+`generated/<partner>/node/<slug>.env` **before** building the zip (the bundler
+warns on empty values but does not fail). Fill in:
 
 - `TIP_CLASSIFIER_KEY` , the live production classifier key
 - `TIP_METRICS_TOKEN` , the production metrics token (a 64-char random value; a
@@ -220,7 +225,7 @@ else carries a live value.
 ### 5.3 Build the encrypted zip
 
 ```bash
-scripts/make-secure-bundle.sh <path-to-partner-dir> <OrgName>
+scripts/make-secure-bundle.sh generated/<partner> <OrgName>
 ```
 
 One AES-256 zip containing all five files, a fresh 20-character password per
