@@ -65,6 +65,34 @@ table above handles.
 A country absent from the table stops the run rather than guessing. Adding one is a
 deliberate act: confirm the country has a single national registry, then add the row.
 
+### Continuity events: conversions and re-registrations
+
+The dedup hash guarantees *the same government registration* never enters twice. It
+cannot recognise the same **business** returning under a new registration, because
+some jurisdictions make legal-form changes a new entity with a new identifier:
+
+| country | behaviour on form change | exposed? |
+|---|---|---|
+| **IN** | LLP → company conversion issues a **new CIN and a new incorporation date** | **yes , worst case** |
+| **DE** | moving the company seat changes the court, so a **new HRB** (the court is part of our value) | **yes, same class** |
+| GB | company number persists through LTD→PLC and renames | robust |
+| FR / JP / AU | SIREN / Corporate Number / ACN persist through form changes | robust |
+| US | EIN survives most conversions; a few (e.g. sole-prop → corp) mint a new one | mostly robust |
+
+The risk is a **reputation reset**: an organization with a damaged score converts its
+legal form and registers again with a clean slate. The hash cannot stop it, so the
+approval step does:
+
+1. **Always ask, in writing:** *"Has this business ever operated under a prior
+   registration number (as an LLP, before a conversion, or under a previous
+   incorporation)?"* A false answer to the approving VP is misrepresentation.
+2. **Read the certificate.** In India a converted company's incorporation certificate
+   states the conversion and cites the former LLPIN, and the MCA record shows it. An
+   incorporation date far newer than the business's visible history is the tell.
+3. **Register a successor only alongside retirement of its predecessor.** If the old
+   form holds a TIP identity, it is revoked (`REVOKE_VOLUNTARY`) as part of the new
+   registration, so the chain records succession, not two live identities.
+
 ## 3. Register
 
 Rehearse on the local cluster first. Nothing about the flow differs except the target
