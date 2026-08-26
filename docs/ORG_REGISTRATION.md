@@ -167,7 +167,7 @@ containing both keys plus the registry inputs.
 Whoever holds that file can sign as the organization, so it is treated like an SSH
 host key: stored at mode `0600`, never committed. Delivery is part of the partner
 credentials bundle , an AES-256 zip with the password sent over a separate channel;
-the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md` section 5.
+the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md` section 6.
 
 The private key is generated locally and never transmitted: registration sends only the
 public key. The planned VP-side page, where an organization generates its own keypair in
