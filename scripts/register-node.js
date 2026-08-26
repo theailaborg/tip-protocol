@@ -14,7 +14,8 @@
  *   --name "My Node"             Node name (default: "TIP Node {N}")
  *   --node-url http://host:4000  API endpoint to register against (default: http://localhost:4000)
  *   --out-dir ./path             Override output directory
- *                                (default: ./generated_nodes/<slug>-<short-tip-id>/)
+ *                                (default: ./generated/<partner|slug-short-id>/node/)
+ *   --partner SLUG               Partner folder shared with the org registration
  *   --port 4100                  API port for the new node (default: 4100)
  *   --p2p-port 4101              libp2p port for the new node (default: api-port + 1)
  *   --public-ip 127.0.0.1        Publicly-reachable IP (default: 127.0.0.1)
@@ -40,7 +41,7 @@
  * on the target host; node-env-template.js refuses to write them.
  *
  * Output layout:
- *   generated_nodes/<slug>-<short-tip-id>/
+ *   generated/<partner>/node/
  *     ├── <slug>.env             Drop-in env file (use with --env-file=); no inline keys
  *     ├── <node-id>.tip.json     Keypair (mode 0600); node reads it via TIP_NODE_CREDENTIALS_FILE
  *     └── data/                  Per-node data dir (created on first run)
@@ -103,6 +104,9 @@ const nodeUrl = getArg("--node-url", "http://localhost:4000");
 // for operators who want a specific path; otherwise it lands under
 // generated_nodes/<slug>-<short-id>/.
 const outDirOverride = getArg("--out-dir", null);
+// See register-org.js: --partner groups this node run into the same
+// generated/<partner>/ folder as the org it belongs to.
+const partnerSlug = getArg("--partner", null);
 // The identity responsible for this node. Naming one is a claim about a third
 // party, so its keyfile is required too: the node registers only if that
 // identity cosigns the same bytes the founding VP signs.
@@ -133,6 +137,34 @@ const isProduction = args.includes("--production");
 /** Slugify a display name into a filesystem-safe identifier. */
 function slugify(s) {
   return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "node";
+}
+
+// One README at the partner root explaining every credential type it may hold.
+// Overwritten on each run so it always reflects the current layout.
+function writePartnerReadme(partnerRoot) {
+  const text = `# Partner credentials , handling rules
+
+Everything for one partner lives under this directory.
+
+## org/  (organization identity)
+The .tip.json here IS the organization on the network: it signs content as them.
+It is NOT needed to run a node. Keep it OFF the node host, with company signing
+material. Mode 0600, never committed, never emailed in the clear.
+
+## node/  (node identity + env)
+The .tip.json here runs the node: it lives on the node host, read at boot
+(mode 0600, owned by the container user). The .env is the node configuration ,
+secrets (classifier key, metrics token) are filled by hand at bundle time, never
+generated here.
+
+## vp/  (verification provider , rarely present)
+A VP key approves registrations. If one exists here, it is the most sensitive
+file in this tree; it never leaves the registration machine.
+
+Delivery: docs/REGISTRATION_AND_KEY_DISTRIBUTION.md section 5 , one AES-256 zip
+via scripts/make-secure-bundle.sh, password over a separate channel.
+`;
+  fs.writeFileSync(path.join(partnerRoot, "README.md"), text);
 }
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
@@ -286,8 +318,10 @@ async function main() {
     .replace(/^tip:\/\/node\//, "")
     .replace(/[^a-zA-Z0-9]/g, "")
     .slice(0, 12) || "unknown";
-  const outDir = path.resolve(outDirOverride || `./generated_nodes/${slug}-${shortId}`);
+  const partnerRoot = path.resolve(`./generated/${partnerSlug || `${slug}-${shortId}`}`);
+  const outDir = path.resolve(outDirOverride || path.join(partnerRoot, "node"));
   fs.mkdirSync(outDir, { recursive: true });
+  if (!outDirOverride) writePartnerReadme(partnerRoot);
 
   // .tip.json backup
   const tipJson = JSON.stringify({

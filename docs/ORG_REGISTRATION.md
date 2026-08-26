@@ -65,7 +65,55 @@ table above handles.
 A country absent from the table stops the run rather than guessing. Adding one is a
 deliberate act: confirm the country has a single national registry, then add the row.
 
+### Continuity events: conversions and re-registrations
+
+The dedup hash guarantees *the same government registration* never enters twice. It
+cannot recognise the same **business** returning under a new registration, because
+some jurisdictions make legal-form changes a new entity with a new identifier:
+
+| country | behaviour on form change | exposed? |
+|---|---|---|
+| **IN** | LLP → company conversion issues a **new CIN and a new incorporation date** | **yes , worst case** |
+| **DE** | moving the company seat changes the court, so a **new HRB** (the court is part of our value) | **yes, same class** |
+| GB | company number persists through LTD→PLC and renames | robust |
+| FR / JP / AU | SIREN / Corporate Number / ACN persist through form changes | robust |
+| US | EIN survives most conversions; a few (e.g. sole-prop → corp) mint a new one | mostly robust |
+
+The risk is a **reputation reset**: an organization with a damaged score converts its
+legal form and registers again with a clean slate. The hash cannot stop it, so the
+approval step does:
+
+1. **Always ask, in writing:** *"Has this business ever operated under a prior
+   registration number (as an LLP, before a conversion, or under a previous
+   incorporation)?"* A false answer to the approving VP is misrepresentation.
+2. **Read the certificate.** In India a converted company's incorporation certificate
+   states the conversion and cites the former LLPIN, and the MCA record shows it. An
+   incorporation date far newer than the business's visible history is the tell.
+3. **Register a successor only alongside retirement of its predecessor.** If the old
+   form holds a TIP identity, it is revoked (`REVOKE_VOLUNTARY`) as part of the new
+   registration, so the chain records succession, not two live identities.
+
 ## 3. Register
+
+### Flag reference
+
+| flag | required | accepts | example |
+|---|---|---|---|
+| `--name` | yes | the full legal name, exactly as registered, quoted | `--name "AZLOGICS PRIVATE LIMITED"` |
+| `--reg-number` | yes | the country's accepted identifier from the table in §2, exact format, leading zeros kept | `--reg-number U72900MH2021PTC362851` |
+| `--incorporated` | yes | date of incorporation, `YYYY-MM-DD` only | `--incorporated 2021-06-28` |
+| `--region` | yes in practice | ISO-3166-1 alpha-2 country of incorporation; must be in the §2 scheme table or the run stops. Default `GB` , always pass it explicitly | `--region IN` |
+| `--org-type` | no | the legal form as the jurisdiction names it, freeform by design (forms differ per country), but must be 2-64 chars of lowercase letters, digits and hyphens. Common values: `private-limited-company`, `public-limited-company`, `llp`, `llc`, `gmbh`, `nonprofit` | `--org-type private-limited-company` |
+| `--node-url` | for mainnet | the node to register through. Default `http://localhost:4000` (local rehearsal) | `--node-url https://node.theailab.org` |
+| `--vp-file` | **for mainnet** | path to the mainnet founding VP `.tip.json`. When omitted the script picks up whatever VP sits in `genesis-data/backups`, which on a dev machine is the test VP , mainnet rejects it | `--vp-file <VP_KEY_FILE>` |
+| `--partner` | recommended | partner folder name under `generated/`; use the same value for the node registration so both land together | `--partner azlogics` |
+| `--out-dir` | no | full override of the output dir. Default `generated/<partner|slug-short-id>/org/` | `--out-dir /secure/azlogics` |
+| `--dry-run` | no | boolean, no value. Validates the identifier, builds the real proof, prints everything, registers nothing , always run this first | `--dry-run` |
+
+`--org-type` note: use lowercase-hyphen spelling of the form on the certificate
+(`Private Limited` → `private-limited-company`). Anything outside
+`a-z 0-9 -` or longer than 64 chars is rejected by the node with
+`org_type_invalid`.
 
 Rehearse on the local cluster first. Nothing about the flow differs except the target
 and the VP key, so a local run catches every input mistake for free.
@@ -76,6 +124,7 @@ node scripts/register-org.js \
   --reg-number 16846775 \
   --incorporated 2025-11-11 \
   --region GB \
+  --org-type private-limited-company \
   --node-url http://localhost:4000
 ```
 
@@ -89,6 +138,7 @@ node scripts/register-org.js \
   --reg-number 16846775 \
   --incorporated 2025-11-11 \
   --region GB \
+  --org-type private-limited-company \
   --node-url https://node.theailab.org \
   --vp-file path-to-vp-keys
 ```
@@ -110,12 +160,14 @@ than one node: they must agree.
 
 ## 5. Deliver the credential
 
-The script writes `generated_orgs/<slug>-<short-id>/<tip-id>.tip.json` at mode `0600`,
+The script writes `generated/<partner>/org/<tip-id>.tip.json` at mode `0600`
+(pass `--partner <slug>` so the later node registration lands in the same folder),
 containing both keys plus the registry inputs.
 
-Deliver it over a secure channel, never chat or email. Whoever holds that file can sign
-as the organization, so it should be treated like an SSH host key, stored at mode `0600`,
-and never committed.
+Whoever holds that file can sign as the organization, so it is treated like an SSH
+host key: stored at mode `0600`, never committed. Delivery is part of the partner
+credentials bundle , an AES-256 zip with the password sent over a separate channel;
+the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md` section 5.
 
 The private key is generated locally and never transmitted: registration sends only the
 public key. The planned VP-side page, where an organization generates its own keypair in

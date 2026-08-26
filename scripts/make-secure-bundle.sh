@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build the encrypted half of a partner bundle.
 #
-#   ./make-secure-bundle.sh rooverse [OrgFolderName]
+#   ./make-secure-bundle.sh generated/<partner> [OrgFolderName]
+# Accepts either a generated/<partner>/ dir (org/ + node/ auto-staged into
+# delivery names, genesis added from the repo) or a pre-assembled flat dir.
 #
 # One encrypted zip (AES-256) holding the whole partner folder. Attach the zip,
 # send the password over a separate channel. node.env carries live credentials
@@ -23,8 +25,9 @@ command -v 7zz >/dev/null || { echo "7zz missing: brew install sevenzip" >&2; ex
 
 # Outputs live next to the partner dir (typically under gitignored my-notes),
 # NEVER next to this script , a repo checkout must not accumulate credential zips.
+# All partner zips collect in one deliveries/ directory beside the partner dirs.
 BASE="$(cd "$(dirname "$PARTNER")" && pwd)"
-OUT="$BASE/out"
+OUT="$BASE/deliveries"
 mkdir -p "$OUT"
 ZIP="$OUT/${ORG}-credentials.zip"
 rm -f "$ZIP"
@@ -39,14 +42,39 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/$ORG"
 
-cp -R "$PARTNER"/. "$STAGE/$ORG/"
-
-# Every sensitive file must actually be in there; a silent omission would mean
-# mailing a bundle the partner cannot run, or worse, one file left unencrypted.
-for pat in "node.env" "NODE-KEY__*.tip.json" "ORG-IDENTITY__*.tip.json" "genesis.json" "README.md"; do
-  compgen -G "$STAGE/$ORG/$pat" >/dev/null \
-    || { echo "missing from bundle: $pat" >&2; exit 1; }
-done
+# Two input layouts:
+#   generated/<partner>/ with org/ + node/ subdirs (from register-org/node.js)
+#     -> auto-staged into delivery names based on what is available
+#   flat dir already holding node.env / NODE-KEY__ / ORG-IDENTITY__ / genesis
+#     -> copied as-is (legacy layout, still supported)
+missing=""
+if [ -d "$PARTNER/org" ] || [ -d "$PARTNER/node" ]; then
+  # node side: env + node key
+  envf=$(ls "$PARTNER"/node/*.env 2>/dev/null | head -1)
+  nkey=$(ls "$PARTNER"/node/tip-node-*.tip.json 2>/dev/null | head -1)
+  okey=$(ls "$PARTNER"/org/*.tip.json 2>/dev/null | head -1)
+  [ -n "$envf" ] && cp "$envf" "$STAGE/$ORG/node.env"           || missing="$missing node.env"
+  [ -n "$nkey" ] && cp "$nkey" "$STAGE/$ORG/NODE-KEY__$(basename "$nkey")" || missing="$missing node-key"
+  [ -n "$okey" ] && cp "$okey" "$STAGE/$ORG/ORG-IDENTITY__$(basename "$okey")" || missing="$missing org-identity"
+  [ -f "$PARTNER/README.md" ] && cp "$PARTNER/README.md" "$STAGE/$ORG/README.md"
+  # No genesis in the bundle: the repo the partner clones already carries the
+  # mainnet genesis; shipping a copy is redundant and one more thing to drift.
+  [ -n "$missing" ] && echo "  WARNING , not in this bundle:$missing" >&2
+  # nothing sensitive at all -> refuse, an empty bundle helps nobody
+  [ -z "$envf$nkey$okey" ] && { echo "no credentials found under $PARTNER/{org,node}" >&2; exit 1; }
+  # secret-fill reminders: the generator leaves these empty on purpose (runbook 5.2)
+  if [ -n "$envf" ]; then
+    grep -qE "^TIP_CLASSIFIER_KEY=.+" "$STAGE/$ORG/node.env" || echo "  WARNING: TIP_CLASSIFIER_KEY is empty in node.env" >&2
+    grep -qE "^TIP_METRICS_TOKEN=.+"  "$STAGE/$ORG/node.env" || echo "  WARNING: TIP_METRICS_TOKEN is empty in node.env" >&2
+    grep -qE "^TIP_METRICS_TOKEN=certtest" "$STAGE/$ORG/node.env" && echo "  WARNING: TIP_METRICS_TOKEN is a TEST-network token" >&2
+  fi
+else
+  cp -R "$PARTNER"/. "$STAGE/$ORG/"
+  for pat in "node.env" "NODE-KEY__*.tip.json" "ORG-IDENTITY__*.tip.json" "genesis.json" "README.md"; do
+    compgen -G "$STAGE/$ORG/$pat" >/dev/null \
+      || { echo "missing from bundle: $pat" >&2; exit 1; }
+  done
+fi
 
 ( cd "$STAGE" && 7zz a -tzip -mem=AES256 -p"$PASS" -bso0 -bsp0 "$ZIP" "$ORG" >/dev/null )
 chmod 600 "$ZIP"
@@ -55,13 +83,14 @@ chmod 600 "$ZIP"
 # rows rather than overwriting, and record the checksum to prove which archive
 # a given password belongs to.
 LOG="$BASE/ZIP-PASSWORDS.md"
-if [ -f "$LOG" ]; then
-  grep -q '^## Build log$' "$LOG" || printf '\n## Build log\n' >> "$LOG"
-  printf '\n- `%s`  %s  password `%s`  sha256 `%s`\n' \
-    "$(date '+%Y-%m-%d %H:%M %Z')" "$ORG" "$PASS" \
-    "$(shasum -a 256 "$ZIP" | cut -c1-16)" >> "$LOG"
-  chmod 600 "$LOG"
-fi
+# ALWAYS log: a console-only password is unrecoverable the moment the terminal
+# clears, and the zip with it. Create the log on first use.
+[ -f "$LOG" ] || printf '# Zip passwords , local record only, never commit or attach\n' > "$LOG"
+grep -q '^## Build log$' "$LOG" || printf '\n## Build log\n' >> "$LOG"
+printf '\n- `%s`  %s  password `%s`  sha256 `%s`\n' \
+  "$(date '+%Y-%m-%d %H:%M %Z')" "$ORG" "$PASS" \
+  "$(shasum -a 256 "$ZIP" | cut -c1-16)" >> "$LOG"
+chmod 600 "$LOG"
 
 echo
 echo "  zip      : $ZIP"
