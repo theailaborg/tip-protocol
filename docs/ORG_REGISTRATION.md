@@ -8,6 +8,34 @@ built from the company's registry details rather than a person's government ID.
 
 ## 1. What to ask the organization
 
+### Ready-to-send request
+
+Copy, fill the brackets, send. Item 2 is the India wording; for another country
+take the identifier from the table in section 2.
+
+> Hi [partner] team, we're ready to register [ORGANIZATION NAME] on TIP mainnet.
+> Since mainnet records are permanent and cannot be corrected, please confirm the
+> following from your official documents (not from memory):
+>
+> 1. Full legal name, exactly as registered
+> 2. CIN (21-char) or LLPIN (7-char), and which one it is
+> 3. Date of incorporation
+> 4. Country of registration
+> 5. Production node's static public IP (new host, not the testnet box)
+> 6. Domain the node will serve on (e.g. node.[partner].com). This gets
+>    published on-chain, so it must be the address you intend to keep
+> 7. Confirmation that inbound TCP 4000 and 4001 are open to the internet
+> 8. Ops contact (name + email) for node issues
+>
+> Once these arrive we'll register your org and node, and send the credentials
+> bundle.
+
+Items 5-8 apply when the organization will also run a node; drop them for an
+identity-only registration. The rest of this document explains what each answer
+must look like before you act on it.
+
+### The fields, and where they go
+
 Four fields, all on the certificate of incorporation. Asking for a copy of that
 certificate is usually the fastest route.
 
