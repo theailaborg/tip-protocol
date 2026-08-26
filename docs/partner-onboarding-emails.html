@@ -250,11 +250,13 @@ curl -s localhost:4000/v1/state-root</pre>
           <span class="ph" data-ph="ORG_TIP_ID">{{ORG_TIP_ID}}</span>. Signs content as
           <span class="ph" data-ph="PARTNER">{{PARTNER}}</span>. <b>Not</b> needed to run the node, so please
           keep it off the node host entirely, wherever you keep company signing material.</li>
-          <li><b>genesis.json</b> - the production genesis
-          (<span class="ph" data-ph="GENESIS">{{GENESIS}}</span>...). This is not the test genesis; do not mix
-          the two, and do not reuse your test data directory.</li>
           <li><b>README.md</b> - setup steps</li>
         </ul>
+
+        <p><b>About the genesis:</b> the repository you clone already contains the production genesis ,
+        do not replace it, and do not reuse your test data directory. After cloning, please verify it
+        starts with <b><span class="ph" data-ph="GENESIS">{{GENESIS}}</span></b>:</p>
+        <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"</pre>
 
         <p>To open the zip you need a tool that supports AES: 7-Zip on Windows, Keka or The Unarchiver on
         macOS. The built-in extractors on both do not.</p>

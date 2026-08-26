@@ -196,8 +196,15 @@ itself from whatever the registrations produced:
 ├── node.env                                   <- generated/<partner>/node/<slug>.env
 ├── NODE-KEY__tip-node-<id>.tip.json           <- generated/<partner>/node/
 ├── ORG-IDENTITY__id-<REGION>-<id>.tip.json    <- generated/<partner>/org/
-├── genesis.json                               <- the repo's genesis (the MAINNET genesis on the registration machine)
 └── README.md                                  <- the partner-root README
+```
+
+No genesis ships in the bundle: the repo the partner clones already carries the
+mainnet genesis. Their verification (and ours) is the hash, not a file copy:
+
+```bash
+python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"
+# must print the production genesis prefix , and they must never run npm run seed
 ```
 
 Anything absent is reported with a WARNING and skipped, so an org-only or

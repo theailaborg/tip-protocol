@@ -57,10 +57,8 @@ if [ -d "$PARTNER/org" ] || [ -d "$PARTNER/node" ]; then
   [ -n "$nkey" ] && cp "$nkey" "$STAGE/$ORG/NODE-KEY__$(basename "$nkey")" || missing="$missing node-key"
   [ -n "$okey" ] && cp "$okey" "$STAGE/$ORG/ORG-IDENTITY__$(basename "$okey")" || missing="$missing org-identity"
   [ -f "$PARTNER/README.md" ] && cp "$PARTNER/README.md" "$STAGE/$ORG/README.md"
-  # genesis comes from the repo this script lives in (the mainnet genesis on a
-  # correctly prepared registration machine); override with $GENESIS_FILE.
-  GEN="${GENESIS_FILE:-$(cd "$(dirname "$0")/.." && pwd)/genesis-data/genesis.json}"
-  [ -f "$GEN" ] && cp "$GEN" "$STAGE/$ORG/genesis.json" || missing="$missing genesis.json"
+  # No genesis in the bundle: the repo the partner clones already carries the
+  # mainnet genesis; shipping a copy is redundant and one more thing to drift.
   [ -n "$missing" ] && echo "  WARNING , not in this bundle:$missing" >&2
   # nothing sensitive at all -> refuse, an empty bundle helps nobody
   [ -z "$envf$nkey$okey" ] && { echo "no credentials found under $PARTNER/{org,node}" >&2; exit 1; }
