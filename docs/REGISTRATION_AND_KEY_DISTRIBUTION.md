@@ -6,8 +6,8 @@ node, build the credentials bundle, deliver keys, verify.
 
 **Read this first.** Mainnet records are permanent and uncorrectable. A wrong
 character in a registration mints a second, permanent identity that can never be
-reconciled with the real company. Nothing in section 3 onward is reversible, so
-every gate in section 1 must be green before you run anything.
+reconciled with the real company. Nothing in section 4 onward is reversible, so
+every gate in section 2 must be green before you run anything.
 
 Run everything from the designated registration machine, never from a shared or
 day-to-day development box: the commands below handle the founding VP key and
@@ -15,7 +15,7 @@ mint partner private keys.
 
 ---
 
-## 0. Prerequisites on the registration machine
+## 1. Prerequisites on the registration machine
 
 - [ ] Repo cloned at latest `main`, `npm install` completed (Node 22+)
 - [ ] The **mainnet founding VP key file** (`tip-vp-....tip.json`) present locally,
@@ -25,7 +25,7 @@ mint partner private keys.
 - [ ] The live mainnet `TIP_CLASSIFIER_KEY` and `TIP_METRICS_TOKEN` values available
       (from the production node configuration, not from any test environment)
 
-## 1. Gates , all must be true before anything is registered
+## 2. Gates , all must be true before anything is registered
 
 - [ ] Partner's company details received **in writing, from their official
       documents** (certificate of incorporation), not from memory or a web search
@@ -48,7 +48,7 @@ mint partner private keys.
 Flow: collect details → register org → register node → build bundle → deliver
 keys → partner boots → verify → monitor.
 
-## 2. Collect partner details
+## 3. Collect partner details
 
 Company details and the per-country registration identifier rules (which number
 to ask for, formats, what never to accept) live in
@@ -59,10 +59,13 @@ Infrastructure details to collect alongside:
 
 | ask | why |
 |---|---|
-| static public IP of the node host | we allow-list it; peers store it |
+| static public IP of the node host | the node's advertised address in its env; how peers dial it |
 | domain the node will serve on | published **on-chain** as their API endpoint; must be permanent |
 | confirmation TCP 4000 + 4001 are open | 4000 API, 4001 p2p; without 4001 they never fully join |
 | ops contact name + email | who we call when their node misbehaves |
+
+The mainnet node needs its **own host**: a partner already running a testnet
+node cannot reuse that box (same ports, different genesis).
 
 Ready-made request wording: `partner-onboarding-emails.html` in this directory.
 
@@ -70,7 +73,7 @@ Ready-made request wording: `partner-onboarding-emails.html` in this directory.
 send `DD-MM-YYYY`; convert carefully and confirm the conversion back to the
 partner if the day is 12 or lower (ambiguous either way).
 
-## 3. Register the organization
+## 4. Register the organization
 
 Commands, verification, and gotchas live in
 [`ORG_REGISTRATION.md`](./ORG_REGISTRATION.md) sections 3-5. Summary of the
@@ -127,7 +130,7 @@ non-negotiables:
 4. The org key file lands in `generated_orgs/<slug>-<short-id>/` at mode 0600.
    Leave it there for now; it is needed in step 4 (cosign) and step 5 (bundle).
 
-## 4. Register the node
+## 5. Register the node
 
 The node is registered *by us* but *operated by them*, and that claim is signed
 twice: the founding VP approves the node, and the **organization cosigns**,
@@ -187,9 +190,9 @@ The new node must appear with the partner's name and `status="active"` on both.
 Nothing on the partner's machine needs to be live yet , this step involves only
 our nodes.
 
-## 5. Build and deliver the credentials bundle
+## 6. Build and deliver the credentials bundle
 
-### 5.1 The bundle contents , assembled automatically
+### 6.1 The bundle contents , assembled automatically
 
 Point the bundler (5.3) at `generated/<partner>/` and it stages the deliverable
 itself from whatever the registrations produced:
@@ -216,7 +219,7 @@ build. The `NODE-KEY__` / `ORG-IDENTITY__` prefixes exist so the partner cannot
 confuse the two: the node key lives on the node host; the org identity stays
 **off** the node host entirely.
 
-### 5.2 Hand-fill the secrets in `node.env`
+### 6.2 Hand-fill the secrets in `node.env`
 
 The generator leaves these empty on purpose , edit
 `generated/<partner>/node/<slug>.env` **before** building the zip (the bundler
@@ -232,7 +235,7 @@ Confirm `TIP_API_ENDPOINT` and `TIP_PUBLIC_URL` carry their domain,
 `DB_PASSWORD` and `TIP_CORS_ORIGINS` are `CHANGE_ME` placeholders, and nothing
 else carries a live value.
 
-### 5.3 Build the encrypted zip
+### 6.3 Build the encrypted zip
 
 ```bash
 scripts/make-secure-bundle.sh generated/<partner> <OrgName>
@@ -244,7 +247,7 @@ next to the partner directory: every zip collects in a single **`deliveries/`**
 folder there, with the password log beside it , one place to look, outside any
 repo checkout, and `deliveries/` is gitignored as a backstop.
 
-### 5.4 Deliver
+### 6.4 Deliver
 
 - **The zip goes by email. The password goes by phone or WhatsApp. Never both
   in the same channel** , if the password rides with the archive, the
@@ -258,7 +261,7 @@ repo checkout, and `deliveries/` is gitignored as a backstop.
 
 Email wording: `partner-onboarding-emails.html`, mainnet card.
 
-## 6. Partner boots, we verify
+## 7. Partner boots, we verify
 
 Partner side: `DEPLOYMENT.md`, section *Production Federation Deploy (0 to
 live)*. The two classic stumbles are in the email template: the container runs
@@ -291,7 +294,7 @@ Then confirm their `api_endpoint` appears on-chain (their first boot announces
 it), and have them register one test content and check it reaches
 `prescan: completed`.
 
-## 7. After onboarding
+## 8. After onboarding
 
 - [ ] Add `<their-domain>` to external monitoring and the status page
 - [ ] Add their node to the production Prometheus scrape targets
@@ -382,4 +385,4 @@ rm -rf generated/pachyderm generated/deliveries generated/ZIP-PASSWORDS.md   # r
 
 What changes on mainnet, and nothing else: `--node-url https://node.theailab.org`,
 `--vp-file <mainnet VP key>`, verification against `node`/`node2.theailab.org`,
-and the env is hand-filled with production secrets before bundling (section 5.2).
+and the env is hand-filled with production secrets before bundling (section 6.2).
