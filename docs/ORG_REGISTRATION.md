@@ -76,6 +76,7 @@ node scripts/register-org.js \
   --reg-number 16846775 \
   --incorporated 2025-11-11 \
   --region GB \
+  --org-type private-limited-company \
   --node-url http://localhost:4000
 ```
 
@@ -89,6 +90,7 @@ node scripts/register-org.js \
   --reg-number 16846775 \
   --incorporated 2025-11-11 \
   --region GB \
+  --org-type private-limited-company \
   --node-url https://node.theailab.org \
   --vp-file path-to-vp-keys
 ```
@@ -113,9 +115,10 @@ than one node: they must agree.
 The script writes `generated_orgs/<slug>-<short-id>/<tip-id>.tip.json` at mode `0600`,
 containing both keys plus the registry inputs.
 
-Deliver it over a secure channel, never chat or email. Whoever holds that file can sign
-as the organization, so it should be treated like an SSH host key, stored at mode `0600`,
-and never committed.
+Whoever holds that file can sign as the organization, so it is treated like an SSH
+host key: stored at mode `0600`, never committed. Delivery is part of the partner
+credentials bundle , an AES-256 zip with the password sent over a separate channel;
+the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md` section 5.
 
 The private key is generated locally and never transmitted: registration sends only the
 public key. The planned VP-side page, where an organization generates its own keypair in
