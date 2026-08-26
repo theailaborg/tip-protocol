@@ -118,7 +118,7 @@ non-negotiables:
    curl -s "https://node2.theailab.org/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"org_type"'
    ```
 
-   `status` must be `active`, `tip_id_type` `organization`, `creator_name`
+   `status` must be `active`, `org_type` the expected legal form (the API does not return `tip_id_type`), `creator_name`
    exact.
 
 4. The org key file lands in `generated_orgs/<slug>-<short-id>/` at mode 0600.
