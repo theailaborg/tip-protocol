@@ -59,10 +59,13 @@ Infrastructure details to collect alongside:
 
 | ask | why |
 |---|---|
-| static public IP of the node host | we allow-list it; peers store it |
+| static public IP of the node host | the node's advertised address in its env; how peers dial it |
 | domain the node will serve on | published **on-chain** as their API endpoint; must be permanent |
 | confirmation TCP 4000 + 4001 are open | 4000 API, 4001 p2p; without 4001 they never fully join |
 | ops contact name + email | who we call when their node misbehaves |
+
+The mainnet node needs its **own host**: a partner already running a testnet
+node cannot reuse that box (same ports, different genesis).
 
 Ready-made request wording: `partner-onboarding-emails.html` in this directory.
 
