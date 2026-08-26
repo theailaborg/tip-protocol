@@ -34,9 +34,12 @@ mint partner private keys.
 - [ ] Partner's production host provisioned per `NODE_REQUIREMENTS.md`, with a
       **static** public IP
 - [ ] Inbound TCP **4000 and 4001** verified open from the public internet
-- [ ] Partner's node domain **already resolves** to their stated IP
-      (`dig +short <domain>`). The node verifies its own domain at first boot;
-      missing DNS means the on-chain endpoint announce fails
+- [ ] Partner's node domain resolves to their stated IP (`dig +short <domain>`)
+      , needed **by their first boot**, not for registration: the node probes
+      its own domain before announcing it on-chain. Booting without DNS only
+      fails the announce with a warning, recoverable later via
+      `POST /v1/node/endpoint/announce`, so registration may proceed while DNS
+      is pending
 - [ ] Ops contact (name + email) received and recorded somewhere durable
 - [ ] Any open security decisions recorded on their tracking issues
 - [ ] This is the partner's **production** onboarding , every value below must be
