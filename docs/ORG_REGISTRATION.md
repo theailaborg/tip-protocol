@@ -95,6 +95,25 @@ approval step does:
 
 ## 3. Register
 
+### Flag reference
+
+| flag | required | accepts | example |
+|---|---|---|---|
+| `--name` | yes | the full legal name, exactly as registered, quoted | `--name "AZLOGICS PRIVATE LIMITED"` |
+| `--reg-number` | yes | the country's accepted identifier from the table in §2, exact format, leading zeros kept | `--reg-number U72900MH2021PTC362851` |
+| `--incorporated` | yes | date of incorporation, `YYYY-MM-DD` only | `--incorporated 2021-06-28` |
+| `--region` | yes in practice | ISO-3166-1 alpha-2 country of incorporation; must be in the §2 scheme table or the run stops. Default `GB` , always pass it explicitly | `--region IN` |
+| `--org-type` | no | the legal form as the jurisdiction names it, freeform by design (forms differ per country), but must be 2-64 chars of lowercase letters, digits and hyphens. Common values: `private-limited-company`, `public-limited-company`, `llp`, `llc`, `gmbh`, `nonprofit` | `--org-type private-limited-company` |
+| `--node-url` | for mainnet | the node to register through. Default `http://localhost:4000` (local rehearsal) | `--node-url https://node.theailab.org` |
+| `--vp-file` | **for mainnet** | path to the mainnet founding VP `.tip.json`. When omitted the script picks up whatever VP sits in `genesis-data/backups`, which on a dev machine is the test VP , mainnet rejects it | `--vp-file <VP_KEY_FILE>` |
+| `--out-dir` | no | where the org key file is written. Default `generated_orgs/<slug>-<short-id>/` | `--out-dir /secure/azlogics` |
+| `--dry-run` | no | boolean, no value. Validates the identifier, builds the real proof, prints everything, registers nothing , always run this first | `--dry-run` |
+
+`--org-type` note: use lowercase-hyphen spelling of the form on the certificate
+(`Private Limited` → `private-limited-company`). Anything outside
+`a-z 0-9 -` or longer than 64 chars is rejected by the node with
+`org_type_invalid`.
+
 Rehearse on the local cluster first. Nothing about the flow differs except the target
 and the VP key, so a local run catches every input mistake for free.
 
