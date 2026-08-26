@@ -24,6 +24,21 @@ Worth telling them, since it pre-empts the obvious objection:
 > values are never published: only a hash goes on chain, so nobody can read your
 > registration details from the ledger.
 
+### Node details , when the organization will also run a node
+
+Ask in the same message, so registration is not blocked on a second round-trip:
+
+| ask | why |
+|---|---|
+| static public IP of the node host | the node's advertised address in its env; how peers dial it |
+| domain the node will serve on | published **on-chain** as their API endpoint; must be the address they intend to keep |
+| confirmation TCP 4000 and 4001 are open to the internet | 4000 API, 4001 p2p; without 4001 they never fully join |
+| ops contact name + email | who we call when their node misbehaves |
+
+The mainnet node needs its **own host**: a partner already running a testnet node
+cannot reuse that box (same ports, different genesis). Ask for the number and the
+identifier type together (a CIN reply to an LLPIN question is the classic mix-up).
+
 ## 2. Which registration number, per country
 
 The dedup hash is `Poseidon(reg_no, incorporation_date, country)`. The circuit cannot
