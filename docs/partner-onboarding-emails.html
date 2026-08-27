@@ -39,6 +39,13 @@
           margin: 0 0 26px; overflow: hidden; }
   .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
          padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  summary.bar { cursor: pointer; list-style: none; }
+  summary.bar::-webkit-details-marker { display: none; }
+  summary.bar > div { flex: 1; }
+  summary.bar::before { content: "\25B8"; color: var(--muted); margin-right: 2px;
+                        transition: transform .15s; }
+  details[open] > summary.bar::before { transform: rotate(90deg); }
+  details:not([open]) > summary.bar { border-bottom: none; }
   .bar h2 { font-size: 14px; margin: 0; font-weight: 600; }
   .subj { font-size: 13px; color: var(--muted); margin: 3px 0 0; }
   button { font: 600 13px/1 inherit; background: var(--accent); color: #fff; border: 0;
@@ -84,20 +91,20 @@
       <div><label for="f-COUNTRY">Country</label>
            <input id="f-COUNTRY" data-ph="COUNTRY" placeholder="United Kingdom"></div>
       <div><label for="f-GENESIS">Mainnet genesis prefix</label>
-           <input id="f-GENESIS" data-ph="GENESIS" placeholder="d4666ce1"></div>
+           <input id="f-GENESIS" data-ph="GENESIS" value="d4666ce12479a5bc" placeholder="d4666ce12479a5bc"></div>
     </div>
     <p class="hint">Only <b>Partner name</b> matters for the test email. The rest fill in the mainnet one.</p>
   </div>
 
   <!-- ─────────────── TEST NETWORK ─────────────── -->
-  <div class="card">
-    <div class="bar">
+  <details class="card">
+    <summary class="bar">
       <div>
         <h2>1. Test network onboarding</h2>
         <p class="subj">Subject: TIP test network: your node credentials and setup steps</p>
       </div>
-      <button onclick="copyEmail('email-test', this)">Copy email</button>
-    </div>
+      <button onclick="event.preventDefault();event.stopPropagation();copyEmail('email-test', this)">Copy email</button>
+    </summary>
     <div class="body" id="email-test">
       <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
         <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
@@ -213,17 +220,17 @@ curl -s localhost:4000/v1/state-root</pre>
         <p>Thanks,<br>The AI Lab Team</p>
       </div>
     </div>
-  </div>
+  </details>
 
   <!-- ─────────────── MAINNET ─────────────── -->
-  <div class="card">
-    <div class="bar">
+  <details class="card">
+    <summary class="bar">
       <div>
         <h2>2. Mainnet onboarding</h2>
         <p class="subj">Subject: TIP mainnet: your production node credentials</p>
       </div>
-      <button onclick="copyEmail('email-main', this)">Copy email</button>
-    </div>
+      <button onclick="event.preventDefault();event.stopPropagation();copyEmail('email-main', this)">Copy email</button>
+    </summary>
     <p class="warn">Send only after their test node has run and converged, and after their real registration
        details are confirmed in writing. Registration details go on chain and cannot be edited.</p>
     <div class="body" id="email-main">
@@ -346,7 +353,7 @@ curl -s localhost:4000/v1/state-root</pre>
         <p>Thanks,<br>The AI Lab Team</p>
       </div>
     </div>
-  </div>
+  </details>
 </div>
 
 <script>
