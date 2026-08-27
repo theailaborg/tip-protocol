@@ -370,7 +370,8 @@ function apply(input) {
 }
 FIELDS.forEach((i) => {
   const saved = localStorage.getItem("tip-onboard-" + i.dataset.ph);
-  if (saved) i.value = saved;
+  // GENESIS is a chain constant carried in the markup , never restored over.
+  if (saved && i.dataset.ph !== "GENESIS") i.value = saved;
   apply(i);
   i.addEventListener("input", () => apply(i));
 });
