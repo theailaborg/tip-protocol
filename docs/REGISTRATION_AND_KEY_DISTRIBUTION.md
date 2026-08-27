@@ -17,7 +17,8 @@ mint partner private keys.
 
 ## 1. Prerequisites on the registration machine
 
-- [ ] Repo cloned at latest `main`, `npm install` completed (Node 22+)
+- [ ] Repo cloned at latest `main`, `npm install` run at the **repo root** (Node 22+;
+      workspaces hoist every dependency there , installing inside `node/` is wrong)
 - [ ] The **mainnet founding VP key file** (`tip-vp-....tip.json`) present locally,
       readable only by you (`chmod 600`). Referred to below as `<VP_KEY_FILE>`
 - [ ] Network access to `https://node.theailab.org`
@@ -90,6 +91,7 @@ non-negotiables:
      --incorporated YYYY-MM-DD \
      --region <ISO-2> \
      --org-type <legal-form, e.g. private-limited-company> \
+     --partner <partner-slug> \
      --dry-run
    ```
 
@@ -109,6 +111,7 @@ non-negotiables:
      --incorporated YYYY-MM-DD \
      --region <ISO-2> \
      --org-type <legal-form> \
+     --partner <partner-slug> \
      --node-url https://node.theailab.org \
      --vp-file <VP_KEY_FILE>
    ```
@@ -127,8 +130,8 @@ non-negotiables:
    `status` must be `active`, `org_type` the expected legal form (the API does not return `tip_id_type`), `creator_name`
    exact.
 
-4. The org key file lands in `generated_orgs/<slug>-<short-id>/` at mode 0600.
-   Leave it there for now; it is needed in step 4 (cosign) and step 5 (bundle).
+4. The org key file lands in `generated/<partner-slug>/org/` at mode 0600.
+   Leave it there for now; it is needed in section 5 (cosign) and section 6 (bundle).
 
 ## 5. Register the node
 
@@ -146,6 +149,7 @@ node scripts/register-node.js \
   --operator-key-file generated/<partner-slug>/org/<org-tip-id>.tip.json \
   --vp-file <mainnet VP .tip.json> \
   --production \
+  --port 4000 \
   --api-endpoint "https://<their-node-domain>" \
   --public-url "https://<their-node-domain>" \
   --public-ip <their-static-ip>
@@ -156,15 +160,16 @@ Flag by flag:
 | flag | meaning |
 |---|---|
 | `--operated-by` | the org identity accountable for this node |
-| `--operator-key-file` | the org's key from step 3 , produces the cosignature |
+| `--operator-key-file` | the org's key from section 4 , produces the cosignature |
 | `--vp-file` | the founding VP key that signs the council approval. Same rule as register-org: without it the script uses the local/test VP from `genesis-data/backups` and mainnet rejects the signature |
 | `--production` | `NODE_ENV=production` in the generated env; CORS must be filled by the partner, never `*` |
+| `--port` | the partner's node serves API on 4000 (p2p follows on 4001); the script default is 4100, which is for extra local nodes |
 | `--api-endpoint` | their domain; the node announces it **on-chain** at first boot after probing that the URL answers `/health` as itself |
 | `--public-url` / `--public-ip` | what the API surfaces / what peers dial back |
 
 The script generates the env **only** from `.env.example` plus these flags , it
 reads nothing from your shell, so nothing from the registration machine can leak
-into the partner's file. Secrets are added by hand in step 5.
+into the partner's file. Secrets are added by hand in section 6.2.
 
 Pass the same `--partner <slug>` to both the org and node runs and everything
 lands in one folder:
@@ -196,7 +201,7 @@ our nodes.
 
 ### 6.1 The bundle contents , assembled automatically
 
-Point the bundler (5.3) at `generated/<partner>/` and it stages the deliverable
+Point the bundler (6.3) at `generated/<partner>/` and it stages the deliverable
 itself from whatever the registrations produced:
 
 ```
@@ -230,8 +235,9 @@ warns on empty values but does not fail). Fill in:
 - `TIP_CLASSIFIER_KEY` , the live production classifier key
 - `TIP_METRICS_TOKEN` , the production metrics token (a 64-char random value; a
   token starting `certtest` is a test-network token and must never appear here)
-- `TIP_BOOTSTRAP_PEERS` , a current multiaddr from a non-seed production node
-  (`curl -s https://node2.theailab.org/health` → `data.p2p.bootstrap_addr`)
+- `TIP_BOOTSTRAP_PEERS` , **verify, usually auto-filled**: the generator reads it
+  from the `--node-url` target's `/health`. If the run warned it could not, fill
+  it from `curl -s https://node2.theailab.org/health` → `data.p2p.bootstrap_addr`
 
 Confirm `TIP_API_ENDPOINT` and `TIP_PUBLIC_URL` carry their domain,
 `DB_PASSWORD` and `TIP_CORS_ORIGINS` are `CHANGE_ME` placeholders, and nothing
@@ -243,7 +249,7 @@ else carries a live value.
 scripts/make-secure-bundle.sh generated/<partner> <OrgName>
 ```
 
-One AES-256 zip containing all five files, a fresh 20-character password per
+One AES-256 zip containing all four files, a fresh 20-character password per
 run, printed once and appended to a `ZIP-PASSWORDS.md` build log. Both land
 next to the partner directory: every zip collects in a single **`deliveries/`**
 folder there, with the password log beside it , one place to look, outside any
@@ -369,6 +375,7 @@ node scripts/register-node.js \
   --partner pachyderm \
   --operator-key-file generated/pachyderm/org/<org-tip-id>.tip.json \
   --production \
+  --port 4000 \
   --api-endpoint "https://tipnode.pachyderm.example" \
   --public-url "https://tipnode.pachyderm.example" \
   --public-ip 203.0.113.10
