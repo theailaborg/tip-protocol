@@ -46,7 +46,9 @@
   @media (prefers-color-scheme: dark) { button { color: #16181c; } }
   button:hover { filter: brightness(1.08); }
   button.done { background: var(--ok); }
-  .body { padding: 20px 24px; }
+  /* The email preview is always a white sheet: the copied markup carries
+     inline dark-on-white colors for Gmail, so it must not sit on a dark bg. */
+  .body { padding: 20px 24px; background: #fff; }
   .warn { font-size: 13px; color: var(--muted); padding: 10px 24px 0; }
   .alert { font-size: 14px; margin: 0 0 22px; padding: 11px 14px; border-radius: 8px;
            background: rgba(217,48,37,.10); border: 1px solid rgba(217,48,37,.45); }
