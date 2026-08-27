@@ -19,6 +19,9 @@
  *   --port 4100                  API port for the new node (default: 4100)
  *   --p2p-port 4101              libp2p port for the new node (default: api-port + 1)
  *   --public-ip 127.0.0.1        Publicly-reachable IP (default: 127.0.0.1)
+ *   --vp-file PATH               Founding VP .tip.json. Defaults to the VP in
+ *                                genesis-data/backups (the LOCAL/TEST VP);
+ *                                pass the mainnet VP explicitly for mainnet.
  *   --db-name tip_node2          Per-node DB name (default: tip_protocol)
  *   --db-user tip_node2          Per-node DB user (default: tip; Oracle nodes need tip_node2/3/4)
  *   --db-host postgres           DB host (default: postgres)
@@ -112,6 +115,7 @@ const partnerSlug = getArg("--partner", null);
 // identity cosigns the same bytes the founding VP signs.
 const operatedBy = getArg("--operated-by", null);
 const operatorKeyFile = getArg("--operator-key-file", null);
+const vpFile = getArg("--vp-file", null);
 const apiPort = parseInt(getArg("--port", "4100"), 10);   // API port for the new node
 const p2pPort = parseInt(getArg("--p2p-port", String(apiPort + 1)), 10);   // libp2p port; convention is API+1
 const publicIp = getArg("--public-ip", "127.0.0.1");      // override for prod / cloud deployments
@@ -217,13 +221,21 @@ async function main() {
   console.log(`${T.bold}  TIP Protocol — Register New Node${T.reset}`);
   console.log();
 
-  // 1. Load the founding VP keypair (signs the council_signature) from its
-  // backup .tip.json, the single on-disk key source.
+  // 1. Load the founding VP keypair (signs the council_signature). Defaults to
+  // genesis-data/backups, which on a dev machine is the LOCAL/TEST VP: mainnet
+  // runs must pass --vp-file explicitly, same as register-org.js.
   let vpEntry;
-  try { vpEntry = loadVpBackup(); }
-  catch (e) { fail(e.message); process.exit(1); }
+  if (vpFile) {
+    try { vpEntry = JSON.parse(fs.readFileSync(path.resolve(vpFile), "utf8")); }
+    catch (e) { fail(`cannot read ${vpFile}: ${e.message}`); process.exit(1); }
+    if (!vpEntry.private_key || !vpEntry.public_key) { fail(`${vpFile} is not a VP keypair file`); process.exit(1); }
+  } else {
+    try { vpEntry = loadVpBackup(); }
+    catch (e) { fail(e.message); process.exit(1); }
+    info("no --vp-file given, using the VP in genesis-data/backups (local/test VP)");
+  }
   const vpKeys = { publicKey: vpEntry.public_key, privateKey: vpEntry.private_key };
-  ok("Founding VP keys loaded");
+  ok(`Founding VP keys loaded: ${vpEntry.vp_id || "(no vp_id field)"}`);
 
   // 2. Check target node is healthy
   info(`Target node: ${nodeUrl}`);
@@ -253,6 +265,12 @@ async function main() {
     process.exit(1);
   }
   ok(`Founding VP: ${foundingVpId}`);
+  // The council signature only verifies if the loaded key IS the chain's
+  // founding VP; a mismatch would 403 server-side after signing, so stop here.
+  if (vpEntry.vp_id && vpEntry.vp_id !== foundingVpId) {
+    fail(`loaded VP key is ${vpEntry.vp_id} but the chain's founding VP is ${foundingVpId} , pass the right --vp-file`);
+    process.exit(1);
+  }
 
   // 4. Initialize crypto and generate keypair
   await initCrypto();

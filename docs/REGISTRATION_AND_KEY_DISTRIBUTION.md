@@ -144,6 +144,7 @@ node scripts/register-node.js \
   --node-url https://node.theailab.org \
   --operated-by "tip://id/<REGION>-<org-id>" \
   --operator-key-file generated/<partner-slug>/org/<org-tip-id>.tip.json \
+  --vp-file <mainnet VP .tip.json> \
   --production \
   --api-endpoint "https://<their-node-domain>" \
   --public-url "https://<their-node-domain>" \
@@ -156,6 +157,7 @@ Flag by flag:
 |---|---|
 | `--operated-by` | the org identity accountable for this node |
 | `--operator-key-file` | the org's key from step 3 , produces the cosignature |
+| `--vp-file` | the founding VP key that signs the council approval. Same rule as register-org: without it the script uses the local/test VP from `genesis-data/backups` and mainnet rejects the signature |
 | `--production` | `NODE_ENV=production` in the generated env; CORS must be filled by the partner, never `*` |
 | `--api-endpoint` | their domain; the node announces it **on-chain** at first boot after probing that the URL answers `/health` as itself |
 | `--public-url` / `--public-ip` | what the API surfaces / what peers dial back |
