@@ -30,6 +30,7 @@ const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, mldsaSign, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
 const { nowMs } = require(path.join(SHARED, "time"));
+const { MEDIA_LIMITS } = require(path.join(SHARED, "constants"));
 const { createMediaStorage } = require(path.join(SRC, "services/media-storage"));
 const { createMediaService } = require(path.join(SRC, "services/media-service"));
 const mediaAccessSchema = require(path.join(SRC, "schemas/media-access"));
@@ -253,13 +254,16 @@ describe("POST /v1/media/upload — body-parser size cap", () => {
     const identity = { tip_id: "tip://id/US-5555555555555555", public_key: kp.publicKey, status: "active" };
     const root = await _scratch();
     const storage = createMediaStorage({ backend: "fs", fsPath: root });
-    const service = createMediaService({ storage, dag: _accessDag({ identity, content: null }) });
+    const service = createMediaService({
+      storage, dag: _accessDag({ identity, content: null }),
+      mediaLimits: { ...MEDIA_LIMITS, max_image_bytes: 64 * 1024 },
+    });
     const app = _makeApp({ mediaService: service });
 
-    // Real PNG magic + just over the genesis image cap: the streaming
+    // Real PNG magic + just over this node's image cap: the streaming
     // route's mid-flight gauge must abort with 413 once the cap is crossed.
     const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    const big = Buffer.concat([PNG_MAGIC, Buffer.alloc(PC.CONTENT_LIMITS.IMAGE_MAX_BYTES, 1)]);
+    const big = Buffer.concat([PNG_MAGIC, Buffer.alloc(64 * 1024, 1)]);
     const res = await request(app)
       .post("/v1/media/upload")
       .set("Content-Type", "application/octet-stream")

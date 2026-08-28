@@ -127,11 +127,11 @@ function _deferred() {
 }
 
 async function _pollUntil(fx, sessionId, states, timeoutMs = 3000) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = nowMs() + timeoutMs;
   while (true) {
     const st = await fx.svc.status(sessionId);
     if (states.includes(st.state)) return st;
-    if (Date.now() > deadline) throw new Error(`session ${sessionId} stuck in ${st.state}`);
+    if (nowMs() > deadline) throw new Error(`session ${sessionId} stuck in ${st.state}`);
     await new Promise(r => setTimeout(r, 10));
   }
 }
