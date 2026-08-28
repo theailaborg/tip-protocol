@@ -252,13 +252,21 @@ Manually verify a content record (jury-level participants only).
 Media bytes are content-addressed (`media_id = SHAKE-256(bytes)`), stored off-chain per node, and access-controlled by adjudication role. Only the content-hash references live on chain. See [`docs/user-journeys`](user-journeys/) for the role-access model.
 
 #### `POST /v1/media/upload`
-Upload one file. Body is the raw bytes (`Content-Type: application/octet-stream`), one file per call, streamed.
+Single-request upload for `fs`-backed nodes (dev/test). Body is the raw bytes (`Content-Type: application/octet-stream`), one file per call, streamed. Every federation node stores media in S3 and answers `410 use_multipart` here; use the presigned multipart flow below.
 
 **Headers:** `X-Media-Mime`, `X-Signer-TipId`, `X-Timestamp` (epoch ms, 5-min window), `X-Signer-Signature` (ML-DSA over `MEDIA_UPLOAD:{shake256(bytes)}:{mime}:{timestamp}:{signer_tip_id}`).
 
 **Response 201:** `{ media_id, content_hash, mime, size, uploaded_at, signer_tip_id }`. The `mime` is SERVER-DETECTED from the file's magic bytes and is authoritative, use it (not your own label) when registering. Identical bytes always return the same `media_id` (dedup).
 
-**Errors:** `400` timestamp_drift / bytes_required; `403` signature_invalid; `413` file_too_large (aborts mid-stream, sends `Connection: close`); `415` mime_disabled / format_unsupported.
+**Errors:** `400` timestamp_drift / bytes_required; `403` signature_invalid; `410` use_multipart (S3-backed node); `413` file_too_large (aborts mid-stream, sends `Connection: close`); `415` mime_disabled / format_unsupported.
+
+#### Presigned multipart upload (S3-backed nodes)
+The client PUTs parts straight to S3 with presigned URLs; the node never proxies the bytes and nothing touches node disk. Per-mime size caps are node-local (defaults: video 15 GiB, audio 1 GiB, image 1 GiB; `GET /health` reports them as `media_limits`).
+
+1. `POST /v1/media/upload-init` body `{ mime, size, content_hash, signer_tip_id, timestamp, signature }`, signature over the same `MEDIA_UPLOAD:{content_hash}:{mime}:{timestamp}:{signer_tip_id}` challenge; `part_size` is optional, the node sizes parts adaptively. **201** `{ session_id, part_size, part_count, parts: [{ part_number, url }], expires_at }`. Errors: `413` file_too_large / too_many_parts, `415` mime_disabled.
+2. `PUT` each part's bytes to its `url` and keep the returned `ETag`. An expired URL answers `403`; fetch fresh ones from `GET /v1/media/upload-status/:session_id`, which returns `{ state: "uploading", part_count, uploaded_parts, missing_parts, parts, expires_at }`.
+3. `POST /v1/media/upload-complete/:session_id` body `{ signer_tip_id, timestamp, signature, parts: [{ part_number, etag }] }`, signature over `MEDIA_UPLOAD_COMPLETE:{session_id}:{timestamp}:{signer_tip_id}`. The node assembles the object, re-reads it from S3 to verify `content_hash` and the detected mime, then promotes it. **201** with the same descriptor as the single-request upload when that finishes within 60 s; otherwise **202** `{ state: "finalizing", session_id, poll_after_ms }` and the client polls `upload-status` until `state` is `complete` (`result` holds the descriptor) or `failed` (`error: { code, status, message }`). The outcome stays readable for one hour; repeating `upload-complete` on a finished session returns the stored outcome. Errors: `400` size_mismatch / hash_mismatch / assemble_failed, `403` signer_mismatch / signature_invalid, `404` session_not_found, `415` mime_disabled / format_unsupported.
+4. `POST /v1/media/upload-abort/:session_id`, signature over `MEDIA_UPLOAD_ABORT:{session_id}:{timestamp}:{signer_tip_id}`, cancels an upload that is still `uploading`; `409` while finalizing.
 
 #### `GET /v1/content/:ctid/media/:idx`
 Fetch media bytes. Role-gated, signed. The public cannot fetch bytes (only the metadata on the content record).

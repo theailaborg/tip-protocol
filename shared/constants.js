@@ -724,13 +724,35 @@ const TX_REJECTION_REASON = Object.freeze({
   TX_DECODE_FAILED: "tx_decode_failed",
 });
 
-// ─── Media size limits (defaults — node config can override via env) ─────────
+// ─── Media size limits (node-local; TIP_MAX_*_BYTES env overrides) ───────────
+// Operator storage policy, not protocol: media bytes live only on the receiving
+// node and never enter consensus, so nodes may differ. Genesis content_limits
+// stays the founding record until a PROTOCOL_PARAM_UPDATE tx exists.
 const MEDIA_LIMITS = Object.freeze({
-  max_video_bytes: 5 * 1024 * 1024 * 1024,   // 5 GB
-  max_image_bytes: 50 * 1024 * 1024,          // 50 MB
-  max_audio_bytes: 500 * 1024 * 1024,         // 500 MB
+  max_video_bytes: 15 * 1024 * 1024 * 1024,  // 15 GiB
+  max_image_bytes: 1024 * 1024 * 1024,       // 1 GiB
+  max_audio_bytes: 1024 * 1024 * 1024,       // 1 GiB
   max_text_bytes: 10 * 1024 * 1024,          // 10 MB
 });
+
+// S3 rejects a single CopyObject over 5 GB; a bigger staged object is promoted
+// with a server-side multipart copy in S3_COPY_PART_BYTES ranges.
+const S3_SINGLE_COPY_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+const S3_COPY_PART_BYTES = 1024 * 1024 * 1024;
+const S3_COPY_CONCURRENCY = 4;
+
+// Chunked upload finalize (re-hash from S3 + promote) outlives a proxied HTTP
+// round-trip for large files: complete() answers within SYNC_WAIT or returns
+// 202 and the client polls status() until the persisted outcome appears.
+const UPLOAD_SESSION_STATE = Object.freeze({
+  UPLOADING: "uploading",
+  FINALIZING: "finalizing",
+  COMPLETE: "complete",
+  FAILED: "failed",
+});
+const CHUNKED_COMPLETE_SYNC_WAIT_MS = 60_000;  // under Cloudflare's 100 s origin timeout
+const CHUNKED_STATUS_POLL_MS = 5_000;
+const CHUNKED_RESULT_TTL_MS = 60 * 60_000;     // finished session kept for pickup
 
 // ─── Score display modes (v2 FIX-06) ─────────────────────────────────────────
 const SCORE_DISPLAY = Object.freeze({
@@ -1017,6 +1039,13 @@ module.exports = {
   SCORE_DISPLAY,
   JURISDICTION_TIERS,
   MEDIA_LIMITS,
+  S3_SINGLE_COPY_MAX_BYTES,
+  S3_COPY_PART_BYTES,
+  S3_COPY_CONCURRENCY,
+  UPLOAD_SESSION_STATE,
+  CHUNKED_COMPLETE_SYNC_WAIT_MS,
+  CHUNKED_STATUS_POLL_MS,
+  CHUNKED_RESULT_TTL_MS,
   HTTP_HEADERS,
   API_PATHS,
   PROTOCOL,

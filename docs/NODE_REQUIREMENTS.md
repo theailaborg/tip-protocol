@@ -17,7 +17,7 @@ traffic.
 | Disk | 20 GB gp3 | 8 GB volumes caused four disk-full incidents in two days of testing. Baseline (OS + images + WAL) is ~4.5 GB; chain data grows ~25 KB per registration. |
 | Runtime | Node.js 24+ | Native ML-DSA verify via OpenSSL 3.5 (0.25 ms/verify). Node 22 works but verifies through the JS fallback at ~5 ms, dropping the sustained ceiling from ~40 to ~30 reg/s. |
 | Software | Docker + Compose, postgres 16 | The shipped compose stack. |
-| Media storage | S3 bucket + KMS key (prod) | `TIP_MEDIA_BACKEND=s3` with `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`, `TIP_MEDIA_S3_KMS_KEY_ID` and scoped IAM credentials. Media bytes live off-node (presigned upload/download), so media volume does not count against node disk. Dev/test can use `TIP_MEDIA_BACKEND=fs`, which DOES consume node disk. |
+| Media storage | S3 bucket + KMS key (prod) | `TIP_MEDIA_BACKEND=s3` with `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`, `TIP_MEDIA_S3_KMS_KEY_ID` and scoped IAM credentials. Media bytes live off-node (presigned upload/download), so media volume does not count against node disk. Dev/test can use `TIP_MEDIA_BACKEND=fs`, which DOES consume node disk. On S3-backed nodes the single-request `POST /v1/media/upload` answers `410`, so uploads never spool to node disk; per-mime caps default to 15 GiB video / 1 GiB audio / 1 GiB image (`TIP_MAX_*_BYTES`). |
 
 Capacity at minimum spec: ~15 reg/s with flat latencies (submit p95 under
 400 ms, cross-node commit p50 ~2.7 s), ~40 reg/s sustained maximum, 60+/s

@@ -448,6 +448,25 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(got.completed_size).toBe(1024);
   });
 
+  test("updateUploadSession persists finalize state + result; listUploadSessionsByState finds it", async () => {
+    const dag = await makeDag();
+    const s = uploadSession(uniq("session"));
+    dag.createUploadSession(s);
+    expect(dag.getUploadSession(s.session_id).state).toBe("uploading");
+    expect(dag.getUploadSession(s.session_id).result).toBeNull();
+
+    dag.updateUploadSession(s.session_id, { state: "finalizing" });
+    expect(dag.listUploadSessionsByState("finalizing").map(x => x.session_id)).toContain(s.session_id);
+
+    const updated = dag.updateUploadSession(s.session_id, { state: "complete", result: { media_id: "m1", size: 12345 } });
+    expect(updated.state).toBe("complete");
+    const got = dag.getUploadSession(s.session_id);
+    expect(got.state).toBe("complete");
+    expect(got.result).toEqual({ media_id: "m1", size: 12345 });
+    expect(dag.listUploadSessionsByState("finalizing").map(x => x.session_id)).not.toContain(s.session_id);
+    expect(dag.listUploadSessionsByState("complete").map(x => x.session_id)).toContain(s.session_id);
+  });
+
   test("deleteUploadSession removes the session", async () => {
     const dag = await makeDag();
     const s = uploadSession(uniq("session"));

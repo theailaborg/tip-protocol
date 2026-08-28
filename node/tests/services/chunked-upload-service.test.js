@@ -22,6 +22,7 @@ const { nowMs } = require(path.join(SHARED, "time"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createChunkedUploadService } = require(path.join(SRC, "services/chunked-upload-service"));
 const mediaUploadSchema = require(path.join(SRC, "schemas/media-upload"));
+const { MEDIA_LIMITS, UPLOAD_SESSION_STATE } = require(path.join(SHARED, "constants"));
 const PC = require(path.join(SHARED, "protocol-constants"));
 const { getGenesisPayload } = require(path.join(SRC, "genesis"));
 
@@ -66,6 +67,8 @@ function _fakeStorage() {
   const multiparts = new Map();  // uploadId -> { key, parts: Map(n -> Buffer) }
   const aborted = [];
   let seq = 0;
+  let gate = null;               // when set, getObjectStream waits on it (slow re-hash)
+  let assembled = 0;
   return {
     backend: "s3",
     async createMultipartUpload(sessionId) {
@@ -80,16 +83,20 @@ function _fakeStorage() {
       return mp ? [...mp.parts.entries()].map(([n, b]) => ({ part_number: n, etag: `"e${n}"`, size: b.length })) : [];
     },
     async completeMultipartUpload(uploadId, key, parts) {
+      assembled += 1;
       const mp = multiparts.get(uploadId);
       const ordered = [...parts].sort((a, b) => a.part_number - b.part_number);
       objects.set(key, Buffer.concat(ordered.map(p => mp.parts.get(p.part_number) || Buffer.alloc(0))));
       return { completed: true };
     },
     async getObjectStream(key) {
+      if (gate) await gate;
       const buf = objects.get(key);
       if (!buf) throw new Error(`no object at ${key}`);
       return { stream: (async function* () { yield buf; })(), size: buf.length };
     },
+    _setGate(p) { gate = p; },
+    _assembledCount() { return assembled; },
     async copyToFinal(tmpKey, contentHash) {
       objects.set(`media/${contentHash}`, objects.get(tmpKey));
       objects.delete(tmpKey);
@@ -104,13 +111,37 @@ function _fakeStorage() {
 
 const TIP = "tip://id/US-aaaaaaaaaaaaaaaa";
 
-function _setup() {
+function _setup(opts = {}) {
   const dag = initDAG({ dbPath: ":memory-test:" });
   const kp = generateMLDSAKeypair();
   _seedIdentity(dag, TIP, kp.publicKey);
   const storage = _fakeStorage();
-  const svc = createChunkedUploadService({ storage, dag, log: { info() {}, warn() {} } });
+  const svc = createChunkedUploadService({ storage, dag, log: { info() {}, warn() {} }, ...opts });
   return { dag, kp, storage, svc };
+}
+
+function _deferred() {
+  let resolve;
+  const promise = new Promise(r => { resolve = r; });
+  return { promise, resolve };
+}
+
+async function _pollUntil(fx, sessionId, states, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const st = await fx.svc.status(sessionId);
+    if (states.includes(st.state)) return st;
+    if (Date.now() > deadline) throw new Error(`session ${sessionId} stuck in ${st.state}`);
+    await new Promise(r => setTimeout(r, 10));
+  }
+}
+
+function _completeArgs(fx, sessionId, parts) {
+  const ts = nowMs();
+  return {
+    signer_tip_id: TIP, timestamp: ts, parts,
+    signature: _signAction("MEDIA_UPLOAD_COMPLETE", sessionId, ts, TIP, fx.kp.privateKey),
+  };
 }
 
 // Drive init -> put parts -> return everything needed to complete.
@@ -161,7 +192,7 @@ describe("presigned chunked upload — init", () => {
   test("init rejects a file over the family size cap (413)", async () => {
     const fx = _setup();
     const contentHash = "a".repeat(64);
-    const size = mediaUploadSchema.limitForDetectedMime("image/png") + 1;
+    const size = mediaUploadSchema.limitForDetectedMime("image/png", MEDIA_LIMITS) + 1;
     const ts = nowMs();
     await expect(fx.svc.init({
       mime: "image/png", size, content_hash: contentHash,
@@ -253,9 +284,11 @@ describe("presigned chunked upload — complete", () => {
     expect(out.media_id).toBe(contentHash);
     expect(out.mime).toBe("image/png");
     expect(out.size).toBe(file.length);
-    // Real bytes ended up at the final key; session gone.
+    // Real bytes ended up at the final key; the outcome stays on the session for pickup.
     expect(fx.storage._objects.get(`media/${contentHash}`).equals(file)).toBe(true);
-    expect(fx.dag.getUploadSession(init.session_id)).toBeNull();
+    const done = fx.dag.getUploadSession(init.session_id);
+    expect(done.state).toBe(UPLOAD_SESSION_STATE.COMPLETE);
+    expect(done.result.media_id).toBe(contentHash);
   });
 
   test("rejects when uploaded bytes do not match the signed content_hash, and drops the tmp object", async () => {
@@ -275,7 +308,9 @@ describe("presigned chunked upload — complete", () => {
     })).rejects.toMatchObject({ status: 400, code: "hash_mismatch" });
     expect(fx.storage._objects.has(`media/${declaredHash}`)).toBe(false); // never promoted
     expect(fx.storage._objects.has(session.s3_key)).toBe(false);          // tmp dropped
-    expect(fx.dag.getUploadSession(init.session_id)).toBeNull();
+    const failed = fx.dag.getUploadSession(init.session_id);
+    expect(failed.state).toBe(UPLOAD_SESSION_STATE.FAILED);
+    expect(failed.result.code).toBe("hash_mismatch");
   });
 
   test("stores the DETECTED mime, not the declared one — mislabel corrected (H4)", async () => {
@@ -363,9 +398,152 @@ describe("presigned chunked upload — status/resume", () => {
     });
     // upload nothing yet
     const st = await fx.svc.status(init.session_id);
+    expect(st.state).toBe(UPLOAD_SESSION_STATE.UPLOADING);
     expect(st.part_count).toBe(init.part_count);
     expect(st.uploaded_parts).toEqual([]);
     expect(st.missing_parts.length).toBe(init.part_count);
     expect(st.parts.length).toBe(init.part_count); // fresh URLs for the missing
+  });
+});
+
+describe("presigned chunked upload: node-local caps", () => {
+  test("a service built with a smaller image cap rejects init at 413", async () => {
+    const fx = _setup({ mediaLimits: { ...MEDIA_LIMITS, max_image_bytes: 1024 } });
+    const contentHash = "a".repeat(64);
+    const ts = nowMs();
+    await expect(fx.svc.init({
+      mime: "image/png", size: 2048, content_hash: contentHash,
+      signer_tip_id: TIP, signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey), timestamp: ts,
+    })).rejects.toMatchObject({ status: 413, code: "file_too_large" });
+  });
+
+  test("a video cap of 0 disables the family at init (415)", async () => {
+    const fx = _setup({ mediaLimits: { ...MEDIA_LIMITS, max_video_bytes: 0 } });
+    const contentHash = "b".repeat(64);
+    const ts = nowMs();
+    await expect(fx.svc.init({
+      mime: "video/mp4", size: 2048, content_hash: contentHash,
+      signer_tip_id: TIP, signature: _signInit({ contentHash, mime: "video/mp4", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey), timestamp: ts,
+    })).rejects.toMatchObject({ status: 415, code: "mime_disabled" });
+  });
+});
+
+describe("presigned chunked upload: async finalize", () => {
+  test("complete answers 202 finalizing when verification outlives the sync window; status then carries the result", async () => {
+    const fx = _setup({ completeSyncWaitMs: 20 });
+    const file = _png(1024);
+    const { init, contentHash, parts } = await _upload(fx, file, "image/png");
+    const gate = _deferred();
+    fx.storage._setGate(gate.promise);
+
+    const pending = await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(pending).toMatchObject({ state: UPLOAD_SESSION_STATE.FINALIZING, session_id: init.session_id });
+    expect(pending.poll_after_ms).toBeGreaterThan(0);
+    expect(fx.dag.getUploadSession(init.session_id).state).toBe(UPLOAD_SESSION_STATE.FINALIZING);
+    expect(await fx.svc.status(init.session_id)).toMatchObject({ state: UPLOAD_SESSION_STATE.FINALIZING });
+    // a repeat complete while finalizing is idempotent: same 202 shape, no second assemble
+    expect(await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts)))
+      .toMatchObject({ state: UPLOAD_SESSION_STATE.FINALIZING });
+
+    gate.resolve();
+    const st = await _pollUntil(fx, init.session_id, [UPLOAD_SESSION_STATE.COMPLETE, UPLOAD_SESSION_STATE.FAILED]);
+    expect(st.state).toBe(UPLOAD_SESSION_STATE.COMPLETE);
+    expect(st.result.media_id).toBe(contentHash);
+    expect(st.result.mime).toBe("image/png");
+    expect(fx.storage._objects.get(`media/${contentHash}`).equals(file)).toBe(true);
+    // complete on a finished session returns the stored descriptor (201 path)
+    const again = await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(again.media_id).toBe(contentHash);
+  });
+
+  test("a verification failure after 202 is reported by status as failed, with the code", async () => {
+    const fx = _setup({ completeSyncWaitMs: 20 });
+    const declared = _png(1024);
+    const declaredHash = shake256(declared);
+    const { init } = await _upload(fx, declared, "image/png", { declaredHash });
+    const session = fx.dag.getUploadSession(init.session_id);
+    const wrong = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(1024 - 8, 0x99)]);
+    const parts = [{ part_number: 1, etag: fx.storage._put(session.upload_id, 1, wrong) }];
+    const gate = _deferred();
+    fx.storage._setGate(gate.promise);
+
+    const pending = await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(pending.state).toBe(UPLOAD_SESSION_STATE.FINALIZING);
+    gate.resolve();
+    const st = await _pollUntil(fx, init.session_id, [UPLOAD_SESSION_STATE.COMPLETE, UPLOAD_SESSION_STATE.FAILED]);
+    expect(st.state).toBe(UPLOAD_SESSION_STATE.FAILED);
+    expect(st.error).toMatchObject({ code: "hash_mismatch", status: 400 });
+    expect(fx.storage._objects.has(session.s3_key)).toBe(false);          // tmp dropped
+    expect(fx.storage._objects.has(`media/${declaredHash}`)).toBe(false); // never promoted
+    // a later complete surfaces the stored failure as the same error
+    await expect(fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts)))
+      .rejects.toMatchObject({ status: 400, code: "hash_mismatch" });
+  });
+
+  test("concurrent completes on an uploading session share one assemble + finalize", async () => {
+    const fx = _setup({ completeSyncWaitMs: 20 });
+    const file = _png(1024);
+    const { init, contentHash, parts } = await _upload(fx, file, "image/png");
+    const gate = _deferred();
+    fx.storage._setGate(gate.promise);
+    const [a, b] = await Promise.all([
+      fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts)),
+      fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts)),
+    ]);
+    expect(a.state).toBe(UPLOAD_SESSION_STATE.FINALIZING);
+    expect(b.state).toBe(UPLOAD_SESSION_STATE.FINALIZING);
+    expect(fx.storage._assembledCount()).toBe(1);
+    gate.resolve();
+    const st = await _pollUntil(fx, init.session_id, [UPLOAD_SESSION_STATE.COMPLETE, UPLOAD_SESSION_STATE.FAILED]);
+    expect(st.state).toBe(UPLOAD_SESSION_STATE.COMPLETE);
+    expect(st.result.media_id).toBe(contentHash);
+    expect(fx.storage._assembledCount()).toBe(1);
+  });
+
+  test("abort is refused while finalizing (409)", async () => {
+    const fx = _setup({ completeSyncWaitMs: 20 });
+    const { init, parts } = await _upload(fx, _png(1024), "image/png");
+    const gate = _deferred();
+    fx.storage._setGate(gate.promise);
+    await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    const ts = nowMs();
+    await expect(fx.svc.abort(init.session_id, {
+      signer_tip_id: TIP, timestamp: ts,
+      signature: _signAction("MEDIA_UPLOAD_ABORT", init.session_id, ts, TIP, fx.kp.privateKey),
+    })).rejects.toMatchObject({ status: 409, code: "finalizing" });
+    gate.resolve();
+    await _pollUntil(fx, init.session_id, [UPLOAD_SESSION_STATE.COMPLETE, UPLOAD_SESSION_STATE.FAILED]);
+  });
+
+  test("sessions left finalizing by a restart are resumed by a fresh service instance", async () => {
+    const fx = _setup();
+    const file = _png(1024);
+    const { init, contentHash, parts, session } = await _upload(fx, file, "image/png");
+    // simulate: multipart assembled + state persisted, then the process died before finalize ran
+    await fx.storage.completeMultipartUpload(session.upload_id, session.s3_key, parts);
+    fx.dag.updateUploadSession(init.session_id, { state: UPLOAD_SESSION_STATE.FINALIZING, parts });
+
+    const restarted = createChunkedUploadService({ storage: fx.storage, dag: fx.dag, log: { info() {}, warn() {} } });
+    expect(await restarted.resumeFinalizing()).toEqual({ resumed: 1 });
+    const st = await _pollUntil({ svc: restarted }, init.session_id, [UPLOAD_SESSION_STATE.COMPLETE, UPLOAD_SESSION_STATE.FAILED]);
+    expect(st.state).toBe(UPLOAD_SESSION_STATE.COMPLETE);
+    expect(st.result.media_id).toBe(contentHash);
+    expect(fx.storage._objects.get(`media/${contentHash}`).equals(file)).toBe(true);
+    // nothing else to resume
+    expect(await restarted.resumeFinalizing()).toEqual({ resumed: 0 });
+  });
+
+  test("cleanupExpired does not abort a finished session's multipart (already assembled)", async () => {
+    const fx = _setup();
+    const { init, parts, session } = await _upload(fx, _png(1024), "image/png");
+    const out = await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(out.media_id).toBeDefined();
+    const row = fx.dag.getUploadSession(init.session_id);
+    row.expires_at = nowMs() - 1000;
+    fx.dag.createUploadSession(row);
+    const res = await fx.svc.cleanupExpired();
+    expect(res.removed).toBeGreaterThanOrEqual(1);
+    expect(fx.storage._aborted.some(a => a.uploadId === session.upload_id)).toBe(false);
+    expect(fx.dag.getUploadSession(init.session_id)).toBeNull();
   });
 });
