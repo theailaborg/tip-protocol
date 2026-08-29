@@ -69,6 +69,8 @@ function _fakeStorage() {
   let seq = 0;
   let gate = null;               // when set, getObjectStream waits on it (slow re-hash)
   let assembled = 0;
+  let failReads = 0;             // getObjectStream throws this many times first (transient S3 error)
+  let assembleError = null;      // completeMultipartUpload throws this once (bad ETags)
   return {
     backend: "s3",
     async createMultipartUpload(sessionId) {
@@ -83,6 +85,7 @@ function _fakeStorage() {
       return mp ? [...mp.parts.entries()].map(([n, b]) => ({ part_number: n, etag: `"e${n}"`, size: b.length })) : [];
     },
     async completeMultipartUpload(uploadId, key, parts) {
+      if (assembleError) { const e = assembleError; assembleError = null; throw e; }
       assembled += 1;
       const mp = multiparts.get(uploadId);
       const ordered = [...parts].sort((a, b) => a.part_number - b.part_number);
@@ -91,12 +94,15 @@ function _fakeStorage() {
     },
     async getObjectStream(key) {
       if (gate) await gate;
+      if (failReads > 0) { failReads -= 1; throw new Error("socket hang up"); }
       const buf = objects.get(key);
       if (!buf) throw new Error(`no object at ${key}`);
       return { stream: (async function* () { yield buf; })(), size: buf.length };
     },
     _setGate(p) { gate = p; },
     _assembledCount() { return assembled; },
+    _failReads(n) { failReads = n; },
+    _failAssemble(err) { assembleError = err; },
     async copyToFinal(tmpKey, contentHash) {
       objects.set(`media/${contentHash}`, objects.get(tmpKey));
       objects.delete(tmpKey);
@@ -498,6 +504,52 @@ describe("presigned chunked upload: async finalize", () => {
     expect(st.state).toBe(UPLOAD_SESSION_STATE.COMPLETE);
     expect(st.result.media_id).toBe(contentHash);
     expect(fx.storage._assembledCount()).toBe(1);
+  });
+
+  test("a transient S3 read error during the re-hash is retried, not recorded as failed", async () => {
+    const fx = _setup({ rehashRetryMs: 1 });
+    const file = _png(1024);
+    const { init, contentHash, parts } = await _upload(fx, file, "image/png");
+    fx.storage._failReads(2);   // two drops, third read succeeds (3 attempts allowed)
+    const out = await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(out.media_id).toBe(contentHash);
+    expect(fx.dag.getUploadSession(init.session_id).state).toBe(UPLOAD_SESSION_STATE.COMPLETE);
+  });
+
+  test("a persistent S3 read error is recorded as failed after the retries", async () => {
+    const fx = _setup({ rehashRetryMs: 1 });
+    const { init, parts, session } = await _upload(fx, _png(1024), "image/png");
+    fx.storage._failReads(3);
+    await expect(fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts)))
+      .rejects.toMatchObject({ status: 400, code: "assemble_failed" });
+    expect(fx.dag.getUploadSession(init.session_id).state).toBe(UPLOAD_SESSION_STATE.FAILED);
+    expect(fx.storage._objects.has(session.s3_key)).toBe(false);
+  });
+
+  test("an S3 assemble error is a 400 assemble_failed and leaves the session uploading (retryable)", async () => {
+    const fx = _setup();
+    const { init, parts } = await _upload(fx, _png(1024), "image/png");
+    fx.storage._failAssemble(new Error("InvalidPart: One or more of the specified parts could not be found"));
+    await expect(fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts)))
+      .rejects.toMatchObject({ status: 400, code: "assemble_failed" });
+    expect(fx.dag.getUploadSession(init.session_id).state).toBe(UPLOAD_SESSION_STATE.UPLOADING);
+    // the retry with correct parts then succeeds
+    const out = await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(out.media_id).toBeDefined();
+  });
+
+  test("entering finalizing refreshes the session TTL so the row outlives the re-hash", async () => {
+    const fx = _setup({ completeSyncWaitMs: 20 });
+    const { init, parts } = await _upload(fx, _png(1024), "image/png");
+    const before = fx.dag.getUploadSession(init.session_id).expires_at;
+    // age the row so it is about to expire, then complete
+    fx.dag.updateUploadSession(init.session_id, { expires_at: nowMs() + 1000 });
+    const gate = _deferred();
+    fx.storage._setGate(gate.promise);
+    await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(fx.dag.getUploadSession(init.session_id).expires_at).toBeGreaterThanOrEqual(before - 1000);
+    gate.resolve();
+    await _pollUntil(fx, init.session_id, [UPLOAD_SESSION_STATE.COMPLETE, UPLOAD_SESSION_STATE.FAILED]);
   });
 
   test("abort is refused while finalizing (409)", async () => {

@@ -27,6 +27,7 @@ const { schemaError } = require("../schemas/_common");
 const mediaUploadSchema = require("../schemas/media-upload");
 const {
   MEDIA_LIMITS, UPLOAD_SESSION_STATE, CHUNKED_COMPLETE_SYNC_WAIT_MS, CHUNKED_STATUS_POLL_MS, CHUNKED_RESULT_TTL_MS,
+  CHUNKED_REHASH_ATTEMPTS, CHUNKED_REHASH_RETRY_MS,
 } = require("../../../shared/constants");
 
 const DEFAULT_PART_SIZE = 10 * 1024 * 1024;   // status() fallback only
@@ -53,6 +54,7 @@ function createChunkedUploadService({
   sessionTtlMs = _resolveSessionTtlMs(),
   mediaLimits = MEDIA_LIMITS,
   completeSyncWaitMs = CHUNKED_COMPLETE_SYNC_WAIT_MS,
+  rehashRetryMs = CHUNKED_REHASH_RETRY_MS,
 }) {
   if (!storage) throw new Error("chunked-upload-service: storage required");
   if (!dag) throw new Error("chunked-upload-service: dag required");
@@ -253,8 +255,15 @@ function createChunkedUploadService({
       let current = session;
       if (parts !== null) {
         const normParts = _normalizeParts(parts);
-        await storage.completeMultipartUpload(session.upload_id, session.s3_key, normParts);
-        current = await dag.updateUploadSession(sessionId, { state: FINALIZING, parts: normParts });
+        try {
+          await storage.completeMultipartUpload(session.upload_id, session.s3_key, normParts);
+        } catch (err) {
+          throw schemaError(400, `Failed to assemble multipart: ${err.message}`, "assemble_failed");
+        }
+        // Fresh TTL: the row must outlive the re-hash, not just the upload.
+        current = await dag.updateUploadSession(sessionId, {
+          state: FINALIZING, parts: normParts, expires_at: nowMs() + sessionTtlMs,
+        });
       }
       return _finalize(current || session);
     })();
@@ -273,7 +282,7 @@ function createChunkedUploadService({
     try {
       let read;
       try {
-        read = await _hashS3Object(session.s3_key);
+        read = await _hashS3ObjectWithRetry(session.s3_key);
       } catch (err) {
         throw schemaError(400, `Failed to read assembled object: ${err.message}`, "assemble_failed");
       }
@@ -323,10 +332,24 @@ function createChunkedUploadService({
     let resumed = 0;
     for (const session of stuck) {
       if (_finalizing.has(session.session_id)) continue;
-      _startFinalize(session, null);
       resumed += 1;
+      // One at a time: each is a full re-hash of a possibly multi-GB object.
+      await _startFinalize(session, null).catch(() => { });
     }
     return { resumed };
+  }
+
+  // The SDK retries the GetObject request, not a body that drops mid-stream.
+  async function _hashS3ObjectWithRetry(key) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await _hashS3Object(key);
+      } catch (err) {
+        if (attempt >= CHUNKED_REHASH_ATTEMPTS || err.name === "NoSuchKey") throw err;
+        log.warn?.(`chunked-upload re-hash attempt ${attempt} failed for ${key}: ${err.message}; retrying`);
+        await new Promise(r => setTimeout(r, rehashRetryMs * attempt));
+      }
+    }
   }
 
   // Stream the assembled tmp object from S3: SHAKE-256 over the whole thing plus

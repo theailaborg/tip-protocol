@@ -753,6 +753,10 @@ const UPLOAD_SESSION_STATE = Object.freeze({
 const CHUNKED_COMPLETE_SYNC_WAIT_MS = 60_000;  // under Cloudflare's 100 s origin timeout
 const CHUNKED_STATUS_POLL_MS = 5_000;
 const CHUNKED_RESULT_TTL_MS = 60 * 60_000;     // finished session kept for pickup
+// The re-hash streams the whole object; a body drop mid-way (minutes for
+// multi-GB) is re-read from the start rather than failing the upload.
+const CHUNKED_REHASH_ATTEMPTS = 3;
+const CHUNKED_REHASH_RETRY_MS = 2_000;
 
 // ─── Score display modes (v2 FIX-06) ─────────────────────────────────────────
 const SCORE_DISPLAY = Object.freeze({
@@ -1046,6 +1050,8 @@ module.exports = {
   CHUNKED_COMPLETE_SYNC_WAIT_MS,
   CHUNKED_STATUS_POLL_MS,
   CHUNKED_RESULT_TTL_MS,
+  CHUNKED_REHASH_ATTEMPTS,
+  CHUNKED_REHASH_RETRY_MS,
   HTTP_HEADERS,
   API_PATHS,
   PROTOCOL,
