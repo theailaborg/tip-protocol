@@ -302,7 +302,7 @@ describe("tick — happy path", () => {
   });
 });
 
-// ── tick — jobs that must not loop ────────────────────────────────────────
+// ── tick: jobs that must not loop ─────────────────────────────────────────
 describe("tick: no wait-for-real loop when a verdict cannot come", () => {
   test("classifier permanently rejects a media file (file_too_large) → fail-open now, no retry", async () => {
     const clock = makeClock();
