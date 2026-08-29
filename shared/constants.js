@@ -966,6 +966,10 @@ const PARENT_URL_LOOKUP = Object.freeze({
 // fail-open leaves the content stuck, and re-emitting on every anchor turned
 // recovery into a cluster-wide signing self-flood (2026-07-10).
 const PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS = 5 * 60_000;
+// Classifier per-file errors that no retry can change (over its size cap,
+// unsupported type, blocked URL): the worker fails open at once instead of
+// re-asking every retry interval until the backlog cap.
+const PRESCAN_PERMANENT_MEDIA_ERRORS = Object.freeze(["file_too_large", "unsupported_mime", "download_blocked"]);
 
 module.exports = {
   LOCALLY_VERIFIED_TX_CACHE_CAP,
@@ -976,6 +980,7 @@ module.exports = {
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
   PARENT_URL_LOOKUP,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
+  PRESCAN_PERMANENT_MEDIA_ERRORS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
   MLDSA65_PUBKEY_BYTES,
   MLDSA65_PRIVKEY_BYTES,
