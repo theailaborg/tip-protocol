@@ -26,12 +26,13 @@ const { pipeline } = require("stream/promises");
 const { Transform } = require("stream");
 const { shake256, shake256Incremental, mldsaVerify } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
+const { MEDIA_LIMITS } = require("../../../shared/constants");
 const { schemaError } = require("../schemas/_common");
 const mediaUploadSchema = require("../schemas/media-upload");
 const mediaAccessSchema = require("../schemas/media-access");
 const { canAccessMedia } = require("./media-access-policy");
 
-function createMediaService({ storage, dag, log, selfNodeId = null, cryptoPoolRef = { current: null }, chunkedUploadService = null }) {
+function createMediaService({ storage, dag, log, mediaLimits = MEDIA_LIMITS, selfNodeId = null, cryptoPoolRef = { current: null }, chunkedUploadService = null }) {
   if (!storage) throw new Error("media-service: storage required");
   // dag is optional: read-only callers (worker fetch path) don't need
   // identity / revocation lookups. upload() will assert dag itself.
@@ -110,7 +111,7 @@ function createMediaService({ storage, dag, log, selfNodeId = null, cryptoPoolRe
     // Returns the mime DETECTED from the bytes' magic numbers — the
     // claimed mime stays in the signed challenge but never reaches
     // storage, caps, or the classifier. Bytes are the source of truth.
-    const detectedMime = mediaUploadSchema.validateRequest(input, { dag });
+    const detectedMime = mediaUploadSchema.validateRequest(input, { dag, mediaLimits });
 
     const { bytes, mime, signer_tip_id, signature, timestamp } = input;
     const identity = dag.getIdentity(signer_tip_id);  // guaranteed by schema
@@ -160,10 +161,16 @@ function createMediaService({ storage, dag, log, selfNodeId = null, cryptoPoolRe
     if (!stream || typeof stream.pipe !== "function") {
       throw new Error("media-service.uploadStream: readable stream required");
     }
+    // This path spools the whole body to node disk before promoting; on an
+    // S3-backed node the presigned multipart path uploads direct and never
+    // touches the volume, so the single request stays fs-backend only.
+    if (storage.backend === "s3") {
+      throw schemaError(410, "Single-request upload is disabled on S3-backed nodes; use the presigned multipart upload (POST /v1/media/upload-init)", "use_multipart");
+    }
     // Schema: everything except the bytes (not arrived yet). The claim's
     // cap is only a provisional ceiling; the authoritative gate + cap come
     // from the mime DETECTED off the first bytes below.
-    mediaUploadSchema.validateStreamRequest(input, { dag });
+    mediaUploadSchema.validateStreamRequest(input, { dag, mediaLimits });
     const identity = dag.getIdentity(signer_tip_id);  // guaranteed by schema
 
     const dir = await storage.stagingDir();
@@ -185,7 +192,7 @@ function createMediaService({ storage, dag, log, selfNodeId = null, cryptoPoolRe
           if (sniffBuf.length >= 16) {
             detectedMime = mediaUploadSchema.detectMime(sniffBuf);
             try {
-              sizeLimit = mediaUploadSchema.limitForDetectedMime(detectedMime);
+              sizeLimit = mediaUploadSchema.limitForDetectedMime(detectedMime, mediaLimits);
             } catch (err) {
               cb(err);
               return;
@@ -212,7 +219,7 @@ function createMediaService({ storage, dag, log, selfNodeId = null, cryptoPoolRe
       // media is that small, and limitForDetectedMime(null) rejects 415.
       if (detectedMime === null) {
         detectedMime = mediaUploadSchema.detectMime(sniffBuf);
-        sizeLimit = mediaUploadSchema.limitForDetectedMime(detectedMime);
+        sizeLimit = mediaUploadSchema.limitForDetectedMime(detectedMime, mediaLimits);
       }
       if (detectedMime !== mime) {
         logger.warn?.(`media-upload(stream): claimed mime ${mime} != detected ${detectedMime}; storing detected (signer ${signer_tip_id})`);

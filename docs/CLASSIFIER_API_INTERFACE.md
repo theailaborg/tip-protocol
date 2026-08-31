@@ -122,9 +122,9 @@ bytes , not to finish analyzing them. Once downloaded, the URL can expire.
 
 | Media | Max size | Approx download |
 |---|---|---|
-| Image | 100 MB | 1-2 s |
-| Audio | 200 MB | 2-4 s |
-| Video | 4 GB | 40-90 s |
+| Image | 1 GiB | 10-20 s |
+| Audio | 1 GiB | 10-20 s |
+| Video | 15 GiB | 2.5-5 min |
 
 ---
 
@@ -146,6 +146,8 @@ the rest of the response intact.
 | Type | Delivery | Max size |
 |---|---|---|
 | Text | inline `text` | 100,000 chars |
-| Image | `files[].url` | 100 MB |
-| Audio | `files[].url` | 200 MB |
-| Video | `files[].url` | 4 GB |
+| Image | `files[].url` | 1 GiB |
+| Audio | `files[].url` | 1 GiB |
+| Video | `files[].url` | 15 GiB |
+
+These are the node's default per-mime caps (node-local, `TIP_MAX_*_BYTES`). The classifier's own `max_file_sizes` must be at least as large, or bigger files fail its download with `file_too_large` and the modality degrades.

@@ -174,6 +174,10 @@ async function main() {
   const chunkedUploadCleanup = initChunkedUploadCleanup({
     chunkedUploadService: app.locals.chunkedUploadService,
   });
+  // Sessions left FINALIZING by a restart still hold their assembled object.
+  app.locals.chunkedUploadService.resumeFinalizing()
+    .then(r => { if (r.resumed > 0) log.notice(`Chunked upload finalize resumed: ${r.resumed} sessions`); })
+    .catch(err => log.error(`Chunked upload finalize resume failed: ${err?.stack || err}`));
 
   // 8c. One-shot api_endpoint reconcile — announces TIP_API_ENDPOINT on
   // chain when the nodes row disagrees. No-op when unconfigured.

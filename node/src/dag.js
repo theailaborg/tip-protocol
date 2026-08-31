@@ -30,7 +30,7 @@ const { shake256 } = require("../../shared/crypto");
 const { createSMT } = require("../../shared/smt");
 const { STATE_PK, stateLeafKey } = require("./consensus/state-root");
 const { nowMs } = require("../../shared/time");
-const { TX_TYPES, PRESCAN_REVIEW_STATES, PENDING_OWNER_HEAD_TTL_MS } = require("../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, PENDING_OWNER_HEAD_TTL_MS, UPLOAD_SESSION_STATE } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
 const { subjectTipId, subjectTipIds } = require("./tx-attribution");
 const { log } = require("./logger");
@@ -2097,18 +2097,14 @@ class MemoryStore {
       signature: session.signature,
       parts_json: JSON.stringify(session.parts || []),
       completed_size: session.completed_size || 0,
+      state: session.state || UPLOAD_SESSION_STATE.UPLOADING,
+      result_json: session.result ? JSON.stringify(session.result) : null,
       created_at: session.created_at,
       expires_at: session.expires_at,
     });
     return session;
   }
-  getUploadSession(sessionId) {
-    const row = this._uploadSessions.get(sessionId);
-    if (!row) return null;
-    if (row.expires_at < nowMs()) {
-      this._uploadSessions.delete(sessionId);
-      return null;
-    }
+  _viewUploadSession(row) {
     return {
       session_id: row.session_id,
       upload_id: row.upload_id,
@@ -2121,9 +2117,20 @@ class MemoryStore {
       signature: row.signature,
       parts: JSON.parse(row.parts_json || "[]"),
       completed_size: row.completed_size,
+      state: row.state || UPLOAD_SESSION_STATE.UPLOADING,
+      result: row.result_json ? JSON.parse(row.result_json) : null,
       created_at: row.created_at,
       expires_at: row.expires_at,
     };
+  }
+  getUploadSession(sessionId) {
+    const row = this._uploadSessions.get(sessionId);
+    if (!row) return null;
+    if (row.expires_at < nowMs()) {
+      this._uploadSessions.delete(sessionId);
+      return null;
+    }
+    return this._viewUploadSession(row);
   }
   updateUploadSession(sessionId, patch) {
     const row = this._uploadSessions.get(sessionId);
@@ -2131,6 +2138,8 @@ class MemoryStore {
     for (const key of Object.keys(patch)) {
       if (key === "parts") {
         row.parts_json = JSON.stringify(patch.parts || []);
+      } else if (key === "result") {
+        row.result_json = patch.result ? JSON.stringify(patch.result) : null;
       } else if (row[key] !== undefined) {
         row[key] = patch[key];
       }
@@ -2156,6 +2165,14 @@ class MemoryStore {
     const out = [];
     for (const row of this._uploadSessions.values()) {
       if (row.expires_at < beforeMs) out.push({ ...row });
+    }
+    return out;
+  }
+  listUploadSessionsByState(state) {
+    const now = nowMs();
+    const out = [];
+    for (const row of this._uploadSessions.values()) {
+      if (row.state === state && row.expires_at >= now) out.push(this._viewUploadSession(row));
     }
     return out;
   }
@@ -3017,15 +3034,15 @@ class SQLiteStore {
         `INSERT OR REPLACE INTO upload_sessions
            (session_id, upload_id, s3_key, content_hash, mime, size,
             signer_tip_id, timestamp, signature, parts_json, completed_size,
-            created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            state, result_json, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ),
       getUploadSession: this.db.prepare(
         "SELECT * FROM upload_sessions WHERE session_id=?"
       ),
       updateUploadSession: this.db.prepare(
         `UPDATE upload_sessions
-            SET parts_json=?, completed_size=?, expires_at=?
+            SET parts_json=?, completed_size=?, expires_at=?, state=?, result_json=?
           WHERE session_id=?`
       ),
       deleteUploadSession: this.db.prepare(
@@ -3036,6 +3053,9 @@ class SQLiteStore {
       ),
       listExpiredUploadSessions: this.db.prepare(
         "SELECT * FROM upload_sessions WHERE expires_at<?"
+      ),
+      listUploadSessionsByState: this.db.prepare(
+        "SELECT * FROM upload_sessions WHERE state=? AND expires_at>=?"
       ),
 
       // Perceptual index (off-DAG, advisory).
@@ -4203,6 +4223,8 @@ class SQLiteStore {
       signature: row.signature,
       parts: JSON.parse(row.parts_json || "[]"),
       completed_size: row.completed_size,
+      state: row.state || UPLOAD_SESSION_STATE.UPLOADING,
+      result: row.result_json ? JSON.parse(row.result_json) : null,
       created_at: row.created_at,
       expires_at: row.expires_at,
     };
@@ -4213,6 +4235,8 @@ class SQLiteStore {
       session.content_hash, session.mime, session.size,
       session.signer_tip_id, session.timestamp, session.signature,
       JSON.stringify(session.parts || []), session.completed_size || 0,
+      session.state || UPLOAD_SESSION_STATE.UPLOADING,
+      session.result ? JSON.stringify(session.result) : null,
       session.created_at, session.expires_at,
     );
     return session;
@@ -4232,12 +4256,17 @@ class SQLiteStore {
     const partsJson = patch.parts !== undefined ? JSON.stringify(patch.parts || []) : JSON.stringify(session.parts);
     const completedSize = patch.completed_size !== undefined ? patch.completed_size : session.completed_size;
     const expiresAt = patch.expires_at !== undefined ? patch.expires_at : session.expires_at;
-    this._stmts.updateUploadSession.run(partsJson, completedSize, expiresAt, sessionId);
+    const state = patch.state !== undefined ? patch.state : session.state;
+    const result = patch.result !== undefined ? patch.result : session.result;
+    const resultJson = result ? JSON.stringify(result) : null;
+    this._stmts.updateUploadSession.run(partsJson, completedSize, expiresAt, state, resultJson, sessionId);
     return {
       ...session,
       parts: JSON.parse(partsJson),
       completed_size: completedSize,
       expires_at: expiresAt,
+      state,
+      result: resultJson ? JSON.parse(resultJson) : null,
     };
   }
   deleteUploadSession(sessionId) {
@@ -4248,6 +4277,9 @@ class SQLiteStore {
   }
   listExpiredUploadSessions(beforeMs = nowMs()) {
     return this._stmts.listExpiredUploadSessions.all(beforeMs).map(r => this._hydrateUploadSession(r));
+  }
+  listUploadSessionsByState(state) {
+    return this._stmts.listUploadSessionsByState.all(state, nowMs()).map(r => this._hydrateUploadSession(r));
   }
   generateUploadSessionId() {
     return randomUUID().replace(/-/g, "");
@@ -4786,6 +4818,7 @@ function _buildDagHandle(store, config) {
     deleteUploadSession: (sessionId) => store.deleteUploadSession(sessionId),
     cleanupExpiredUploadSessions: (beforeMs) => store.cleanupExpiredUploadSessions(beforeMs),
     listExpiredUploadSessions: (beforeMs) => store.listExpiredUploadSessions(beforeMs),
+    listUploadSessionsByState: (state) => store.listUploadSessionsByState(state),
     generateUploadSessionId: () => store.generateUploadSessionId(),
 
     // ── DB Transactions ──────────────────────────────────────────────────

@@ -23,7 +23,7 @@ const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx }
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
-const { SNAPSHOT_BULK_CHUNK_ROWS, BULK_INSERT_CHUNK_ROWS } = require("../../../shared/constants");
+const { SNAPSHOT_BULK_CHUNK_ROWS, BULK_INSERT_CHUNK_ROWS, UPLOAD_SESSION_STATE } = require("../../../shared/constants");
 const { DB_WRITE_BACKPRESSURE_MS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/local-config");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
@@ -519,6 +519,8 @@ class KnexAdapter {
         signature: row.signature,
         parts_json: row.parts_json,
         completed_size: row.completed_size,
+        state: row.state || UPLOAD_SESSION_STATE.UPLOADING,
+        result_json: row.result_json || null,
         created_at: row.created_at,
         expires_at: row.expires_at,
       });
@@ -1197,6 +1199,8 @@ class KnexAdapter {
       signature: session.signature,
       parts_json: JSON.stringify(session.parts || []),
       completed_size: session.completed_size || 0,
+      state: session.state || UPLOAD_SESSION_STATE.UPLOADING,
+      result_json: session.result ? JSON.stringify(session.result) : null,
       created_at: session.created_at,
       expires_at: session.expires_at,
     };
@@ -1214,6 +1218,8 @@ class KnexAdapter {
       if (patch.parts !== undefined) updates.parts_json = JSON.stringify(patch.parts || []);
       if (patch.completed_size !== undefined) updates.completed_size = patch.completed_size;
       if (patch.expires_at !== undefined) updates.expires_at = patch.expires_at;
+      if (patch.state !== undefined) updates.state = patch.state;
+      if (patch.result !== undefined) updates.result_json = patch.result ? JSON.stringify(patch.result) : null;
       if (Object.keys(updates).length > 0) {
         this._ff(() => this._k("upload_sessions").where("session_id", sessionId).update(updates));
       }
@@ -1232,6 +1238,9 @@ class KnexAdapter {
   listExpiredUploadSessions(beforeMs = nowMs()) {
     // Read-only: caller deletes each row via deleteUploadSession after aborting S3.
     return this.mirror.listExpiredUploadSessions(beforeMs);
+  }
+  listUploadSessionsByState(state) {
+    return this.mirror.listUploadSessionsByState(state);
   }
   generateUploadSessionId() {
     return this.mirror.generateUploadSessionId();

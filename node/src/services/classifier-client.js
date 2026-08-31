@@ -13,9 +13,9 @@
  *   3. Skip the round-trip entirely for non-OH origins (the API would
  *      respond with `provider_used: "skipped"` anyway). Saves latency
  *      and classifier load.
- *   4. Block video at the boundary in v1 (genesis: video_max_bytes=0).
- *      The classifier crashes 500 on video today; defer until v2
- *      ships file_url + content-storage.
+ *   4. Block video at the boundary when this node's video cap is 0
+ *      (node-local mediaLimits), so a disabled family never reaches
+ *      the classifier.
  *   5. Per-modality timeouts: text 60 s, image/audio 180 s. Cold starts
  *      (ollama ~33 s, ONNX vision ~118 s) sometimes overshoot, but
  *      retry policy on the worker side picks up.
@@ -28,8 +28,7 @@
 
 "use strict";
 
-const { CONTENT_LIMITS } = require("../../../shared/protocol-constants");
-const { ORIGIN, CLASSIFIER_CLIENT } = require("../../../shared/constants");
+const { ORIGIN, CLASSIFIER_CLIENT, MEDIA_LIMITS } = require("../../../shared/constants");
 const { nowMs } = require("../../../shared/time");
 
 const ORIGIN_CODES = Object.freeze(new Set(Object.values(ORIGIN)));
@@ -95,6 +94,7 @@ function createClassifierClient(opts = {}) {
     text: opts.timeouts?.text ?? CLASSIFIER_CLIENT.TEXT_TIMEOUT_MS,
     file: opts.timeouts?.file ?? CLASSIFIER_CLIENT.FILE_TIMEOUT_MS,
   };
+  const mediaLimits = opts.mediaLimits ?? opts.config?.mediaLimits ?? MEDIA_LIMITS;
   const scanNonOH = opts.scanNonOH !== undefined
     ? !!opts.scanNonOH
     : _envBool(process.env.TIP_CLASSIFIER_SCAN_NON_OH, false);
@@ -197,7 +197,7 @@ function createClassifierClient(opts = {}) {
     const files = Array.isArray(args.files) ? args.files : [];
     const hasFiles = files.length > 0;
     if (hasFiles) {
-      for (const f of files) _assertFileAllowed(f);
+      for (const f of files) _assertFileAllowed(f, mediaLimits);
       body.files = files.map(f => ({ media_id: f.media_id, mime: f.mime, url: f.url }));
     }
 
@@ -235,7 +235,7 @@ function createClassifierClient(opts = {}) {
     if (args.title) body.title = args.title;
     const hasFile = !!(args.file && args.file.base64);
     if (hasFile) {
-      _assertFileAllowed(args.file);
+      _assertFileAllowed(args.file, mediaLimits);
       body.file_base64 = args.file.base64;
       if (args.file.mime) body.file_mime_type = args.file.mime;
     }
@@ -280,18 +280,16 @@ function _envBool(raw, fallback) {
   return fallback;
 }
 
-function _assertFileAllowed(file) {
+function _assertFileAllowed(file, mediaLimits) {
   const mime = String(file.mime || "").toLowerCase();
-  if (mime.startsWith("video/")) {
-    if (CONTENT_LIMITS.VIDEO_MAX_BYTES <= 0) {
-      throw {
-        code: "video_unsupported_v1",
-        status: 415,
-        message: "Video uploads are not supported in v1 — coming when the content-storage layer ships",
-      };
-    }
+  if (mime.startsWith("video/") && !(mediaLimits.max_video_bytes > 0)) {
+    throw {
+      code: "video_disabled",
+      status: 415,
+      message: "Video uploads are disabled on this node",
+    };
   }
-  // Other mime sanity (text excluded) — defer to classifier-side limits.
+  // Other mime sanity (text excluded): defer to classifier-side limits.
 }
 
 /**
