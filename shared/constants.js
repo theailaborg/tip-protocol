@@ -941,6 +941,13 @@ const PARENT_URL_LOOKUP = Object.freeze({
 // recovery into a cluster-wide signing self-flood (2026-07-10).
 const PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS = 5 * 60_000;
 
+// Video near-dup matcher bounds. Unbounded, a 1.5k-frame register fired one
+// candidate query per frame and ran millions of Hamming comparisons in one
+// event-loop chunk, stalling the node for minutes (test cluster, 2026-08-31).
+const VIDEO_MATCH_PROBE_FRAMES = 64;
+const VIDEO_MATCH_MAX_CANDIDATES = 8;
+const VIDEO_MATCH_YIELD_ROWS = 64;
+
 module.exports = {
   LOCALLY_VERIFIED_TX_CACHE_CAP,
   CLASSIFIER_BREAK_AFTER,
@@ -950,6 +957,9 @@ module.exports = {
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
   PARENT_URL_LOOKUP,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
+  VIDEO_MATCH_PROBE_FRAMES,
+  VIDEO_MATCH_MAX_CANDIDATES,
+  VIDEO_MATCH_YIELD_ROWS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
   MLDSA65_PUBKEY_BYTES,
   MLDSA65_PRIVKEY_BYTES,

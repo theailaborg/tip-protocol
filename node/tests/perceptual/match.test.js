@@ -54,6 +54,36 @@ async function exerciseVideo(dag) {
   expect((await matchVideo(dag, videoA, { excludeCtid: "OH-vid" })).find((h) => h.ctid === "OH-vid")).toBeUndefined();
 }
 
+// ── video: bounded matcher ─────────────────────────────────────────────────
+const longVid = (mut) => ({
+  profile: "cf-video-1", kind: "video",
+  features: Array.from({ length: 300 }, (_, i) => vframe(mut(A_PDQS[i % 4]), i)),
+});
+
+async function exerciseVideoBounded(dag) {
+  await ingestFingerprint(dag, longVid((p) => p), { ctid: "OH-vid-long" });
+  let calls = 0;
+  const counting = new Proxy(dag, {
+    get(t, k) {
+      if (k === "findPhashCandidates") return (...a) => { calls += 1; return t.findPhashCandidates(...a); };
+      const v = t[k];
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  const hits = await matchVideo(counting, longVid(flip1));
+  expect(calls).toBe(1); // one batched candidate query for all probe frames
+  const hit = hits.find((h) => h.ctid === "OH-vid-long");
+  expect(hit).toBeDefined();
+  expect(hit.targetMatchPct).toBeGreaterThanOrEqual(80);
+  // candidate cap honored
+  const capped = await matchVideo(dag, longVid(flip1), { maxCandidates: 1 });
+  expect(capped.length).toBeLessThanOrEqual(1);
+  expect(capped[0] && capped[0].ctid).toBe("OH-vid-long");
+  // probe subsampling still excludes unrelated content
+  const far = { profile: "cf-video-1", kind: "video", features: Array.from({ length: 300 }, (_, i) => vframe("54".repeat(32), i)) };
+  expect((await matchVideo(dag, far)).find((h) => h.ctid === "OH-vid-long")).toBeUndefined();
+}
+
 // ── audio ──────────────────────────────────────────────────────────────────
 const mkAudio = (landmarks, landmarkCount) => ({
   profile: "cf-audio-landmark-1", kind: "audio",
@@ -89,6 +119,10 @@ describe("perceptual matcher", () => {
   describe("video near-duplicate (per-frame MIH + bidirectional overlap)", () => {
     test("MemoryStore", async () => { await exerciseVideo(new MemoryStore()); });
     test("SQLiteStore", async () => { const s = new SQLiteStore(":memory:"); await exerciseVideo(s); s.db.close(); });
+  });
+  describe("video matcher is bounded (batched candidate-gen + probe subsample + candidate cap)", () => {
+    test("MemoryStore", async () => { await exerciseVideoBounded(new MemoryStore()); });
+    test("SQLiteStore", async () => { const s = new SQLiteStore(":memory:"); await exerciseVideoBounded(s); s.db.close(); });
   });
   describe("audio near-duplicate (landmark inverted-index + offset histogram)", () => {
     test("MemoryStore", async () => { await exerciseAudio(new MemoryStore()); });
