@@ -976,6 +976,7 @@ const PRESCAN_PERMANENT_MEDIA_ERRORS = Object.freeze(["file_too_large", "unsuppo
 // event-loop chunk, stalling the node for minutes (test cluster, 2026-08-31).
 const VIDEO_MATCH_PROBE_FRAMES = 64;
 const VIDEO_MATCH_MAX_CANDIDATES = 8;
+const VIDEO_MATCH_SCORE_FRAMES = 384;
 const VIDEO_MATCH_YIELD_ROWS = 64;
 
 module.exports = {
@@ -989,6 +990,7 @@ module.exports = {
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   VIDEO_MATCH_PROBE_FRAMES,
   VIDEO_MATCH_MAX_CANDIDATES,
+  VIDEO_MATCH_SCORE_FRAMES,
   VIDEO_MATCH_YIELD_ROWS,
   PRESCAN_PERMANENT_MEDIA_ERRORS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
