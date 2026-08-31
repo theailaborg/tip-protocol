@@ -1,6 +1,6 @@
 /**
  * @file @tip-protocol/badge-widget/src/index.js
- * @description TIP™ Badge Widget — drop-in browser script.
+ * @description TIP® Badge Widget — drop-in browser script.
  *
  * Usage:
  *   <script src="https://cdn.theailab.org/tip-widget/v2/tip-widget.js"></script>
@@ -12,7 +12,7 @@
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * @author    Dinesh Mendhe <chairman@theailab.org>
- * Apache 2.0 — Free for any TIP™ implementer
+ * Apache 2.0 — Free for any TIP® implementer
  */
 
 (function (global) {
@@ -113,7 +113,7 @@
 
           if (compact) {
             this.innerHTML = shieldSVG(score, size, founding);
-            this.title = `${label} (${score}/1000) — TIP™ Verified`;
+            this.title = `${label} (${score}/1000) — TIP® Verified`;
           } else {
             this.innerHTML = `<span style="display:inline-flex;align-items:center;gap:8px;font-family:sans-serif;">
               ${shieldSVG(score, size, founding)}
@@ -124,7 +124,7 @@
             </span>`;
           }
           this.style.cursor = "pointer";
-          this.title = `TIP™ Verified | ${label} | Score: ${score}/1000`;
+          this.title = `TIP® Verified | ${label} | Score: ${score}/1000`;
           this.addEventListener("click", () => {
             window.open(`https://theailab.org/verify/${encodeURIComponent(tipId)}`, "_blank", "noopener,noreferrer");
           }, { once: true });
@@ -134,12 +134,12 @@
           const originCode = data.origin_code;
           const status     = data.status || "verified";
           this.innerHTML = originPill(originCode);
-          this.title = `TIP™ Content Provenance | ${data.origin_label || originCode} | Status: ${status}`;
+          this.title = `TIP® Content Provenance | ${data.origin_label || originCode} | Status: ${status}`;
         }
       } catch (e) {
         const msg = compact ? "" : `<span style="font-size:10px;color:#C53030;">Unverified</span>`;
         this.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">${shieldSVG(0, size)} ${msg}</span>`;
-        this.title = `TIP™: Could not verify — ${e.message}`;
+        this.title = `TIP®: Could not verify — ${e.message}`;
       }
     }
   }
@@ -157,7 +157,7 @@
       const badge = document.createElement("div");
       badge.id    = "tip-auto-badge";
       badge.style.cssText = "position:fixed;top:12px;right:12px;z-index:9999;background:white;border:1px solid #E2E6EE;border-radius:8px;padding:8px 12px;display:flex;align-items:center;gap:8px;box-shadow:0 2px 12px rgba(0,0,0,0.1);font-family:sans-serif;cursor:pointer;";
-      badge.title = `TIP™ Verified Author`;
+      badge.title = `TIP® Verified Author`;
 
       const score = tipScore;
       const color = tierColor(score);

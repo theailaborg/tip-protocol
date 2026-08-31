@@ -739,7 +739,7 @@ def test_sdk() -> None:
     check("badges.generate_meta_tags() has tip:score",   "tip:score"   in meta)
 
     embed = bc.generate_embed_widget("tip://id/US-abc", 850)
-    check("badges.generate_embed_widget() has TIP badge comment", "TIP™" in embed)
+    check("badges.generate_embed_widget() has TIP badge comment", "TIP®" in embed)
     check("badges.generate_embed_widget() has verify link",       "theailab.org/verify/" in embed)
 
 
@@ -1394,7 +1394,7 @@ def test_gossip_broadcast_wiring() -> None:
 
 if __name__ == "__main__":
     print()
-    print(f"  {B}TIP™ Protocol Python — Complete Test Suite{R}")
+    print(f"  {B}TIP® Protocol Python — Complete Test Suite{R}")
     print(f"  {D}The AI Lab Intelligence Unobscured, Inc. | theailab.org{R}")
 
     test_crypto()
@@ -1412,7 +1412,7 @@ if __name__ == "__main__":
     total = _passed + _failed
     print()
     print("  " + "═" * 60)
-    print(f"  TIP™ Protocol v2.0 — Python Test Suite")
+    print(f"  TIP® Protocol v2.0 — Python Test Suite")
     print("  " + "═" * 60)
     print(f"  Tests passed:  {G}{_passed} / {total}{R}")
     if _failed:

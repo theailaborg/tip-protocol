@@ -1022,7 +1022,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log();
-  console.log(`${T.bgNavy}${T.white}${T.bold}  TIP™ Protocol — Production Seed Script v2.0  ${T.reset}`);
+  console.log(`${T.bgNavy}${T.white}${T.bold}  TIP® Protocol — Production Seed Script v2.0  ${T.reset}`);
   console.log(`${T.dim}  The AI Lab Intelligence Unobscured, Inc. | theailab.org${T.reset}`);
   console.log();
   info(`Mode:     ${useDirectMode ? "Direct (no HTTP)" : `API (${nodeUrl})`}`);
@@ -1110,7 +1110,7 @@ async function main() {
     if (_dag) label("DAG transactions", `${_dag.count()}`);
     label("Validation", allPass ? `${T.green}All checks passed${T.reset}` : `${T.red}Some checks failed${T.reset}`);
     console.log();
-    ok(`${T.bold}TIP™ Protocol genesis complete.${T.reset}`);
+    ok(`${T.bold}TIP® Protocol genesis complete.${T.reset}`);
     console.log();
     if (!allPass) {
       warn("Some validation checks failed. Review the output above.");

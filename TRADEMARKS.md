@@ -5,11 +5,27 @@
 The following are trademarks of The AI Lab Intelligence Unobscured, Inc.
 ("The AI Lab") and are not granted by the TIPCL-1.0 software license:
 
-- **TIP™**: TIP Protocol, Trust Identity Protocol
+**Registered with the U.S. Patent and Trademark Office:**
+
+- **TIP®**: U.S. Reg. No. 8,380,201, registered August 4, 2026, Principal Register, Class 042
+- **Trust Identity Protocol®**: U.S. Reg. No. 8,329,395, registered June 30, 2026, Supplemental Register
+
+**Unregistered marks (applications pending or common-law rights claimed):**
+
 - **AI Trust ID™**: The personal trust credential system
 - **AI Trust Registry™**: The credential issuance registry
 - **The Global Seal of Trust™**: The network identity
 - **AI Trust ID Seal** (visual design): The circular gold-ring credential badge
+
+### Correct symbol usage
+
+The ® symbol may be used **only** with TIP and Trust Identity Protocol,
+and only in the United States. Every other mark above must carry ™ until
+its registration issues.
+
+The registration covers the word **TIP** standing alone, so the symbol
+attaches to that word: write **TIP® Protocol**, never "TIP Protocol®".
+Using ® on an unregistered mark is false marking under 15 U.S.C. 1124.
 
 ## What You CAN Do Without a Trademark License
 
@@ -26,7 +42,7 @@ These uses are permitted for anyone implementing TIP Protocol:
 
 The following require written permission from The AI Lab:
 
-✗ Using "TIP™", "TIP Protocol™", or confusingly similar marks in your product name  
+✗ Using "TIP®", "Trust Identity Protocol®", "TIP Protocol", or confusingly similar marks in your product name  
 ✗ Using "AI Trust ID™" in your product name, service name, or domain  
 ✗ Using "AI Trust Registry™" to describe your credential system  
 ✗ Displaying the AI Trust ID Seal visual design as your own product's badge  
@@ -78,5 +94,5 @@ theailab.org
 
 *The AI Lab enforces its trademark rights to protect the integrity of the
 TIP Protocol network and the trust signals that users depend on. Enforcement
-is not about restricting use: it is about ensuring that "TIP™" and
+is not about restricting use: it is about ensuring that "TIP®" and
 "AI Trust ID™" always mean a consistent, audited standard.*

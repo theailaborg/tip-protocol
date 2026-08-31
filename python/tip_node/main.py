@@ -42,7 +42,7 @@ def main() -> None:
     config = load_config()
 
     log.info("=" * 56)
-    log.info("  TIP™ Protocol Node  v2.0.0")
+    log.info("  TIP® Protocol Node  v2.0.0")
     log.info(f"  Node ID    : {config['node_id']}")
     log.info(f"  Region     : {config['region']}")
     log.info(f"  Port       : {config['port']}")

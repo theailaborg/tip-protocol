@@ -74,7 +74,7 @@ def _print_score(data: dict) -> None:
 @click.group()
 @click.version_option("2.0.0", prog_name="tip")
 def cli():
-    """TIP™ Protocol CLI v2.0 — Trust Identity Protocol\n\nThe AI Lab Intelligence Unobscured, Inc. | theailab.org"""
+    """TIP® Protocol CLI v2.0 — Trust Identity Protocol\n\nThe AI Lab Intelligence Unobscured, Inc. | theailab.org"""
 
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -512,7 +512,7 @@ def badge_seal(score, size, variant, founding, out):
 @click.option("--variant", default="light", help="light | dark")
 @click.option("--out",     default=None, help="Output file")
 def badge_mark(size, variant, out):
-    """Generate a TIP™ Powered Mark SVG (open, Apache 2.0)."""
+    """Generate a TIP® Powered Mark SVG (open, Apache 2.0)."""
     from sdk.client import TIPBadgesClient
     svg = TIPBadgesClient().render_tip_mark(size, variant)
     if out:

@@ -3,7 +3,7 @@
  * @description TIP Badge Renderer — generates SVG badges server-side or in-browser.
  *
  * Two distinct badge objects (per spec):
- *   1. TIP™ Powered Mark     — open, free, any implementer
+ *   1. TIP® Powered Mark     — open, free, any implementer
  *   2. AI Trust ID™ Seal     — registry-issued, personal credential
  *
  * Plus:
@@ -147,12 +147,12 @@ class TIPBadgesClient {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // TIP™ POWERED MARK  (open compatibility mark)
+  // TIP® POWERED MARK  (open compatibility mark)
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Render the TIP™ Powered Mark SVG.
-   * Free for any TIP™ implementer — no permission needed.
+   * Render the TIP® Powered Mark SVG.
+   * Free for any TIP® implementer — no permission needed.
    *
    * @param {Object} [options]
    * @param {number} [options.size]     default 140
@@ -337,14 +337,14 @@ class TIPBadgesClient {
   generateEmbedWidget({ tipId, score, variant = "gold-dark", founding = false, size = 80 }) {
     const svg = this.renderSeal({ score, size, variant, founding });
     const tier = getTier(score);
-    return `<!-- TIP™ AI Trust ID Badge — theailab.org/trust-identity-protocol -->
+    return `<!-- TIP® AI Trust ID Badge — theailab.org/trust-identity-protocol -->
 <div class="tip-badge" data-tip-id="${tipId}" style="display:inline-block;text-align:center;font-family:sans-serif;">
   <a href="https://theailab.org/verify/${encodeURIComponent(tipId)}" target="_blank" rel="noopener noreferrer" title="Verify this AI Trust ID™" style="display:block;text-decoration:none;">
     ${svg}
     <div style="margin-top:6px;font-size:11px;color:#4A5568;">${tier.label}</div>
   </a>
 </div>
-<!-- End TIP™ Badge -->`;
+<!-- End TIP® Badge -->`;
   }
 }
 

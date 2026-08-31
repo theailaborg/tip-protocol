@@ -839,7 +839,7 @@ TIP Protocol uses a layered licensing model:
 |-------|---------|---------|
 | Protocol Specification | **CC-BY 4.0** | Free for everyone, forever. Attribution required. |
 | Reference Implementation | **TIPCL-1.0** | Free under $100K revenue. Paid above. Converts to Apache 2.0 on January 1, 2031. |
-| TIP™ Trademarks | **Trademark Law** | Reserved by The AI Lab. Separate license required. |
+| TIP® Trademarks | **Trademark Law** | Reserved by The AI Lab. Separate license required. |
 | Patent Claims (16 inventions, A-P) | **Patent Law** | Included in TIPCL commercial license. Valid to ~2047. |
 
 **Free for:** Individuals · Nonprofits · Journalism organisations · Governments · Education · Businesses under $100K annual revenue
@@ -869,7 +869,7 @@ We welcome contributions from the community. Please read [CONTRIBUTING.md](./CON
 
 ## Trademarks
 
-**TIP™**, **AI Trust ID™**, **AI Trust Registry™**, and **The Global Seal of Trust™** are trademarks of The AI Lab Intelligence Unobscured, Inc. This repository and its license do not grant any rights to use these marks. See [TRADEMARKS.md](./TRADEMARKS.md) for permitted uses.
+**TIP®** (U.S. Reg. No. 8,380,201) and **Trust Identity Protocol®** (U.S. Reg. No. 8,329,395) are registered trademarks of The AI Lab Intelligence Unobscured, Inc. **AI Trust ID™**, **AI Trust Registry™**, and **The Global Seal of Trust™** are trademarks of The AI Lab Intelligence Unobscured, Inc. This repository and its license do not grant any rights to use these marks. See [TRADEMARKS.md](./TRADEMARKS.md) for permitted uses.
 
 ---
 
@@ -911,7 +911,8 @@ This software implements inventions that are the subject of pending U.S. patent 
 **Copyright 2026 The AI Lab Intelligence Unobscured, Inc.**  
 **Authored by Dinesh Mendhe · theailab.org**
 
-*TIP™ · AI Trust ID™ · AI Trust Registry™ · The Global Seal of Trust™*  
-*Trademarks of The AI Lab Intelligence Unobscured, Inc.*
+*TIP® · Trust Identity Protocol® · AI Trust ID™ · AI Trust Registry™ · The Global Seal of Trust™*  
+*TIP and Trust Identity Protocol are registered trademarks of The AI Lab Intelligence Unobscured, Inc.*  
+*All other marks shown are trademarks of The AI Lab Intelligence Unobscured, Inc.*
 
 </div>

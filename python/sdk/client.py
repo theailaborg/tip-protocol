@@ -579,9 +579,9 @@ class TIPBadgesClient:
             f'</svg>'
         )
 
-    # ── TIP™ Powered Mark ─────────────────────────────────────────────────────
+    # ── TIP® Powered Mark ─────────────────────────────────────────────────────
     def render_tip_mark(self, size: int = 140, variant: str = "light") -> str:
-        """Render the TIP™ Powered Mark (open, Apache 2.0)."""
+        """Render the TIP® Powered Mark (open, Apache 2.0)."""
         S       = float(size)
         cx = cy = S / 2
         R       = S / 2 - S * 0.04
@@ -740,7 +740,7 @@ class TIPBadgesClient:
         tier  = get_tier(score)
         url   = f"https://theailab.org/verify/{urllib.parse.quote(tip_id)}"
         return (
-            f'<!-- TIP™ AI Trust ID Badge — theailab.org/trust-identity-protocol -->\n'
+            f'<!-- TIP® AI Trust ID Badge — theailab.org/trust-identity-protocol -->\n'
             f'<div class="tip-badge" data-tip-id="{tip_id}" '
             f'style="display:inline-block;text-align:center;font-family:sans-serif;">\n'
             f'  <a href="{url}" target="_blank" rel="noopener noreferrer" '
@@ -750,7 +750,7 @@ class TIPBadgesClient:
             f'{tier.label}</div>\n'
             f'  </a>\n'
             f'</div>\n'
-            f'<!-- End TIP™ Badge -->'
+            f'<!-- End TIP® Badge -->'
         )
 
 

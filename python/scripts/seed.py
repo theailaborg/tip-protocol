@@ -303,14 +303,14 @@ def step5_sample_content(
     samples = [
         {
             "origin": Origin.OH,
-            "title":  "TIP™ Protocol — Why the Internet Needs a Trust Layer",
+            "title":  "TIP® Protocol — Why the Internet Needs a Trust Layer",
             "content": (
                 "The internet was built without an identity layer. HTTP, TCP/IP, DNS, and TLS "
                 "solve routing, delivery, naming, and encryption. But none of them answer the "
                 "fundamental question: who created this content, and can I trust it? This was "
                 "an acceptable gap when content creation required skill and equipment. It is an "
                 "existential gap now that AI can generate indistinguishable text, images, video, "
-                "and audio at near-zero marginal cost. TIP™ is the protocol layer that closes this gap."
+                "and audio at near-zero marginal cost. TIP® is the protocol layer that closes this gap."
             ),
         },
         {
@@ -320,16 +320,16 @@ def step5_sample_content(
                 "Post-quantum cryptography refers to cryptographic algorithms secure against "
                 "attacks by quantum computers. The NIST PQC standardisation process has selected "
                 "ML-DSA-65 (Dilithium), SLH-DSA-128s (SPHINCS+), and ML-KEM-768 (Kyber). "
-                "TIP™ mandates these at the protocol level for long-term security. "
+                "TIP® mandates these at the protocol level for long-term security. "
                 "[Drafted by the author and expanded with AI assistance for clarity.]"
             ),
         },
         {
             "origin": Origin.AG,
-            "title":  "AI-Generated: Frequently Asked Questions about TIP™",
+            "title":  "AI-Generated: Frequently Asked Questions about TIP®",
             "content": (
-                "Q: What is TIP™? A: An open, federated protocol for verifying human identity "
-                "and declaring content provenance. Q: Is TIP™ free? A: Yes — the spec is CC-BY 4.0. "
+                "Q: What is TIP®? A: An open, federated protocol for verifying human identity "
+                "and declaring content provenance. Q: Is TIP® free? A: Yes — the spec is CC-BY 4.0. "
                 "Q: How does the trust score work? A: Scores are computed deterministically from "
                 "your complete transaction history on the federated DAG. "
                 "[Generated entirely by AI from the protocol specification.]"
@@ -337,14 +337,14 @@ def step5_sample_content(
         },
         {
             "origin": Origin.MX,
-            "title":  "Mixed: TIP™ Launch Announcement",
+            "title":  "Mixed: TIP® Launch Announcement",
             "content": (
-                "[Human-written announcement] We are pleased to announce TIP™ Protocol v2.0. "
+                "[Human-written announcement] We are pleased to announce TIP® Protocol v2.0. "
                 "[AI-generated technical summary] This release includes five critical security fixes "
                 "addressing privacy architecture, pre-scan calibration, identity revocation, GDPR "
                 "compliance, and jurisdiction tier enforcement. "
                 "[Human-written conclusion] We invite developers, journalists, and researchers to "
-                "implement TIP™ and join the founding network."
+                "implement TIP® and join the founding network."
             ),
         },
     ]
@@ -500,7 +500,7 @@ def step7_write_output(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="TIP™ Protocol Production Seed Script v2.0",
+        description="TIP® Protocol Production Seed Script v2.0",
     )
     parser.add_argument("--genesis-keys-only", action="store_true",
                         help="Only generate genesis root keypair (step 1)")
@@ -519,7 +519,7 @@ def main() -> None:
     )
 
     print()
-    print(f"{BGNAVY}{WHT}{BOLD}  TIP™ Protocol — Production Seed Script v2.0  {R}")
+    print(f"{BGNAVY}{WHT}{BOLD}  TIP® Protocol — Production Seed Script v2.0  {R}")
     print(f"{DIM}  The AI Lab Intelligence Unobscured, Inc. | theailab.org{R}")
     print()
     info(f"Mode:     {'Direct (no HTTP)' if direct else f'API ({node_url})'}")
@@ -547,7 +547,7 @@ def main() -> None:
         lbl("Sample content",        f"{len(output['sample_content'])} records (OH, AA, AG, MX)")
         lbl("Validation",            f"{GRN}All checks passed{R}" if all_pass else f"{RED}Some checks failed{R}")
         print()
-        ok(f"{BOLD}TIP™ Protocol genesis complete.{R}")
+        ok(f"{BOLD}TIP® Protocol genesis complete.{R}")
         print()
 
         if not all_pass:

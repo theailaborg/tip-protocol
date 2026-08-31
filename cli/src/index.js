@@ -89,7 +89,7 @@ function printScore(data) {
 
 program
   .name("tip")
-  .description(`${C.bold}TIP™ Protocol CLI${C.reset} — Trust Identity Protocol v2.0\n  The AI Lab Intelligence Unobscured, Inc. | theailab.org`)
+  .description(`${C.bold}TIP® Protocol CLI${C.reset} — Trust Identity Protocol v2.0\n  The AI Lab Intelligence Unobscured, Inc. | theailab.org`)
   .version(require("../../package.json").version);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -614,7 +614,7 @@ badgeCmd
 
 badgeCmd
   .command("mark")
-  .description("Generate a TIP™ Powered Mark SVG (open — no permission needed)")
+  .description("Generate a TIP® Powered Mark SVG (open — no permission needed)")
   .option("--size <n>", "Size in pixels (default: 140)", parseInt)
   .option("--variant <v>", "light | dark (default: light)", "light")
   .option("--out <path>", "Output file")
@@ -678,7 +678,7 @@ badgeCmd
 program.parse(process.argv);
 
 if (process.argv.length < 3) {
-  console.log(`\n${C.bold}TIP™ Protocol CLI v2.0${C.reset}`);
+  console.log(`\n${C.bold}TIP® Protocol CLI v2.0${C.reset}`);
   console.log(`${C.dim}The AI Lab Intelligence Unobscured, Inc. | theailab.org${C.reset}\n`);
   program.help();
 }

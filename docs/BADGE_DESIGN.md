@@ -257,5 +257,5 @@ https://badge.theailab.org/svg/origin-{code}-{status}.svg
 ---
 
 *Copyright 2026 The AI Lab Intelligence Unobscured, Inc.*  
-*AI Trust ID™, AI Trust Registry™, TIP™ are trademarks of The AI Lab.*  
+*AI Trust ID™, AI Trust Registry™, TIP® are trademarks of The AI Lab.*  
 *Badge designs are proprietary. TIP Powered Mark is licensed under TIPCL-1.0.*
