@@ -79,6 +79,11 @@ async function exerciseVideoBounded(dag) {
   const capped = await matchVideo(dag, longVid(flip1), { maxCandidates: 1 });
   expect(capped.length).toBeLessThanOrEqual(1);
   expect(capped[0] && capped[0].ctid).toBe("OH-vid-long");
+  // sampled scoring still identifies the duplicate at full coverage
+  const sampled = await matchVideo(dag, longVid(flip1), { scoreFrames: 50 });
+  const sh = sampled.find((h) => h.ctid === "OH-vid-long");
+  expect(sh).toBeDefined();
+  expect(sh.targetMatchPct).toBeGreaterThanOrEqual(80);
   // probe subsampling still excludes unrelated content
   const far = { profile: "cf-video-1", kind: "video", features: Array.from({ length: 300 }, (_, i) => vframe("54".repeat(32), i)) };
   expect((await matchVideo(dag, far)).find((h) => h.ctid === "OH-vid-long")).toBeUndefined();

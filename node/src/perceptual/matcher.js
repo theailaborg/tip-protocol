@@ -16,7 +16,7 @@ const { lshBands } = require("tip-content-fingerprint/src/text/lsh");
 const { jaccardEstimate } = require("tip-content-fingerprint/src/text/compare");
 const { queryKeys } = require("tip-content-fingerprint/src/image/mih");
 const { hammingHex } = require("tip-content-fingerprint/src/image/hamming");
-const { VIDEO_MATCH_PROBE_FRAMES, VIDEO_MATCH_MAX_CANDIDATES, VIDEO_MATCH_YIELD_ROWS } = require("../../../shared/constants");
+const { VIDEO_MATCH_PROBE_FRAMES, VIDEO_MATCH_MAX_CANDIDATES, VIDEO_MATCH_SCORE_FRAMES, VIDEO_MATCH_YIELD_ROWS } = require("../../../shared/constants");
 
 const TEXT_FLAG_THRESHOLD = 0.30; // reviewer-panel "possible copy" cutoff
 const IMAGE_DISTANCE = 31;        // PDQ Hamming match floor (of 256)
@@ -91,15 +91,28 @@ async function matchImage(dag, queryFp, opts) {
 // (matchTwoHashBrute): coverage = number of A-frames with ANY B-frame within
 // Hamming < D. Reimplemented here (not imported) because the package's video
 // module pulls the wasm decode stack at load; only the pure hammingHex is used.
+// hammingHex re-parses hex on every call (~4 us); scoring compares frame sets
+// pairwise, so decode each set to bytes once and popcount (~0.05 us/pair).
+const _POPCOUNT = new Uint8Array(256);
+for (let i = 0; i < 256; i++) _POPCOUNT[i] = _POPCOUNT[i >> 1] + (i & 1);
+
+function _decodePdqSet(frames) {
+  return frames.map((f) => Buffer.from(f.pdq, "hex"));
+}
+
+function _hammingBytes(a, b) {
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d += _POPCOUNT[a[i] ^ b[i]];
+  return d;
+}
+
 async function _coverage(A, B, D) {
   let n = 0;
   let sinceYield = 0;
   for (const a of A) {
     for (const b of B) {
-      if (hammingHex(a.pdq, b.pdq) < D) { n++; break; }
+      if (_hammingBytes(a, b) < D) { n++; break; }
     }
-    // Two 1.5k-frame sets are millions of Hamming comparisons; yielding keeps
-    // consensus and the persistence drain alive while a long video is scored.
     if (++sinceYield >= VIDEO_MATCH_YIELD_ROWS) {
       sinceYield = 0;
       await new Promise((resolve) => setImmediate(resolve));
@@ -150,13 +163,18 @@ async function matchVideo(dag, queryFp, opts) {
   const maxCandidates = opts.maxCandidates != null ? opts.maxCandidates : VIDEO_MATCH_MAX_CANDIDATES;
   const ctids = [...hitsByCtid.entries()].sort((a, b) => b[1] - a[1]).slice(0, maxCandidates).map(([ctid]) => ctid);
 
+  // Scoring samples both frame sets: coverage over an evenly spaced subset is
+  // an unbiased estimate of the full-set percentage at a bounded cost.
+  const scoreFrames = opts.scoreFrames != null ? opts.scoreFrames : VIDEO_MATCH_SCORE_FRAMES;
+  const qs = _decodePdqSet(_evenSample(q, scoreFrames));
   const out = [];
   for (const ctid of ctids) {
     const rows = await dag.getPhashCodesByCtid(ctid);
     const t = rows.filter((r) => r.modality === "video" && (r.quality == null || r.quality >= F));
     if (!t.length) continue;
-    const queryMatchPct = ((await _coverage(q, t, D)) * 100) / q.length;
-    const targetMatchPct = ((await _coverage(t, q, D)) * 100) / t.length;
+    const ts = _decodePdqSet(_evenSample(t, scoreFrames));
+    const queryMatchPct = ((await _coverage(qs, ts, D)) * 100) / qs.length;
+    const targetMatchPct = ((await _coverage(ts, qs, D)) * 100) / ts.length;
     if (queryMatchPct >= Pq && targetMatchPct >= Pc) out.push({ ctid, queryMatchPct, targetMatchPct });
   }
   out.sort((a, b) => b.targetMatchPct - a.targetMatchPct);
