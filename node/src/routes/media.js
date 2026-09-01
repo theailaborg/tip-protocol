@@ -31,16 +31,17 @@
 "use strict";
 
 const express = require("express");
+const { UPLOAD_SESSION_STATE } = require("../../../shared/constants");
 const { asyncHandler } = require("../middleware/error-handler");
 
 function createRouter({ mediaService, chunkedUploadService }) {
   const router = express.Router();
 
-  // Streaming upload — NO body parser. The raw request stream flows
-  // through media-service.uploadStream (hash + size gauge → tmp file →
-  // promote), so node memory stays flat regardless of file size. The
-  // per-mime genesis caps are enforced mid-stream; lifting them later
-  // (e.g. video in v2) is a genesis change only — transport is ready.
+  // Streaming upload, NO body parser. The raw request stream flows
+  // through media-service.uploadStream (hash + size gauge -> tmp file ->
+  // promote), so node memory stays flat regardless of file size. Node-local
+  // per-mime caps are enforced mid-stream. fs backend only: S3-backed nodes
+  // answer 410 and point at the presigned multipart path below.
   router.post("/media/upload", asyncHandler(async (req, res) => {
     const mime = req.get("X-Media-Mime") || req.get("Content-Type");
     const signerTip = req.get("X-Signer-TipId");
@@ -84,8 +85,10 @@ function createRouter({ mediaService, chunkedUploadService }) {
     res.status(200).json(result);
   }));
 
-  // Finalize — authenticated (signer signs MEDIA_UPLOAD_COMPLETE:{session}:{ts}:{tip}).
+  // Finalize, authenticated (signer signs MEDIA_UPLOAD_COMPLETE:{session}:{ts}:{tip}).
   // Body carries the S3 part ETags; node assembles, re-hashes, verifies, promotes.
+  // 201 with the descriptor when that finishes within the sync window, else 202
+  // and the client polls upload-status for the persisted outcome.
   router.post("/media/upload-complete/:sessionId", express.json(), asyncHandler(async (req, res) => {
     const result = await chunkedUploadService.complete(req.params.sessionId, {
       signer_tip_id: req.body.signer_tip_id,
@@ -93,7 +96,7 @@ function createRouter({ mediaService, chunkedUploadService }) {
       timestamp: req.body.timestamp,
       parts: req.body.parts,
     });
-    res.status(201).json(result);
+    res.status(result.state === UPLOAD_SESSION_STATE.FINALIZING ? 202 : 201).json(result);
   }));
 
   // Cancel an in-flight upload — authenticated (MEDIA_UPLOAD_ABORT:{session}:{ts}:{tip}).

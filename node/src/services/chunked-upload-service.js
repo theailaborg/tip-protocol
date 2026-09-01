@@ -25,6 +25,10 @@ const { shake256Incremental, mldsaVerify } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { schemaError } = require("../schemas/_common");
 const mediaUploadSchema = require("../schemas/media-upload");
+const {
+  MEDIA_LIMITS, UPLOAD_SESSION_STATE, CHUNKED_COMPLETE_SYNC_WAIT_MS, CHUNKED_STATUS_POLL_MS, CHUNKED_RESULT_TTL_MS,
+  CHUNKED_REHASH_ATTEMPTS, CHUNKED_REHASH_RETRY_MS,
+} = require("../../../shared/constants");
 
 const DEFAULT_PART_SIZE = 10 * 1024 * 1024;   // status() fallback only
 const MIN_PART_SIZE = 5 * 1024 * 1024;        // S3 hard minimum for every non-final part
@@ -48,6 +52,9 @@ function createChunkedUploadService({
   log = console,
   partSize = null,      // optional fixed override; null => adaptive (default)
   sessionTtlMs = _resolveSessionTtlMs(),
+  mediaLimits = MEDIA_LIMITS,
+  completeSyncWaitMs = CHUNKED_COMPLETE_SYNC_WAIT_MS,
+  rehashRetryMs = CHUNKED_REHASH_RETRY_MS,
 }) {
   if (!storage) throw new Error("chunked-upload-service: storage required");
   if (!dag) throw new Error("chunked-upload-service: dag required");
@@ -105,7 +112,7 @@ function createChunkedUploadService({
 
     const sizeLimit = mediaUploadSchema.validateStreamRequest({
       mime, signer_tip_id: signerTipId, signature, timestamp,
-    }, { dag });
+    }, { dag, mediaLimits });
     if (size > sizeLimit) {
       throw schemaError(413, `File size ${size} exceeds ${sizeLimit} bytes`, "file_too_large");
     }
@@ -162,9 +169,19 @@ function createChunkedUploadService({
     };
   }
 
+  const { UPLOADING, FINALIZING, COMPLETE, FAILED } = UPLOAD_SESSION_STATE;
+  const _finalizing = new Map();  // session_id -> in-flight finalize promise
+  const PENDING = Symbol("pending");
+
+  // ListParts is only valid while the multipart is open; a finalized session
+  // reports its persisted outcome instead.
   async function status(sessionId) {
     const session = await dag.getUploadSession(sessionId);
     if (!session) throw schemaError(404, "Upload session not found or expired", "session_not_found");
+    const state = session.state || UPLOADING;
+    if (state === COMPLETE) return { state, result: session.result, expires_at: session.expires_at };
+    if (state === FAILED) return { state, error: session.result, expires_at: session.expires_at };
+    if (state === FINALIZING) return { state, poll_after_ms: CHUNKED_STATUS_POLL_MS, expires_at: session.expires_at };
     const psize = session.completed_size || DEFAULT_PART_SIZE;
     const partCount = Math.ceil(session.size / psize);
     const uploaded = await storage.listUploadedParts(session.upload_id, session.s3_key);
@@ -177,6 +194,7 @@ function createChunkedUploadService({
       parts.push({ part_number: n, url: await storage.presignUploadPart(session.upload_id, session.s3_key, n) });
     }
     return {
+      state,
       part_count: partCount,
       uploaded_parts: uploadedNums,
       missing_parts: missing,
@@ -189,7 +207,17 @@ function createChunkedUploadService({
     const session = await dag.getUploadSession(sessionId);
     if (!session) throw schemaError(404, "Upload session not found or expired", "session_not_found");
     await _verifyOwnerAction("MEDIA_UPLOAD_COMPLETE", sessionId, session, { signer_tip_id, signature, timestamp });
+    const state = session.state || UPLOADING;
+    if (state === COMPLETE) return session.result;
+    if (state === FAILED) throw _failureError(session.result);
 
+    // One in-flight job per session: concurrent completes share it instead of
+    // racing to assemble the same multipart.
+    const job = _finalizing.get(sessionId) || _startFinalize(session, state === UPLOADING ? parts : null);
+    return _awaitFinalize(job, sessionId);
+  }
+
+  function _normalizeParts(parts) {
     if (!Array.isArray(parts) || parts.length === 0) {
       throw schemaError(400, "parts (ETags) required to complete", "parts_required");
     }
@@ -198,51 +226,130 @@ function createChunkedUploadService({
       .filter(p => Number.isInteger(p.part_number) && typeof p.etag === "string")
       .sort((a, b) => a.part_number - b.part_number);
     if (normParts.length === 0) throw schemaError(400, "parts malformed", "parts_invalid");
+    return normParts;
+  }
 
-    // Assemble the multipart at the tmp key.
-    await storage.completeMultipartUpload(session.upload_id, session.s3_key, normParts);
+  // Wait only as long as a proxied HTTP round-trip survives; past that the
+  // client gets the 202 shape and polls status() for the persisted outcome.
+  function _awaitFinalize(job, sessionId) {
+    const pending = { state: FINALIZING, session_id: sessionId, poll_after_ms: CHUNKED_STATUS_POLL_MS };
+    if (completeSyncWaitMs <= 0) return Promise.resolve(pending);
+    let timer;
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => resolve(PENDING), completeSyncWaitMs);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+    return Promise.race([job, timeout]).then(
+      out => { clearTimeout(timer); return out === PENDING ? pending : out; },
+      err => { clearTimeout(timer); throw err; },
+    );
+  }
 
-    // Re-read the assembled object from S3 and hash it ourselves — never trust the
-    // client's claimed hash. Streamed, so memory stays flat for large files.
-    let result;
+  // parts != null: the session is still UPLOADING, so assemble the multipart
+  // first and persist FINALIZING before any long work, so a crash from there
+  // resumes instead of orphaning. An assemble failure leaves the session
+  // UPLOADING (retryable); only verification failures are recorded as FAILED.
+  function _startFinalize(session, parts) {
+    const sessionId = session.session_id;
+    const job = (async () => {
+      let current = session;
+      if (parts !== null) {
+        const normParts = _normalizeParts(parts);
+        try {
+          await storage.completeMultipartUpload(session.upload_id, session.s3_key, normParts);
+        } catch (err) {
+          throw schemaError(400, `Failed to assemble multipart: ${err.message}`, "assemble_failed");
+        }
+        // Fresh TTL: the row must outlive the re-hash, not just the upload.
+        current = await dag.updateUploadSession(sessionId, {
+          state: FINALIZING, parts: normParts, expires_at: nowMs() + sessionTtlMs,
+        });
+      }
+      return _finalize(current || session);
+    })();
+    _finalizing.set(sessionId, job);
+    // Outcome is persisted on the session; a rejection here is delivered to
+    // whoever awaits the same promise, so an unobserved one is not a leak.
+    job.catch(() => { }).finally(() => _finalizing.delete(sessionId));
+    return job;
+  }
+
+  // Re-read the assembled object from S3 and hash it ourselves (never trust the
+  // client's claimed hash), gate on the DETECTED type, promote. Streamed, so
+  // memory stays flat for large files.
+  async function _finalize(session) {
+    const sessionId = session.session_id;
     try {
-      result = await _hashS3Object(session.s3_key);
+      let read;
+      try {
+        read = await _hashS3ObjectWithRetry(session.s3_key);
+      } catch (err) {
+        throw schemaError(400, `Failed to read assembled object: ${err.message}`, "assemble_failed");
+      }
+      const { hashHex, detectedMime, actualSize } = read;
+      if (actualSize !== session.size) {
+        throw schemaError(400, `Assembled size ${actualSize} != declared ${session.size}`, "size_mismatch");
+      }
+      if (hashHex !== session.content_hash) {
+        throw schemaError(400, "Hash mismatch: uploaded bytes do not match signed content_hash", "hash_mismatch");
+      }
+      // A disabled/unrecognized type has cap 0 and is rejected; else it's stored
+      // under its true mime, never the declared one, so a mislabel can't dodge a cap.
+      const cap = mediaUploadSchema.limitForDetectedMime(detectedMime, mediaLimits);
+      if (actualSize > cap) {
+        throw schemaError(415, `Detected type ${detectedMime || "unknown"} is disabled or exceeds its cap`, "mime_disabled");
+      }
+      const { media_id } = await storage.copyToFinal(session.s3_key, session.content_hash, detectedMime);
+      const result = {
+        media_id,
+        content_hash: session.content_hash,
+        mime: detectedMime,
+        size: actualSize,
+        uploaded_at: nowMs(),
+        signer_tip_id: session.signer_tip_id,
+      };
+      await dag.updateUploadSession(sessionId, { state: COMPLETE, result, expires_at: nowMs() + CHUNKED_RESULT_TTL_MS });
+      log.info?.(`chunked-upload complete: ${session.signer_tip_id} session=${sessionId} media_id=${media_id} size=${actualSize} mime=${detectedMime}`);
+      return result;
     } catch (err) {
-      await _dropAssembled(session);
-      throw schemaError(400, `Failed to read assembled object: ${err.message}`, "assemble_failed");
+      const failure = { code: err.code || "finalize_failed", status: err.status || 500, message: err.error || err.message || String(err) };
+      try { await storage.deleteObjectByKey(session.s3_key); }
+      catch (e) { log.warn?.(`chunked-upload drop-assembled failed: ${e.message}`); }
+      await dag.updateUploadSession(sessionId, { state: FAILED, result: failure, expires_at: nowMs() + CHUNKED_RESULT_TTL_MS });
+      log.warn?.(`chunked-upload finalize failed: session=${sessionId} ${failure.code}: ${failure.message}`);
+      throw _failureError(failure);
     }
-    const { hashHex, detectedMime, actualSize } = result;
+  }
 
-    if (actualSize !== session.size) {
-      await _dropAssembled(session);
-      throw schemaError(400, `Assembled size ${actualSize} != declared ${session.size}`, "size_mismatch");
-    }
-    if (hashHex !== session.content_hash) {
-      await _dropAssembled(session);
-      throw schemaError(400, "Hash mismatch: uploaded bytes do not match signed content_hash", "hash_mismatch");
-    }
-    // Gate + label on the DETECTED type (like single-shot validateRequest): a
-    // disabled/unrecognized type has cap 0 and is rejected; else it's stored under
-    // its true mime, never the declared one, so a mislabel can't dodge a cap.
-    const detected = detectedMime;
-    const cap = mediaUploadSchema.limitForDetectedMime(detected);
-    if (actualSize > cap) {
-      await _dropAssembled(session);
-      throw schemaError(415, `Detected type ${detected || "unknown"} is disabled or exceeds its cap`, "mime_disabled");
-    }
+  function _failureError(failure) {
+    return schemaError(failure.status || 500, failure.message, failure.code);
+  }
 
-    const { media_id } = await storage.copyToFinal(session.s3_key, session.content_hash, detected);
-    await dag.deleteUploadSession(sessionId);
+  // Finalize outlives the HTTP request, so a restart can leave sessions in
+  // FINALIZING with the assembled object still at the tmp key: pick them up.
+  async function resumeFinalizing() {
+    const stuck = await dag.listUploadSessionsByState(FINALIZING);
+    let resumed = 0;
+    for (const session of stuck) {
+      if (_finalizing.has(session.session_id)) continue;
+      resumed += 1;
+      // One at a time: each is a full re-hash of a possibly multi-GB object.
+      await _startFinalize(session, null).catch(() => { });
+    }
+    return { resumed };
+  }
 
-    log.info?.(`chunked-upload complete: ${session.signer_tip_id} session=${sessionId} media_id=${media_id} size=${actualSize} mime=${detected}`);
-    return {
-      media_id,
-      content_hash: session.content_hash,
-      mime: detected,
-      size: actualSize,
-      uploaded_at: nowMs(),
-      signer_tip_id: session.signer_tip_id,
-    };
+  // The SDK retries the GetObject request, not a body that drops mid-stream.
+  async function _hashS3ObjectWithRetry(key) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await _hashS3Object(key);
+      } catch (err) {
+        if (attempt >= CHUNKED_REHASH_ATTEMPTS || err.name === "NoSuchKey") throw err;
+        log.warn?.(`chunked-upload re-hash attempt ${attempt} failed for ${key}: ${err.message}; retrying`);
+        await new Promise(r => setTimeout(r, rehashRetryMs * attempt));
+      }
+    }
   }
 
   // Stream the assembled tmp object from S3: SHAKE-256 over the whole thing plus
@@ -262,14 +369,6 @@ function createChunkedUploadService({
     return { hashHex: hasher.digest("hex"), detectedMime, actualSize: size };
   }
 
-  // Assembled object exists at the tmp key but failed verification: delete it +
-  // the session. (Multipart is already completed, so Abort no longer applies.)
-  async function _dropAssembled(session) {
-    try { await storage.deleteObjectByKey(session.s3_key); }
-    catch (e) { log.warn?.(`chunked-upload drop-assembled failed: ${e.message}`); }
-    await dag.deleteUploadSession(session.session_id);
-  }
-
   // Still in-progress (not completed): abort the multipart (drops the parts), and
   // best-effort delete any object in case it was completed elsewhere.
   async function _abortSession(session) {
@@ -283,20 +382,26 @@ function createChunkedUploadService({
     const session = await dag.getUploadSession(sessionId);
     if (!session) return { aborted: false };
     await _verifyOwnerAction("MEDIA_UPLOAD_ABORT", sessionId, session, auth);
-    await _abortSession(session);
+    const state = session.state || UPLOADING;
+    if (state === FINALIZING) throw schemaError(409, "Upload is finalizing; poll upload-status", "finalizing");
+    if (state === UPLOADING) await _abortSession(session);
+    else await dag.deleteUploadSession(sessionId);
     return { aborted: true };
   }
 
-  // Expiry sweep: for every expired session, ABORT the S3 multipart (releasing the
-  // parts) BEFORE deleting the row — otherwise abandoned multipart parts orphan in
-  // S3 and bill forever.
+  // Expiry sweep: for every expired session still uploading, ABORT the S3
+  // multipart (releasing the parts) BEFORE deleting the row; otherwise abandoned
+  // multipart parts orphan in S3 and bill forever. A finalized session has no
+  // open multipart, only a possible tmp object.
   async function cleanupExpired() {
     const before = nowMs();
     const expired = await dag.listExpiredUploadSessions(before);
     let removed = 0;
     for (const session of expired) {
-      try { await storage.abortMultipartUpload(session.upload_id, session.s3_key); }
-      catch (e) { log.warn?.(`chunked-upload cleanup abort failed session=${session.session_id}: ${e.message}`); }
+      if ((session.state || UPLOADING) === UPLOADING) {
+        try { await storage.abortMultipartUpload(session.upload_id, session.s3_key); }
+        catch (e) { log.warn?.(`chunked-upload cleanup abort failed session=${session.session_id}: ${e.message}`); }
+      }
       try { await storage.deleteObjectByKey(session.s3_key); } catch { /* best effort */ }
       await dag.deleteUploadSession(session.session_id);
       removed += 1;
@@ -304,7 +409,7 @@ function createChunkedUploadService({
     return { removed };
   }
 
-  return { init, status, complete, abort, cleanupExpired };
+  return { init, status, complete, abort, cleanupExpired, resumeFinalizing };
 }
 
 module.exports = { createChunkedUploadService };
