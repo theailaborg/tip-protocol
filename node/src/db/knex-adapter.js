@@ -1107,7 +1107,8 @@ class KnexAdapter {
   }
   async getPhashCodesByCtid(ctid) {
     const rows = await this.knex("phash_code").where({ tip_ctid: ctid })
-      .select("tip_ctid", "profile", "modality", "frame", "ts", "quality", "pdq");
+      .select("tip_ctid", "profile", "modality", "frame", "ts", "quality", "pdq")
+      .orderBy([{ column: "component_idx" }, { column: "frame" }]);
     return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
   }
   // ── Audio (inverted landmark index, surrogate clip_id) ────────────────────
