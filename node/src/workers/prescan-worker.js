@@ -33,7 +33,7 @@
 
 "use strict";
 
-const { TX_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_PERMANENT_MEDIA_ERRORS } = require("../../../shared/constants");
 const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { nowMs } = require("../../../shared/time");
 const { aggregate } = require("../services/prescan-aggregator");
@@ -189,6 +189,15 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       return;
     }
 
+    // The chain already carries a verdict (the cross-node fail-open trigger
+    // fired while this job was waiting for a real one): nothing left to
+    // commit, so the job ends here instead of re-asking the classifier.
+    if (_alreadyDecided(job)) {
+      logger.info?.(`prescan-worker: ${job.job_id} content already carries a verdict; finishing without a scan`);
+      jobs.markDone(job.job_id);
+      return;
+    }
+
     // Dev-only short-circuit. When TIP_DEV_FORCE_PRESCAN_TIER is set in a
     // non-production environment, bypass the external classifier entirely
     // and use the local heuristic preScanContent (which respects the env
@@ -289,6 +298,19 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // are transient and a re-run may yield a real probability — UNLESS the
     // signal came from local fallback (retrying a down classifier is futile).
     if (agg.overall_hard_degraded) {
+      // The classifier said it will never take this file: waiting for a
+      // "real" verdict is futile, so fail open now with whatever signal the
+      // other modalities produced.
+      const rejected = _permanentMediaRejection(agg.modality_results);
+      if (rejected) {
+        logger.warn?.(`prescan-worker: classifier cannot process media on ${job.job_id} (${rejected}); failing open`);
+        _emitFailOpen(job, contentType, `classifier_rejected_media: ${rejected}`, {
+          probability: agg.probability,
+          modalityResults: agg.modality_results,
+          mediaResults,
+        });
+        return;
+      }
       if (!isLocalFallback && job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED) {
         jobs.releaseForRetry(job.job_id, "hard_degraded_signal", now() + PRESCAN_RETRY_WAIT_MS);
         return;
@@ -337,6 +359,20 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     };
     _submitPrescanCompleted(data);
     jobs.markDone(job.job_id);
+  }
+
+  function _alreadyDecided(job) {
+    const content = dag.getContent(job.ctid);
+    return !!content && content.prescan_status === "completed";
+  }
+
+  function _permanentMediaRejection(modalityResults) {
+    for (const m of modalityResults || []) {
+      const err = typeof m.error === "string" ? m.error : "";
+      const code = PRESCAN_PERMANENT_MEDIA_ERRORS.find(c => err.includes(c));
+      if (code) return code;
+    }
+    return null;
   }
 
   function _handleHardFailure(job, err) {

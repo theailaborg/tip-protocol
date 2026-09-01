@@ -73,11 +73,13 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
     storage: mediaStorage,
     dag,
     cryptoPoolRef,
+    mediaLimits: config.mediaLimits,
     log: getLogger("tip.media.chunked"),
   });
 
   const mediaService = createMediaService({
     storage: mediaStorage, dag,
+    mediaLimits: config.mediaLimits,
     selfNodeId: config.nodeRegisteredId || config.nodeId || null,
     cryptoPoolRef,
     chunkedUploadService,

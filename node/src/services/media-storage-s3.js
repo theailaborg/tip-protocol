@@ -40,10 +40,12 @@ const {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
   CopyObjectCommand,
+  UploadPartCopyCommand,
   ListPartsCommand,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { Upload } = require("@aws-sdk/lib-storage");
+const { S3_SINGLE_COPY_MAX_BYTES, S3_COPY_PART_BYTES, S3_COPY_CONCURRENCY } = require("../../../shared/constants");
 
 const DEFAULT_REGION = "us-west-2";
 const DEFAULT_PRESIGN_TTL_SEC = 300;
@@ -342,17 +344,62 @@ function createS3Backend(config = {}) {
     } catch (err) {
       if (err.$metadata?.httpStatusCode !== 404 && err.name !== "NotFound") throw err;
     }
-    await client.send(new CopyObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      CopySource: `${bucket}/${tmpKey}`,
-      ContentType: mime,
-      MetadataDirective: "REPLACE",
-      Metadata: { mime, "created-at": String(nowMs()), "content-hash": contentHash },
-      ...(_encryptionArgs()),
-    }));
+    const src = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: tmpKey }));
+    const size = src.ContentLength || 0;
+    const metadata = { mime, "created-at": String(nowMs()), "content-hash": contentHash };
+    if (size > S3_SINGLE_COPY_MAX_BYTES) {
+      await _multipartCopy(tmpKey, key, size, mime, metadata);
+    } else {
+      await client.send(new CopyObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        CopySource: `${bucket}/${tmpKey}`,
+        ContentType: mime,
+        MetadataDirective: "REPLACE",
+        Metadata: metadata,
+        ...(_encryptionArgs()),
+      }));
+    }
+    const dst = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    if ((dst.ContentLength || 0) !== size) {
+      await deleteObjectByKey(key);
+      throw new Error(`media-storage(s3): promoted object size ${dst.ContentLength} != staged ${size}`);
+    }
     await deleteObjectByKey(tmpKey);
     return { media_id: contentHash };
+  }
+
+  // S3 caps a single CopyObject at 5 GB; above that the object is copied
+  // server-side in byte-range parts (no bytes transit the node).
+  async function _multipartCopy(srcKey, key, size, mime, metadata) {
+    const { UploadId } = await client.send(new CreateMultipartUploadCommand({
+      Bucket: bucket, Key: key, ContentType: mime, Metadata: metadata, ...(_encryptionArgs()),
+    }));
+    const ranges = [];
+    for (let start = 0; start < size; start += S3_COPY_PART_BYTES) {
+      ranges.push({ n: ranges.length + 1, start, end: Math.min(start + S3_COPY_PART_BYTES, size) - 1 });
+    }
+    const parts = new Array(ranges.length);
+    let next = 0;
+    async function worker() {
+      while (next < ranges.length) {
+        const r = ranges[next++];
+        const res = await client.send(new UploadPartCopyCommand({
+          Bucket: bucket, Key: key, UploadId, PartNumber: r.n,
+          CopySource: `${bucket}/${srcKey}`, CopySourceRange: `bytes=${r.start}-${r.end}`,
+        }));
+        parts[r.n - 1] = { PartNumber: r.n, ETag: res.CopyPartResult.ETag };
+      }
+    }
+    try {
+      await Promise.all(Array.from({ length: Math.min(S3_COPY_CONCURRENCY, ranges.length) }, worker));
+      await client.send(new CompleteMultipartUploadCommand({
+        Bucket: bucket, Key: key, UploadId, MultipartUpload: { Parts: parts },
+      }));
+    } catch (err) {
+      await client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId })).catch(() => { });
+      throw err;
+    }
   }
 
   async function uploadPart(uploadId, key, partNumber, body) {

@@ -302,6 +302,68 @@ describe("tick — happy path", () => {
   });
 });
 
+// ── tick: jobs that must not loop ─────────────────────────────────────────
+describe("tick: no wait-for-real loop when a verdict cannot come", () => {
+  test("classifier permanently rejects a media file (file_too_large) → fail-open now, no retry", async () => {
+    const clock = makeClock();
+    const mediaService = makeMediaService({ m1: { base64: "x", mime: "video/mp4" } });
+    let calls = 0;
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now, mediaService, maxBacklog: 1000,
+      classifierHandler: () => {
+        calls += 1;
+        return R({ modalities: [
+          { modality: "text", probability: 0.3 },
+          { media_id: "m1", modality: "video", probability: null, weight: 0, error: "download_failed: file_too_large: 15031551355 bytes exceeds 524288000 limit" },
+        ] });
+      },
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "x", origin_code: "OH", content_type: "video", media: [{ media_id: "m1", mime: "video/mp4" }] },
+    });
+    await worker.tick();
+    expect(calls).toBe(1);
+    expect(submitter.txs).toHaveLength(1);
+    const tx = submitter.txs[0];
+    expect(tx.tx_type).toBe(TX_TYPES.PRESCAN_COMPLETED);
+    expect(tx.data.failed).toBe(true);
+    expect(tx.data.failure_reason).toBe("classifier_rejected_media: file_too_large");
+    const job = jobs.getByCtid(CTID);
+    expect(job.status).toBe("failed");
+    expect(job.retries).toBe(0);
+  });
+
+  test("a job whose content already carries an on-chain verdict is finished without a scan", async () => {
+    const clock = makeClock();
+    let calls = 0;
+    const { dag, jobs, submitter, worker } = await setup({
+      now: clock.now, maxBacklog: 1000,
+      classifierHandler: () => { calls += 1; return R({ modalities: [{ modality: "text", probability: 0.5 }] }); },
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "x", origin_code: "OH", content_type: "text" } });
+    // the cross-node fail-open trigger committed PRESCAN_COMPLETED meanwhile
+    dag.saveContent({ ...dag.getContent(CTID), prescan_status: "completed" });
+    const r = await worker.tick();
+    expect(r.outcome).toBe("completed");
+    expect(calls).toBe(0);
+    expect(submitter.txs).toHaveLength(0);
+    expect(jobs.getByCtid(CTID)).toBeNull();   // done rows are deleted
+  });
+
+  test("a job still pending on chain keeps the wait-for-real path (transient degrade)", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now, maxBacklog: 1000,
+      classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.5 }] }),
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "x", origin_code: "OH", content_type: "text" } });
+    await worker.tick();
+    expect(submitter.txs).toHaveLength(0);
+    expect(jobs.getByCtid(CTID).status).toBe("queued");
+  });
+});
+
 // ── tick — degraded path ──────────────────────────────────────────────────
 describe("tick — degraded signal handling", () => {
   test("hard-degraded response (forced 0.5) → release for retry (under retry budget)", async () => {

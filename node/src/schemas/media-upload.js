@@ -9,7 +9,7 @@
  *     - shape (bytes, mime, signer, sig)      - signature verifies against
  *     - mime format (image/audio/video)         identity's public_key
  *     - mime family enabled (video gate)      - storage.put
- *     - per-mime size limit (genesis)
+ *     - per-mime size limit (node-local deps.mediaLimits)
  *     - replay window (nowMs ± window)
  *     - DAG presence (signer exists,
  *       active, not revoked)
@@ -25,7 +25,6 @@
 
 const { schemaError } = require("./_common");
 const { isValidMs, nowMs } = require("../../../shared/time");
-const { CONTENT_LIMITS } = require("../../../shared/protocol-constants");
 
 const TIP_ID_RE = /^tip:\/\/id\/[A-Z]{2}-[0-9a-f]{16}$/;
 const HEX_RE = /^[0-9a-f]+$/i;
@@ -43,10 +42,13 @@ const HEIF_BRANDS = new Set(["mif1", "msf1", "heif", "miaf"]);
 // honest NTP-level clock skew.
 const UPLOAD_TIMESTAMP_WINDOW_MS = 5 * 60 * 1000;
 
-function _resolveSizeLimit(mime) {
-  if (mime.startsWith("image/")) return CONTENT_LIMITS.IMAGE_MAX_BYTES;
-  if (mime.startsWith("audio/")) return CONTENT_LIMITS.AUDIO_MAX_BYTES;
-  if (mime.startsWith("video/")) return CONTENT_LIMITS.VIDEO_MAX_BYTES;
+function _resolveSizeLimit(mime, limits) {
+  if (!limits || typeof limits !== "object") {
+    throw new Error("media-upload validate: deps.mediaLimits required");
+  }
+  if (mime.startsWith("image/")) return limits.max_image_bytes;
+  if (mime.startsWith("audio/")) return limits.max_audio_bytes;
+  if (mime.startsWith("video/")) return limits.max_video_bytes;
   return null;
 }
 
@@ -148,13 +150,13 @@ function _ebmlMime(b) {
  * Gate + size cap for a SNIFFED mime. Throws the same 415/limit errors as
  * the claim-based path, but driven by what the bytes actually are.
  */
-function limitForDetectedMime(mime) {
+function limitForDetectedMime(mime, mediaLimits) {
   if (mime === null) {
     throw schemaError(415, "Unrecognized file format; supported: png, jpeg, gif, webp, heic, heif, avif, mp3, wav, ogg, flac, mp4, webm", "format_unsupported");
   }
-  const limit = _resolveSizeLimit(mime);
+  const limit = _resolveSizeLimit(mime, mediaLimits);
   if (limit <= 0) {
-    throw schemaError(415, `Mime family disabled in genesis: ${mime} (detected from bytes)`, "mime_disabled");
+    throw schemaError(415, `Mime family disabled on this node: ${mime} (detected from bytes)`, "mime_disabled");
   }
   return limit;
 }
@@ -195,11 +197,11 @@ function _validateMeta(input, deps) {
     throw schemaError(415, `mime must match image/*, audio/*, or video/* (got ${input.mime})`, "mime_invalid");
   }
 
-  const sizeLimit = _resolveSizeLimit(input.mime);
+  const sizeLimit = _resolveSizeLimit(input.mime, deps?.mediaLimits);
   if (sizeLimit <= 0) {
-    // Mime family hard-gated in genesis (today: video). Disabled at the
-    // schema layer so callers see a 415 before any storage cost is paid.
-    throw schemaError(415, `Mime family disabled in genesis: ${input.mime}`, "mime_disabled");
+    // Cap 0 disables the family on this node. Rejected at the schema layer
+    // so callers see a 415 before any storage cost is paid.
+    throw schemaError(415, `Mime family disabled on this node: ${input.mime}`, "mime_disabled");
   }
 
   if (typeof input.signer_tip_id !== "string" || !TIP_ID_RE.test(input.signer_tip_id)) {
@@ -242,7 +244,7 @@ function _validateMeta(input, deps) {
  * @param {string} input.signer_tip_id
  * @param {string} input.signature
  * @param {number} input.timestamp
- * @param {Object} deps          { dag } — identity lookups
+ * @param {Object} deps          { dag, mediaLimits }: identity lookups + node-local caps
  */
 function validateRequest(input, deps) {
   if (!input || typeof input !== "object") {
@@ -255,7 +257,7 @@ function validateRequest(input, deps) {
   // The bytes decide the mime — gate + cap run on the DETECTED type, so a
   // mislabeled claim can neither dodge a family cap nor poison storage.
   const detected = detectMime(input.bytes);
-  const sizeLimit = limitForDetectedMime(detected);
+  const sizeLimit = limitForDetectedMime(detected, deps.mediaLimits);
   if (input.bytes.length > sizeLimit) {
     throw schemaError(413, `File too large: ${input.bytes.length} > ${sizeLimit}`, "file_too_large");
   }

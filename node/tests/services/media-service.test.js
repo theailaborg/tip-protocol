@@ -22,7 +22,7 @@ const { createMediaStorage } = require(path.join(SRC, "services/media-storage"))
 const { createMediaService } = require(path.join(SRC, "services/media-service"));
 const mediaUploadSchema = require(path.join(SRC, "schemas/media-upload"));
 const mediaAccessSchema = require(path.join(SRC, "schemas/media-access"));
-const { PRESCAN_REVIEW_STATES } = require(path.join(SHARED, "constants"));
+const { PRESCAN_REVIEW_STATES, MEDIA_LIMITS } = require(path.join(SHARED, "constants"));
 
 // Initialise protocol constants so CONTENT_LIMITS getters return real values.
 const PC = require(path.join(SHARED, "protocol-constants"));
@@ -155,14 +155,22 @@ describe("media-service.upload — validation", () => {
     await expect(service.upload(input)).rejects.toMatchObject({ code: "mime_invalid" });
   });
 
-  test("video bytes follow the genesis gate", async () => {
+  test("ships node-local defaults: video 15 GiB, image 1 GiB, audio 1 GiB", () => {
+    expect(MEDIA_LIMITS.max_video_bytes).toBe(15 * 1024 ** 3);
+    expect(MEDIA_LIMITS.max_image_bytes).toBe(1024 ** 3);
+    expect(MEDIA_LIMITS.max_audio_bytes).toBe(1024 ** 3);
+  });
+
+  test("video bytes pass under the default node-local cap", async () => {
     const input = _signedUpload(_mp4("clip"), "video/mp4", identity.tip_id, kp);
-    if (PC.CONTENT_LIMITS.VIDEO_MAX_BYTES > 0) {
-      const r = await service.upload(input);
-      expect(r.mime).toBe("video/mp4");
-    } else {
-      await expect(service.upload(input)).rejects.toMatchObject({ code: "mime_disabled" });
-    }
+    const r = await service.upload(input);
+    expect(r.mime).toBe("video/mp4");
+  });
+
+  test("a video cap of 0 disables the family on this node (415 mime_disabled)", async () => {
+    const svc = createMediaService({ storage, dag: _fakeDag(identity), mediaLimits: { ...MEDIA_LIMITS, max_video_bytes: 0 } });
+    const input = _signedUpload(_mp4("clip"), "video/mp4", identity.tip_id, kp);
+    await expect(svc.upload(input)).rejects.toMatchObject({ code: "mime_disabled" });
   });
 
   // HEIC/AVIF stills share the mp4 `ftyp` container; they must store as
@@ -196,10 +204,14 @@ describe("media-service.upload — validation", () => {
     await expect(service.upload(input)).rejects.toMatchObject({ code: "timestamp_required" });
   });
 
-  test("rejects file exceeding the genesis image cap", async () => {
-    const big = Buffer.concat([PNG_MAGIC, Buffer.alloc(PC.CONTENT_LIMITS.IMAGE_MAX_BYTES, 0x42)]);
+  test("rejects a file over this node's image cap (node-local mediaLimits)", async () => {
+    const svc = createMediaService({ storage, dag: _fakeDag(identity), mediaLimits: { ...MEDIA_LIMITS, max_image_bytes: 1024 } });
+    const big = Buffer.concat([PNG_MAGIC, Buffer.alloc(1024, 0x42)]);
     const input = _signedUpload(big, "image/png", identity.tip_id, kp);
-    await expect(service.upload(input)).rejects.toMatchObject({ code: "file_too_large" });
+    await expect(svc.upload(input)).rejects.toMatchObject({ code: "file_too_large" });
+    // the same bytes pass on a node with the default cap
+    const r = await service.upload(_signedUpload(big, "image/png", identity.tip_id, kp));
+    expect(r.size).toBe(big.length);
   });
 
   test("rejects timestamp outside replay window", async () => {
@@ -412,13 +424,26 @@ describe("media-service.uploadStream", () => {
   });
 
   test("size cap exceeded mid-stream → 413, stream aborted, tmp cleaned", async () => {
-    // just over the genesis image cap — abort fires mid-stream, not after buffering.
-    const big = Buffer.concat([PNG_MAGIC, Buffer.alloc(PC.CONTENT_LIMITS.IMAGE_MAX_BYTES, 1)]);
+    // just over this node's image cap; abort fires mid-stream, not after buffering.
+    const svc = createMediaService({ storage, dag: _fakeDag(identity), mediaLimits: { ...MEDIA_LIMITS, max_image_bytes: 1024 } });
+    const big = Buffer.concat([PNG_MAGIC, Buffer.alloc(1024, 1)]);
     const base = _signedUpload(big, "image/png", identity.tip_id, kp);
-    await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([big]) }))
+    await expect(svc.uploadStream({ ...base, bytes: undefined, stream: Readable.from([big]) }))
       .rejects.toMatchObject({ code: "file_too_large" });
     const staging = await storage.stagingDir();
     expect(await fs.readdir(staging)).toEqual([]);
+  });
+
+  test("S3-backed node refuses the single-request upload with 410 before reading the body", async () => {
+    const s3Like = { ...storage, backend: "s3" };
+    const svc = createMediaService({ storage: s3Like, dag: _fakeDag(identity) });
+    const bytes = _png("direct");
+    let read = false;
+    const stream = new Readable({ read() { read = true; this.push(bytes); this.push(null); } });
+    await expect(svc.uploadStream({ ..._streamInput(bytes, "image/png"), stream }))
+      .rejects.toMatchObject({ status: 410, code: "use_multipart" });
+    expect(read).toBe(false);
+    expect(await fs.readdir(await storage.stagingDir())).toEqual([]);
   });
 
   test("empty body → 400 bytes_required", async () => {
