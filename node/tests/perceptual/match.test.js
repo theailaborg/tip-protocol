@@ -54,6 +54,88 @@ async function exerciseVideo(dag) {
   expect((await matchVideo(dag, videoA, { excludeCtid: "OH-vid" })).find((h) => h.ctid === "OH-vid")).toBeUndefined();
 }
 
+// ── video: bounded matcher ─────────────────────────────────────────────────
+const longVid = (mut) => ({
+  profile: "cf-video-1", kind: "video",
+  features: Array.from({ length: 300 }, (_, i) => vframe(mut(A_PDQS[i % 4]), i)),
+});
+
+async function exerciseVideoBounded(dag) {
+  await ingestFingerprint(dag, longVid((p) => p), { ctid: "OH-vid-long" });
+  let calls = 0;
+  const counting = new Proxy(dag, {
+    get(t, k) {
+      if (k === "findPhashCandidates") return (...a) => { calls += 1; return t.findPhashCandidates(...a); };
+      const v = t[k];
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  const hits = await matchVideo(counting, longVid(flip1));
+  expect(calls).toBe(1); // one batched candidate query for all probe frames
+  const hit = hits.find((h) => h.ctid === "OH-vid-long");
+  expect(hit).toBeDefined();
+  expect(hit.targetMatchPct).toBeGreaterThanOrEqual(80);
+  // candidate cap honored
+  const capped = await matchVideo(dag, longVid(flip1), { maxCandidates: 1 });
+  expect(capped.length).toBeLessThanOrEqual(1);
+  expect(capped[0] && capped[0].ctid).toBe("OH-vid-long");
+  // sampled scoring still identifies the duplicate at full coverage
+  const sampled = await matchVideo(dag, longVid(flip1), { scoreFrames: 50 });
+  const sh = sampled.find((h) => h.ctid === "OH-vid-long");
+  expect(sh).toBeDefined();
+  expect(sh.targetMatchPct).toBeGreaterThanOrEqual(80);
+  // probe subsampling still excludes unrelated content
+  const far = { profile: "cf-video-1", kind: "video", features: Array.from({ length: 300 }, (_, i) => vframe("54".repeat(32), i)) };
+  expect((await matchVideo(dag, far)).find((h) => h.ctid === "OH-vid-long")).toBeUndefined();
+}
+
+// ── video: crowded index ──────────────────────────────────────────────────
+// Decoy frames share chunk 0 with a clip frame (a candidate-gen hit) but are
+// Hamming 240 away: a long unrelated video whose raw chunk hits out-number a
+// short clip's frames must not push the clip's true copies out of the cap.
+const decoy = (pdq) => pdq.slice(0, 4) + (255 - parseInt(pdq.slice(0, 2), 16)).toString(16).padStart(2, "0").repeat(30);
+const decoyVid = () => ({
+  profile: "cf-video-1", kind: "video",
+  features: Array.from({ length: 1000 }, (_, i) => vframe(decoy(A_PDQS[i % 4]), i)),
+});
+
+async function exerciseVideoCrowdedIndex(dag) {
+  for (const c of ["OH-copy-1", "OH-copy-2", "OH-copy-3"]) await ingestFingerprint(dag, longVid((p) => p), { ctid: c });
+  for (const d of ["AG-decoy-1", "AG-decoy-2"]) await ingestFingerprint(dag, decoyVid(), { ctid: d });
+
+  const hits = await matchVideo(dag, longVid(flip1));
+  expect(hits.map((h) => h.ctid).sort()).toEqual(["OH-copy-1", "OH-copy-2", "OH-copy-3"]);
+  for (const h of hits) expect(h.targetMatchPct).toBe(100);
+  // a cap smaller than the decoy count still scores the verified copies, in ctid order
+  const capped = await matchVideo(dag, longVid(flip1), { maxCandidates: 2 });
+  expect(capped.map((h) => h.ctid)).toEqual(["OH-copy-1", "OH-copy-2"]);
+  // the decoys only match each other, never the clip copies
+  expect((await matchVideo(dag, decoyVid(), { excludeCtid: "AG-decoy-1" })).map((h) => h.ctid)).toEqual(["AG-decoy-2"]);
+}
+
+// ── video: sampled scoring needs frame order ──────────────────────────────
+// Every frame distinct and far from every other, so the sampled coverage only
+// holds when both samples land on the same instants: rows ingested in a
+// scrambled order must still come back from the store in frame order.
+const crypto = require("crypto");
+const distinctVid = (mut, order) => ({
+  profile: "cf-video-1", kind: "video",
+  features: order.map((i) => vframe(mut(crypto.createHash("sha256").update(`frame-${i}`).digest("hex")), i)),
+});
+
+async function exerciseVideoFrameOrder(dag) {
+  const n = 300;
+  const scrambled = Array.from({ length: n }, (_, i) => (i * 173) % n); // 173 coprime with 300: a permutation
+  await ingestFingerprint(dag, distinctVid((p) => p, scrambled), { ctid: "OH-vid-scrambled" });
+  const rows = await dag.getPhashCodesByCtid("OH-vid-scrambled");
+  expect(rows.map((r) => r.frame)).toEqual(Array.from({ length: n }, (_, i) => i));
+  const inOrder = Array.from({ length: n }, (_, i) => i);
+  const hit = (await matchVideo(dag, distinctVid(flip1, inOrder), { scoreFrames: 50 })).find((h) => h.ctid === "OH-vid-scrambled");
+  expect(hit).toBeDefined();
+  expect(hit.targetMatchPct).toBe(100);
+  expect(hit.queryMatchPct).toBe(100);
+}
+
 // ── audio ──────────────────────────────────────────────────────────────────
 const mkAudio = (landmarks, landmarkCount) => ({
   profile: "cf-audio-landmark-1", kind: "audio",
@@ -89,6 +171,18 @@ describe("perceptual matcher", () => {
   describe("video near-duplicate (per-frame MIH + bidirectional overlap)", () => {
     test("MemoryStore", async () => { await exerciseVideo(new MemoryStore()); });
     test("SQLiteStore", async () => { const s = new SQLiteStore(":memory:"); await exerciseVideo(s); s.db.close(); });
+  });
+  describe("video matcher is bounded (batched candidate-gen + probe subsample + candidate cap)", () => {
+    test("MemoryStore", async () => { await exerciseVideoBounded(new MemoryStore()); });
+    test("SQLiteStore", async () => { const s = new SQLiteStore(":memory:"); await exerciseVideoBounded(s); s.db.close(); });
+  });
+  describe("video matcher ranks verified probe hits, not raw chunk hits", () => {
+    test("MemoryStore", async () => { await exerciseVideoCrowdedIndex(new MemoryStore()); });
+    test("SQLiteStore", async () => { const s = new SQLiteStore(":memory:"); await exerciseVideoCrowdedIndex(s); s.db.close(); });
+  });
+  describe("video sampled scoring reads frames in order", () => {
+    test("MemoryStore", async () => { await exerciseVideoFrameOrder(new MemoryStore()); });
+    test("SQLiteStore", async () => { const s = new SQLiteStore(":memory:"); await exerciseVideoFrameOrder(s); s.db.close(); });
   });
   describe("audio near-duplicate (landmark inverted-index + offset histogram)", () => {
     test("MemoryStore", async () => { await exerciseAudio(new MemoryStore()); });

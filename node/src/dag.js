@@ -1979,9 +1979,11 @@ class MemoryStore {
     }
     return out;
   }
-  // All phash codes for a ctid (a video's full frame set, for the overlap score).
+  // All phash codes for a ctid (a video's full frame set, for the overlap score),
+  // in (component_idx, frame) order: the sampled video score relies on it.
   getPhashCodesByCtid(ctid) {
-    return this._phashCodes.filter((c) => c.ctid === ctid);
+    return this._phashCodes.filter((c) => c.ctid === ctid)
+      .sort((a, b) => (a.component_idx - b.component_idx) || (a.frame - b.frame));
   }
   // Audio (§8.1): a clip gets a surrogate clip_id its landmarks point at; the FULL
   // landmark_count (scoreRatio denom) is kept even when only a subset is indexed.
@@ -3083,7 +3085,7 @@ class SQLiteStore {
         "SELECT tip_ctid AS ctid FROM minhash_band WHERE profile=? AND band_idx=? AND band_hash=?"
       ),
       getPhashCodesByCtid: this.db.prepare(
-        "SELECT tip_ctid AS ctid, profile, modality, frame, ts, quality, pdq FROM phash_code WHERE tip_ctid=?"
+        "SELECT tip_ctid AS ctid, profile, modality, frame, ts, quality, pdq FROM phash_code WHERE tip_ctid=? ORDER BY component_idx, frame"
       ),
       // Audio: surrogate clip_id (§8.1). Upsert refreshes the FULL landmark_count
       // and RETURNs the clip_id the landmark rows point at.
