@@ -106,6 +106,8 @@ function _hammingBytes(a, b) {
   return d;
 }
 
+const _yield = () => new Promise((resolve) => setImmediate(resolve));
+
 async function _coverage(A, B, D) {
   let n = 0;
   let sinceYield = 0;
@@ -115,7 +117,7 @@ async function _coverage(A, B, D) {
     }
     if (++sinceYield >= VIDEO_MATCH_YIELD_ROWS) {
       sinceYield = 0;
-      await new Promise((resolve) => setImmediate(resolve));
+      await _yield();
     }
   }
   return n;
@@ -146,25 +148,49 @@ async function matchVideo(dag, queryFp, opts) {
   if (!q.length) return [];
 
   // Candidate-gen probes a bounded, evenly spaced frame subset in ONE store
-  // call (per-chunk key union across probes); scoring below still uses the
-  // full frame sets, so match percentages are unchanged.
+  // call (per-chunk key union across probes).
   const probeFrames = opts.probeFrames != null ? opts.probeFrames : VIDEO_MATCH_PROBE_FRAMES;
+  const probes = _evenSample(q, probeFrames);
   const merged = Array.from({ length: 16 }, () => new Set());
-  for (const f of _evenSample(q, probeFrames)) {
+  for (const f of probes) {
     const keys = queryKeys(f.pdq);
     for (let i = 0; i < 16; i++) for (const k of keys[i]) merged[i].add(k);
   }
   const candidates = await dag.findPhashCandidates(queryFp.profile, "video", merged.map((s) => [...s]));
 
-  // Score only the strongest candidates, ranked by probe-hit count.
-  const hitsByCtid = new Map();
-  for (const c of candidates) hitsByCtid.set(c.ctid, (hitsByCtid.get(c.ctid) || 0) + 1);
-  if (opts.excludeCtid) hitsByCtid.delete(opts.excludeCtid);
+  // A chunk hit is only a candidate (a random frame collides with a probe's
+  // 16x17 keys ~0.4% of the time), so raw hit counts grow with video length.
+  // Rank by probes verified at full Hamming distance instead.
+  const probeBytes = _decodePdqSet(probes);
+  const hitsByCtid = new Map(); // ctid -> Set(verified probe index)
+  let sinceYield = 0;
+  for (const c of candidates) {
+    if (opts.excludeCtid && c.ctid === opts.excludeCtid) continue;
+    if (c.quality != null && c.quality < F) continue;
+    let hits = hitsByCtid.get(c.ctid);
+    if (hits && hits.size === probeBytes.length) continue;
+    const pdq = Buffer.from(c.pdq, "hex");
+    for (let i = 0; i < probeBytes.length; i++) {
+      if (hits && hits.has(i)) continue;
+      if (_hammingBytes(probeBytes[i], pdq) < D) {
+        if (!hits) hitsByCtid.set(c.ctid, (hits = new Set()));
+        hits.add(i);
+      }
+    }
+    if (++sinceYield >= VIDEO_MATCH_YIELD_ROWS) {
+      sinceYield = 0;
+      await _yield();
+    }
+  }
   const maxCandidates = opts.maxCandidates != null ? opts.maxCandidates : VIDEO_MATCH_MAX_CANDIDATES;
-  const ctids = [...hitsByCtid.entries()].sort((a, b) => b[1] - a[1]).slice(0, maxCandidates).map(([ctid]) => ctid);
+  const ctids = [...hitsByCtid.entries()]
+    .sort((a, b) => (b[1].size - a[1].size) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, maxCandidates)
+    .map(([ctid]) => ctid);
 
   // Scoring samples both frame sets: coverage over an evenly spaced subset is
-  // an unbiased estimate of the full-set percentage at a bounded cost.
+  // an unbiased estimate of the full-set percentage at a bounded cost, given
+  // both sides are in frame order (features, and the store's ctid rows).
   const scoreFrames = opts.scoreFrames != null ? opts.scoreFrames : VIDEO_MATCH_SCORE_FRAMES;
   const qs = _decodePdqSet(_evenSample(q, scoreFrames));
   const out = [];
