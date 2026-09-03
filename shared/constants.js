@@ -750,7 +750,9 @@ const UPLOAD_SESSION_STATE = Object.freeze({
   COMPLETE: "complete",
   FAILED: "failed",
 });
-const CHUNKED_COMPLETE_SYNC_WAIT_MS = 60_000;  // under Cloudflare's 100 s origin timeout
+// Consumer network gear (VPNs, AV proxies, NATs) resets a response-less request
+// at ~30 s; a small file still finalizes inside this window in one round trip.
+const CHUNKED_COMPLETE_SYNC_WAIT_MS = 8_000;
 const CHUNKED_STATUS_POLL_MS = 5_000;
 const CHUNKED_RESULT_TTL_MS = 60 * 60_000;     // finished session kept for pickup
 // The re-hash streams the whole object; a body drop mid-way (minutes for
