@@ -308,6 +308,7 @@ describe("presigned chunked upload — complete", () => {
     const done = fx.dag.getUploadSession(init.session_id);
     expect(done.state).toBe(UPLOAD_SESSION_STATE.COMPLETE);
     expect(done.result.media_id).toBe(contentHash);
+    expect(done.result.computed_hash).toBe(contentHash); // the node's own hash of the stored object, not an echo
   });
 
   test("rejects when uploaded bytes do not match the signed content_hash, and drops the tmp object", async () => {
@@ -324,12 +325,16 @@ describe("presigned chunked upload — complete", () => {
     await expect(fx.svc.complete(init.session_id, {
       signer_tip_id: TIP, timestamp: ts, parts,
       signature: _signAction("MEDIA_UPLOAD_COMPLETE", init.session_id, ts, TIP, fx.kp.privateKey),
-    })).rejects.toMatchObject({ status: 400, code: "hash_mismatch" });
+    })).rejects.toMatchObject({
+      status: 400, code: "hash_mismatch",
+      details: { expected: declaredHash, computed: shake256(wrong), size: 1024 },
+    });
     expect(fx.storage._objects.has(`media/${declaredHash}`)).toBe(false); // never promoted
     expect(fx.storage._objects.has(session.s3_key)).toBe(false);          // tmp dropped
     const failed = fx.dag.getUploadSession(init.session_id);
     expect(failed.state).toBe(UPLOAD_SESSION_STATE.FAILED);
     expect(failed.result.code).toBe("hash_mismatch");
+    expect(failed.result.details).toEqual({ expected: declaredHash, computed: shake256(wrong), size: 1024 });
   });
 
   test("stores the DETECTED mime, not the declared one — mislabel corrected (H4)", async () => {
@@ -491,12 +496,15 @@ describe("presigned chunked upload: async finalize", () => {
     gate.resolve();
     const st = await _pollUntil(fx, init.session_id, [UPLOAD_SESSION_STATE.COMPLETE, UPLOAD_SESSION_STATE.FAILED]);
     expect(st.state).toBe(UPLOAD_SESSION_STATE.FAILED);
-    expect(st.error).toMatchObject({ code: "hash_mismatch", status: 400 });
+    expect(st.error).toMatchObject({
+      code: "hash_mismatch", status: 400,
+      details: { expected: declaredHash, computed: shake256(wrong), size: 1024 },
+    });
     expect(fx.storage._objects.has(session.s3_key)).toBe(false);          // tmp dropped
     expect(fx.storage._objects.has(`media/${declaredHash}`)).toBe(false); // never promoted
-    // a later complete surfaces the stored failure as the same error
+    // a later complete surfaces the stored failure as the same error, details included
     await expect(fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts)))
-      .rejects.toMatchObject({ status: 400, code: "hash_mismatch" });
+      .rejects.toMatchObject({ status: 400, code: "hash_mismatch", details: { computed: shake256(wrong) } });
   });
 
   test("concurrent completes on an uploading session share one assemble + finalize", async () => {
