@@ -21,6 +21,7 @@
 
 "use strict";
 
+const crypto = require("crypto");
 const { shake256Incremental, mldsaVerify } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { schemaError } = require("../schemas/_common");
@@ -28,15 +29,11 @@ const mediaUploadSchema = require("../schemas/media-upload");
 const {
   MEDIA_LIMITS, UPLOAD_SESSION_STATE, CHUNKED_COMPLETE_SYNC_WAIT_MS, CHUNKED_STATUS_POLL_MS, CHUNKED_RESULT_TTL_MS,
   CHUNKED_REHASH_ATTEMPTS, CHUNKED_REHASH_RETRY_MS,
+  UPLOAD_PART_MIN_BYTES, UPLOAD_PART_MAX_BYTES, UPLOAD_PART_MAX_COUNT, UPLOAD_PART_LEGACY_BYTES,
+  UPLOAD_PART_ADAPTIVE_TARGET, UPLOAD_PART_ADAPTIVE_FLOOR_BYTES, UPLOAD_PART_ADAPTIVE_CAP_BYTES,
+  UPLOAD_ETAG_PROBE_PART_NUMBER, UPLOAD_ETAG_PROBE_TEXT,
 } = require("../../../shared/constants");
 
-const DEFAULT_PART_SIZE = 10 * 1024 * 1024;   // status() fallback only
-const MIN_PART_SIZE = 5 * 1024 * 1024;        // S3 hard minimum for every non-final part
-const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // S3 hard maximum per part (5 GB)
-const ADAPTIVE_FLOOR = 8 * 1024 * 1024;       // adaptive lower bound (above the S3 min)
-const ADAPTIVE_CAP = 128 * 1024 * 1024;       // adaptive upper bound (keeps a failed-part retry cheap)
-const ADAPTIVE_TARGET_PARTS = 100;            // adaptive scales part size to ~this many parts
-const MAX_PARTS = 10000;                      // S3 multipart hard limit
 const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const COMPLETE_DRIFT_MS = 5 * 60 * 1000;      // ±5min on the completion/abort timestamp
 
@@ -69,17 +66,41 @@ function createChunkedUploadService({
     return mldsaVerify(challenge, signature, publicKey);
   }
 
-  // Scale part size so the part COUNT stays ~ADAPTIVE_TARGET_PARTS: bounds init
-  // cost (one presigned URL per part) and keeps huge files under S3's 10k-part cap.
-  // Client/config override wins, clamped to S3's [5MB, 5GB] per-part bounds.
+  // Scale part size so the part COUNT stays ~ADAPTIVE_TARGET: bounds init cost
+  // (one presigned URL per part) and keeps huge files under S3's part cap.
+  // Client/config override wins, clamped to S3's per-part bounds.
   function _resolvePartSize(requested, size) {
     const override = (Number.isInteger(requested) && requested > 0) ? requested
       : (Number.isInteger(partSize) && partSize > 0) ? partSize : null;
-    if (override != null) return Math.min(Math.max(override, MIN_PART_SIZE), MAX_PART_SIZE);
+    if (override != null) return Math.min(Math.max(override, UPLOAD_PART_MIN_BYTES), UPLOAD_PART_MAX_BYTES);
     const MB = 1024 * 1024;
-    const raw = Math.ceil(size / ADAPTIVE_TARGET_PARTS);
-    const clamped = Math.min(Math.max(raw, ADAPTIVE_FLOOR), ADAPTIVE_CAP);
+    const raw = Math.ceil(size / UPLOAD_PART_ADAPTIVE_TARGET);
+    const clamped = Math.min(Math.max(raw, UPLOAD_PART_ADAPTIVE_FLOOR_BYTES), UPLOAD_PART_ADAPTIVE_CAP_BYTES);
     return Math.ceil(clamped / MB) * MB; // round up to a whole MB
+  }
+
+  async function _presignParts(uploadId, key, numbers) {
+    const ttlSec = storage.partUrlTtlSec;
+    const expiresAt = Number.isInteger(ttlSec) ? nowMs() + ttlSec * 1000 : null;
+    const parts = [];
+    for (const n of numbers) {
+      const url = await storage.presignUploadPart(uploadId, key, n);
+      parts.push(expiresAt == null ? { part_number: n, url } : { part_number: n, url, url_expires_at: expiresAt });
+    }
+    return parts;
+  }
+
+  // Tri-state so a client never trusts a guess: null when the probe itself fails.
+  async function _probePartEtagIsMd5(uploadId, key) {
+    const body = Buffer.from(UPLOAD_ETAG_PROBE_TEXT, "utf8");
+    try {
+      const { etag } = await storage.uploadPart(uploadId, key, UPLOAD_ETAG_PROBE_PART_NUMBER, body);
+      const md5 = crypto.createHash("md5").update(body).digest("hex");
+      return String(etag || "").replace(/"/g, "").toLowerCase() === md5;
+    } catch (err) {
+      log.warn?.(`chunked-upload etag probe failed for ${key}: ${err?.message || err}`);
+      return null;
+    }
   }
 
   // complete/abort require the session owner's fresh signature over
@@ -130,7 +151,7 @@ function createChunkedUploadService({
 
     const resolvedPartSize = _resolvePartSize(reqPartSize, size);
     const partCount = Math.ceil(size / resolvedPartSize);
-    if (partCount > MAX_PARTS) {
+    if (partCount > UPLOAD_PART_MAX_COUNT) {
       throw schemaError(413, `Too many parts (${partCount}); use a larger part_size`, "too_many_parts");
     }
 
@@ -154,16 +175,18 @@ function createChunkedUploadService({
     };
     await dag.createUploadSession(session);
 
-    const parts = [];
-    for (let n = 1; n <= partCount; n++) {
-      parts.push({ part_number: n, url: await storage.presignUploadPart(uploadId, tmpKey, n) });
-    }
+    const numbers = Array.from({ length: partCount }, (_, i) => i + 1);
+    const [parts, partEtagIsMd5] = await Promise.all([
+      _presignParts(uploadId, tmpKey, numbers),
+      _probePartEtagIsMd5(uploadId, tmpKey),
+    ]);
 
     log.info?.(`chunked-upload init: ${signerTipId} session=${sessionId} size=${size} parts=${partCount} mime=${mime}`);
     return {
       session_id: sessionId,
       part_size: resolvedPartSize,
       part_count: partCount,
+      part_etag_is_md5: partEtagIsMd5,
       parts,
       expires_at: session.expires_at,
     };
@@ -182,17 +205,16 @@ function createChunkedUploadService({
     if (state === COMPLETE) return { state, result: session.result, expires_at: session.expires_at };
     if (state === FAILED) return { state, error: session.result, expires_at: session.expires_at };
     if (state === FINALIZING) return { state, poll_after_ms: CHUNKED_STATUS_POLL_MS, expires_at: session.expires_at };
-    const psize = session.completed_size || DEFAULT_PART_SIZE;
+    const psize = session.completed_size || UPLOAD_PART_LEGACY_BYTES;
     const partCount = Math.ceil(session.size / psize);
     const uploaded = await storage.listUploadedParts(session.upload_id, session.s3_key);
-    const uploadedNums = uploaded.map(p => p.part_number).sort((a, b) => a - b);
+    const uploadedNums = uploaded.map(p => p.part_number)
+      .filter(n => n !== UPLOAD_ETAG_PROBE_PART_NUMBER)
+      .sort((a, b) => a - b);
     const have = new Set(uploadedNums);
     const missing = [];
     for (let n = 1; n <= partCount; n++) if (!have.has(n)) missing.push(n);
-    const parts = [];
-    for (const n of missing) {
-      parts.push({ part_number: n, url: await storage.presignUploadPart(session.upload_id, session.s3_key, n) });
-    }
+    const parts = await _presignParts(session.upload_id, session.s3_key, missing);
     return {
       state,
       part_count: partCount,
@@ -221,9 +243,11 @@ function createChunkedUploadService({
     if (!Array.isArray(parts) || parts.length === 0) {
       throw schemaError(400, "parts (ETags) required to complete", "parts_required");
     }
+    // The probe part is never part of the object, even if a client echoes it back.
     const normParts = parts
       .map(p => ({ part_number: Number(p.part_number), etag: p.etag }))
       .filter(p => Number.isInteger(p.part_number) && typeof p.etag === "string")
+      .filter(p => p.part_number !== UPLOAD_ETAG_PROBE_PART_NUMBER)
       .sort((a, b) => a.part_number - b.part_number);
     if (normParts.length === 0) throw schemaError(400, "parts malformed", "parts_invalid");
     return normParts;

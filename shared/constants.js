@@ -760,6 +760,26 @@ const CHUNKED_RESULT_TTL_MS = 60 * 60_000;     // finished session kept for pick
 const CHUNKED_REHASH_ATTEMPTS = 3;
 const CHUNKED_REHASH_RETRY_MS = 2_000;
 
+// Multipart parts: S3 bounds a part to [5 MiB, 5 GiB] and an upload to 10,000
+// parts; the last part number is reserved for the ETag probe below.
+const UPLOAD_PART_MIN_BYTES = 5 * 1024 * 1024;
+const UPLOAD_PART_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+const UPLOAD_PART_MAX_COUNT = 9_999;
+const UPLOAD_PART_LEGACY_BYTES = 10 * 1024 * 1024;  // sessions persisted before part_size
+// Adaptive sizing aims at ~TARGET parts between FLOOR and CAP. The cap bounds
+// what a failed part re-sends and what a browser holds in flight.
+const UPLOAD_PART_ADAPTIVE_TARGET = 100;
+const UPLOAD_PART_ADAPTIVE_FLOOR_BYTES = 8 * 1024 * 1024;
+const UPLOAD_PART_ADAPTIVE_CAP_BYTES = 32 * 1024 * 1024;
+// Whether a part's ETag is its MD5 depends on the bucket's encryption (not under
+// SSE-KMS). Probed per session by uploading these bytes as the reserved part; the
+// client never lists it in complete, so S3 discards it with the upload.
+const UPLOAD_ETAG_PROBE_PART_NUMBER = 10_000;
+const UPLOAD_ETAG_PROBE_TEXT = "tip-etag-probe-1";
+// Part URLs must outlive a multi-hour upload; a leaked one can only overwrite a
+// part, which complete's re-hash catches. GET presigns stay at the 300 s default.
+const UPLOAD_PART_PRESIGN_TTL_SEC = 7_200;
+
 // ─── Score display modes (v2 FIX-06) ─────────────────────────────────────────
 const SCORE_DISPLAY = Object.freeze({
   FULL_PUBLIC: "FULL_PUBLIC",
@@ -1071,6 +1091,16 @@ module.exports = {
   CHUNKED_RESULT_TTL_MS,
   CHUNKED_REHASH_ATTEMPTS,
   CHUNKED_REHASH_RETRY_MS,
+  UPLOAD_PART_MIN_BYTES,
+  UPLOAD_PART_MAX_BYTES,
+  UPLOAD_PART_MAX_COUNT,
+  UPLOAD_PART_LEGACY_BYTES,
+  UPLOAD_PART_ADAPTIVE_TARGET,
+  UPLOAD_PART_ADAPTIVE_FLOOR_BYTES,
+  UPLOAD_PART_ADAPTIVE_CAP_BYTES,
+  UPLOAD_ETAG_PROBE_PART_NUMBER,
+  UPLOAD_ETAG_PROBE_TEXT,
+  UPLOAD_PART_PRESIGN_TTL_SEC,
   HTTP_HEADERS,
   API_PATHS,
   PROTOCOL,

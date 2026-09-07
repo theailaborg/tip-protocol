@@ -45,7 +45,9 @@ const {
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { Upload } = require("@aws-sdk/lib-storage");
-const { S3_SINGLE_COPY_MAX_BYTES, S3_COPY_PART_BYTES, S3_COPY_CONCURRENCY } = require("../../../shared/constants");
+const {
+  S3_SINGLE_COPY_MAX_BYTES, S3_COPY_PART_BYTES, S3_COPY_CONCURRENCY, UPLOAD_PART_PRESIGN_TTL_SEC,
+} = require("../../../shared/constants");
 
 const DEFAULT_REGION = "us-west-2";
 const DEFAULT_PRESIGN_TTL_SEC = 300;
@@ -58,6 +60,8 @@ function createS3Backend(config = {}) {
   const region = config.s3Region || process.env.TIP_MEDIA_S3_REGION || DEFAULT_REGION;
   const kmsKeyId = config.kmsKeyId || process.env.TIP_MEDIA_S3_KMS_KEY_ID || null;
   const presignTtlSec = config.presignTtlSec || parseInt(process.env.TIP_MEDIA_PRESIGN_TTL_SEC || "", 10) || DEFAULT_PRESIGN_TTL_SEC;
+  const partPresignTtlSec = config.partPresignTtlSec
+    || parseInt(process.env.TIP_MEDIA_PART_PRESIGN_TTL_SEC || "", 10) || UPLOAD_PART_PRESIGN_TTL_SEC;
 
   // Credentials come from the ambient IAM role (IRSA in EKS, EC2 instance
   // role, or `aws sso` for local). No long-lived keys in config — that's a
@@ -295,12 +299,13 @@ function createS3Backend(config = {}) {
     return { upload_id: res.UploadId, key };
   }
 
-  // Presigned URL for one UploadPart — client PUTs the part bytes straight to S3.
+  // Presigned URL for one UploadPart, the client PUTs the bytes straight to S3.
+  // Own TTL: part URLs must outlive a multi-hour upload; GET presigns stay short.
   async function presignUploadPart(uploadId, key, partNumber, ttlSec) {
     const cmd = new UploadPartCommand({
       Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: partNumber,
     });
-    return getSignedUrl(client, cmd, { expiresIn: ttlSec || presignTtlSec });
+    return getSignedUrl(client, cmd, { expiresIn: ttlSec || partPresignTtlSec });
   }
 
   // Parts S3 has received so far (resume support). Pages past 1000 parts.
@@ -443,6 +448,7 @@ function createS3Backend(config = {}) {
     promoteTmpFile, cleanStaging, createMultipartUpload, uploadPart,
     completeMultipartUpload, abortMultipartUpload,
     presignUploadPart, listUploadedParts, getObjectStream, deleteObjectByKey, copyToFinal,
+    partUrlTtlSec: partPresignTtlSec,
     backend: "s3",
   };
 }
