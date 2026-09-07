@@ -45,8 +45,8 @@ describe("renderEnvFromExample: credential backstop", () => {
   });
 
   test("a dropped credential is not smuggled into the undocumented-values block", () => {
-    const out = renderEnvFromExample({ AWS_SECRET_ACCESS_KEY: "live" });
-    expect(out).not.toContain("live");
+    const out = renderEnvFromExample({ AWS_SECRET_ACCESS_KEY: "LEAKED-SECRET-VALUE" });
+    expect(out).not.toContain("LEAKED-SECRET-VALUE");
     expect(out).not.toContain("Values not documented");
   });
 

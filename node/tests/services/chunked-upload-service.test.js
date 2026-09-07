@@ -14,6 +14,7 @@
 "use strict";
 
 const path = require("path");
+const crypto = require("crypto");
 const SRC = path.resolve(__dirname, "../../src");
 const SHARED = path.resolve(__dirname, "../../../shared");
 
@@ -71,8 +72,20 @@ function _fakeStorage() {
   let assembled = 0;
   let failReads = 0;             // getObjectStream throws this many times first (transient S3 error)
   let assembleError = null;      // completeMultipartUpload throws this once (bad ETags)
+  let etagMode = "md5";          // md5 | opaque (SSE-KMS style) | throw
+  const probes = [];             // node-side uploadPart calls (the etag probe)
   return {
     backend: "s3",
+    partUrlTtlSec: 7200,
+    async uploadPart(uploadId, key, n, body) {
+      if (etagMode === "throw") throw new Error("AccessDenied");
+      probes.push({ uploadId, key, n, body: Buffer.from(body) });
+      multiparts.get(uploadId).parts.set(n, Buffer.from(body));
+      const md5 = crypto.createHash("md5").update(body).digest("hex");
+      return { etag: etagMode === "md5" ? `"${md5}"` : `"opaque-${n}-x"` };
+    },
+    _setEtagMode(m) { etagMode = m; },
+    _probes: probes,
     async createMultipartUpload(sessionId) {
       const uploadId = `up-${++seq}`;
       const key = `media-tmp/${sessionId}.bin`;
@@ -597,5 +610,77 @@ describe("presigned chunked upload: async finalize", () => {
     expect(res.removed).toBeGreaterThanOrEqual(1);
     expect(fx.storage._aborted.some(a => a.uploadId === session.upload_id)).toBe(false);
     expect(fx.dag.getUploadSession(init.session_id)).toBeNull();
+  });
+});
+
+describe("presigned chunked upload: part sizing, etag probe, url ttl", () => {
+  const GIB = 1024 ** 3;
+  const MIB = 1024 ** 2;
+  const bigLimits = { ...MEDIA_LIMITS, max_image_bytes: 64 * GIB };
+
+  async function _init(fx, size, extra = {}) {
+    const ts = nowMs();
+    const contentHash = "ab".repeat(32);
+    return fx.svc.init({
+      mime: "image/png", size, content_hash: contentHash, signer_tip_id: TIP, timestamp: ts,
+      signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey),
+      ...extra,
+    });
+  }
+
+  test("large files get 32 MiB parts by default, with part url expiry", async () => {
+    const fx = _setup({ mediaLimits: bigLimits });
+    const before = nowMs();
+    const init = await _init(fx, 15 * GIB);
+    expect(init.part_size).toBe(32 * MIB);
+    expect(init.part_count).toBe(480);
+    expect(init.parts).toHaveLength(480);
+    for (const p of init.parts.slice(0, 3)) {
+      expect(p.url_expires_at).toBeGreaterThanOrEqual(before + 7200 * 1000);
+      expect(p.url_expires_at).toBeLessThanOrEqual(nowMs() + 7200 * 1000);
+    }
+    const st = await fx.svc.status(init.session_id);
+    expect(st.missing_parts).toHaveLength(480);
+    expect(st.parts[0].url_expires_at).toBeGreaterThanOrEqual(before + 7200 * 1000);
+  });
+
+  test("more than 9,999 parts is rejected", async () => {
+    const fx = _setup({ mediaLimits: bigLimits });
+    await expect(_init(fx, 60 * GIB, { part_size: 5 * MIB }))
+      .rejects.toMatchObject({ status: 413, code: "too_many_parts" });
+  });
+
+  test("etag probe uploads the reserved part and reports md5 etags", async () => {
+    const fx = _setup();
+    const init = await _init(fx, 1024);
+    expect(init.part_etag_is_md5).toBe(true);
+    expect(fx.storage._probes).toHaveLength(1);
+    expect(fx.storage._probes[0].n).toBe(10000);
+    expect(fx.storage._probes[0].body.toString("utf8")).toBe("tip-etag-probe-1");
+  });
+
+  test("etag probe reports false on opaque etags and null when it fails, without blocking init", async () => {
+    const fx = _setup();
+    fx.storage._setEtagMode("opaque");
+    expect((await _init(fx, 1024)).part_etag_is_md5).toBe(false);
+    fx.storage._setEtagMode("throw");
+    const init = await _init(fx, 2048);
+    expect(init.part_etag_is_md5).toBeNull();
+    expect(init.part_count).toBe(1);
+    expect(fx.dag.getUploadSession(init.session_id)).toBeTruthy();
+  });
+
+  test("status hides the probe part and complete ignores it if a client echoes it", async () => {
+    const fx = _setup();
+    const file = _png(4096);
+    const up = await _upload(fx, file, "image/png");
+    expect(fx.storage._multiparts.get(up.session.upload_id).parts.has(10000)).toBe(true);
+    const st = await fx.svc.status(up.init.session_id);
+    expect(st.uploaded_parts).not.toContain(10000);
+    expect(st.missing_parts).toEqual([]);
+    const echoed = [...up.parts, { part_number: 10000, etag: '"whatever"' }];
+    const res = await fx.svc.complete(up.init.session_id, _completeArgs(fx, up.init.session_id, echoed));
+    expect(res.media_id).toBe(up.contentHash);
+    expect(res.size).toBe(file.length);
   });
 });
