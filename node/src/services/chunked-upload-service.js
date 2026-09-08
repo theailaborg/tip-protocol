@@ -311,11 +311,15 @@ function createChunkedUploadService({
         throw schemaError(400, `Failed to read assembled object: ${err.message}`, "assemble_failed");
       }
       const { hashHex, detectedMime, actualSize } = read;
+      // Both mismatches return what the node measured: the tmp object is dropped
+      // below, so this is the only evidence a client gets of what S3 assembled.
       if (actualSize !== session.size) {
-        throw schemaError(400, `Assembled size ${actualSize} != declared ${session.size}`, "size_mismatch");
+        throw schemaError(400, `Assembled size ${actualSize} != declared ${session.size}`, "size_mismatch",
+          { expected: session.size, actual: actualSize, computed: hashHex });
       }
       if (hashHex !== session.content_hash) {
-        throw schemaError(400, "Hash mismatch: uploaded bytes do not match signed content_hash", "hash_mismatch");
+        throw schemaError(400, "Hash mismatch: uploaded bytes do not match signed content_hash", "hash_mismatch",
+          { expected: session.content_hash, computed: hashHex, size: actualSize });
       }
       // A disabled/unrecognized type has cap 0 and is rejected; else it's stored
       // under its true mime, never the declared one, so a mislabel can't dodge a cap.
@@ -327,6 +331,7 @@ function createChunkedUploadService({
       const result = {
         media_id,
         content_hash: session.content_hash,
+        computed_hash: hashHex,
         mime: detectedMime,
         size: actualSize,
         uploaded_at: nowMs(),
@@ -337,6 +342,7 @@ function createChunkedUploadService({
       return result;
     } catch (err) {
       const failure = { code: err.code || "finalize_failed", status: err.status || 500, message: err.error || err.message || String(err) };
+      if (err.details && typeof err.details === "object") failure.details = err.details;
       try { await storage.deleteObjectByKey(session.s3_key); }
       catch (e) { log.warn?.(`chunked-upload drop-assembled failed: ${e.message}`); }
       await dag.updateUploadSession(sessionId, { state: FAILED, result: failure, expires_at: nowMs() + CHUNKED_RESULT_TTL_MS });
@@ -346,7 +352,7 @@ function createChunkedUploadService({
   }
 
   function _failureError(failure) {
-    return schemaError(failure.status || 500, failure.message, failure.code);
+    return schemaError(failure.status || 500, failure.message, failure.code, failure.details);
   }
 
   // Finalize outlives the HTTP request, so a restart can leave sessions in
