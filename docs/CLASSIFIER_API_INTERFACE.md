@@ -18,7 +18,10 @@ classifier downloads the bytes directly from storage. Text is sent inline.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/v1/prescan` | Pre-registration AI scan of OH content |
+| POST | `/v1/prescan` | Pre-registration AI scan of OH content. The only route the node calls today. |
+| POST | `/v1/stage1` | Reserved for the dispute flow; the node client defines it but nothing calls it yet. |
+
+Renaming or removing `/v1/prescan` takes every node's pre-scan down: the node keeps calling it, treats the `404` like any other failure (see "How the node uses this API"), and after one hour records the content as not analyzed.
 
 ---
 
@@ -50,7 +53,7 @@ classifier downloads the bytes directly from storage. Text is sent inline.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `text` | string ≤ 100,000 chars | yes (may be `""`) | Text body. |
+| `text` | string ≤ 100,000 chars | yes (may be `""`) | The registration's `content` text exactly as registered (no title prefix). `""` for media-only content. |
 | `origin_code` | `OH \| AA \| AG \| MX` | yes | Only `OH` is scanned. |
 | `creator_cleared_count` | int ≥ 0 | yes | Calibration input; `0` for new creators. |
 | `author_tip_id` | `tip://id/XX-<16 hex>` | no | For logging. |
@@ -101,11 +104,35 @@ A registration with N media items sends **one request** with N entries in
 | `modality_results[].error` | yes | `null` = analyzed. Non-null (e.g. `download_timeout`, `unreadable`, `unsupported_mime`) = degraded; the node weights it down, never a pass. |
 | `modality_results[].modality` / `weight` / `provider` | yes | Modality label, suggested weight, provenance. |
 | `provider_used`, `processing_ms` | advisory | Telemetry / quality gate. |
+| `classifier_version` | optional | Free-form build identifier; the node records it on chain with the verdict (`n/a` when absent). |
+| `flagged`, `rationales` | ignored | The node derives flagged from its own tier thresholds; rationales are not stored. |
 
 The node computes the final tier/decision from `probability` using its own
 protocol constants. The classifier does **not** decide flag/status/grace , it
 returns evidence (probability + provenance + per-file error). This keeps the
 classifier freely swappable without affecting consensus.
+
+### Per-file error codes the node acts on
+
+`modality_results[].error` is matched by substring against this list:
+
+| Substring in `error` | Node behaviour |
+|---|---|
+| `file_too_large`, `unsupported_mime`, `download_blocked` | Permanent: the node fails open at once (verdict 0.5, `failure_reason: classifier_rejected_media: <code>`) instead of retrying. Use these exact tokens for conditions no retry can change. |
+| anything else (`download_timeout`, `unreadable`, `provider_error`, ...) | Transient: that modality is degraded. If every modality is degraded the node retries the whole request (see below); otherwise it records the verdict with `overall_degraded=true`. |
+
+---
+
+## How the node uses this API
+
+What the classifier can rely on, and what happens when it does not answer.
+
+- **Only `OH` content is sent.** `AA`, `AG` and `MX` registrations are short-circuited on the node (`TIP_CLASSIFIER_SCAN_NON_OH=false`, the default) and never reach the classifier.
+- **One request per registration**, text plus every media item in `files[]`, at most `TIP_PRESCAN_CONCURRENCY` requests in flight per node (mainnet runs 4).
+- **Timeouts:** the node aborts the request after **60 s** for text-only and **180 s** when `files[]` is present (`CLASSIFIER_CLIENT.TEXT_TIMEOUT_MS` / `FILE_TIMEOUT_MS`). Download plus inference must finish inside that, or the call counts as failed. The presigned URL is generated immediately before the call.
+- **Failures are never verdicts.** Any non-2xx status (including `404` for a missing route), a timeout, or a connection error is retried up to 4 times, 5 s apart (`worker_max_retries_on_error`). After that the job waits, re-asking every 5 s, until `fail_open_after_ms` (1 hour) from registration; then the node records a fail-open verdict: probability 0.5, tier low, not flagged, `overall_degraded=true`, `failure_reason: prescan_pending_past_fail_open_deadline`. That verdict is final for the content; a later classifier recovery does not re-scan it.
+- **Heuristic fallback is off in production.** With `TIP_CLASSIFIER_FALLBACK=1` a node falls back to local heuristics after 3 consecutive network-level failures (60 s cooldown); mainnet and the test cluster run `TIP_CLASSIFIER_FALLBACK=0`, so they wait for the real classifier as above.
+- **No bytes ever go through the node.** The node cannot upload media to the classifier: its own request timeout, per-node bandwidth and the proxy's request-body limit all rule it out. Media is only ever delivered as a presigned URL for the classifier to fetch.
 
 ---
 
@@ -130,12 +157,15 @@ bytes , not to finish analyzing them. Once downloaded, the URL can expire.
 
 ## Errors
 
-| Status | Meaning |
-|---|---|
-| 400 | No content supplied |
-| 401 | Bad/missing `X-TIP-Classifier-Key` |
-| 422 | Schema validation (bad origin, malformed id, oversize text) |
-| 503 | All providers failed |
+| Status | Meaning | Node reaction |
+|---|---|---|
+| 400 | No content supplied | retry, wait, fail open (see above) |
+| 401 | Bad/missing `X-TIP-Classifier-Key` | same |
+| 404 | Route not served (misdeploy) | same; every OH registration ends up not analyzed |
+| 422 | Schema validation (bad origin, malformed id, oversize text) | same |
+| 503 | All providers failed | same |
+
+Oversize media is **not** an HTTP error: report it per file as `error: "file_too_large"` in `modality_results[]` so the node fails open immediately for that content rather than waiting an hour.
 
 A per-file download/analysis failure is **not** a request error , it is
 reported as a non-null `error` on that file's `modality_results[]` entry, with
