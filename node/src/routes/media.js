@@ -75,6 +75,7 @@ function createRouter({ mediaService, chunkedUploadService }) {
       signature: req.body.signature,
       timestamp: req.body.timestamp,
       part_size: req.body.part_size,
+      checksum: req.body.checksum,
     });
     res.status(201).json(result);
   }));
