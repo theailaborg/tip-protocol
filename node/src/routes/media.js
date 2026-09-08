@@ -85,6 +85,13 @@ function createRouter({ mediaService, chunkedUploadService }) {
     res.status(200).json(result);
   }));
 
+  // Same resource, POST: presigned URLs for a batch of parts, each signed with
+  // the part's CRC32 on a checksum-mode session.
+  router.post("/media/upload-status/:sessionId", express.json(), asyncHandler(async (req, res) => {
+    const result = await chunkedUploadService.mintPartUrls(req.params.sessionId, req.body.parts);
+    res.status(200).json(result);
+  }));
+
   // Finalize, authenticated (signer signs MEDIA_UPLOAD_COMPLETE:{session}:{ts}:{tip}).
   // Body carries the S3 part ETags; node assembles, re-hashes, verifies, promotes.
   // 201 with the descriptor when that finishes within the sync window, else 202

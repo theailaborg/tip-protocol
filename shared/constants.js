@@ -779,6 +779,12 @@ const UPLOAD_ETAG_PROBE_TEXT = "tip-etag-probe-1";
 // Part URLs must outlive a multi-hour upload; a leaked one can only overwrite a
 // part, which complete's re-hash catches. GET presigns stay at the 300 s default.
 const UPLOAD_PART_PRESIGN_TTL_SEC = 7_200;
+// Opt-in per-part integrity: the client sends each part's CRC32 before the PUT,
+// the URL is signed with it, and S3 rejects a part whose bytes differ (BadDigest).
+// Once a multipart upload is checksum-typed S3 wants a checksum on every part and
+// again at complete, so the mode is fixed per session at init.
+const UPLOAD_CHECKSUM_CRC32 = "crc32";
+const UPLOAD_PART_URL_BATCH_MAX = 64;
 
 // ─── Score display modes (v2 FIX-06) ─────────────────────────────────────────
 const SCORE_DISPLAY = Object.freeze({
@@ -1101,6 +1107,8 @@ module.exports = {
   UPLOAD_ETAG_PROBE_PART_NUMBER,
   UPLOAD_ETAG_PROBE_TEXT,
   UPLOAD_PART_PRESIGN_TTL_SEC,
+  UPLOAD_CHECKSUM_CRC32,
+  UPLOAD_PART_URL_BATCH_MAX,
   HTTP_HEADERS,
   API_PATHS,
   PROTOCOL,

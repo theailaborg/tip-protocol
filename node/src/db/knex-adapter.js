@@ -521,6 +521,7 @@ class KnexAdapter {
         completed_size: row.completed_size,
         state: row.state || UPLOAD_SESSION_STATE.UPLOADING,
         result_json: row.result_json || null,
+        checksum_algorithm: row.checksum_algorithm || null,
         created_at: row.created_at,
         expires_at: row.expires_at,
       });
@@ -1202,6 +1203,7 @@ class KnexAdapter {
       completed_size: session.completed_size || 0,
       state: session.state || UPLOAD_SESSION_STATE.UPLOADING,
       result_json: session.result ? JSON.stringify(session.result) : null,
+      checksum_algorithm: session.checksum_algorithm || null,
       created_at: session.created_at,
       expires_at: session.expires_at,
     };
