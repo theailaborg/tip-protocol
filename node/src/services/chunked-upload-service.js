@@ -31,7 +31,7 @@ const {
   CHUNKED_REHASH_ATTEMPTS, CHUNKED_REHASH_RETRY_MS,
   UPLOAD_PART_MIN_BYTES, UPLOAD_PART_MAX_BYTES, UPLOAD_PART_MAX_COUNT, UPLOAD_PART_LEGACY_BYTES,
   UPLOAD_PART_ADAPTIVE_TARGET, UPLOAD_PART_ADAPTIVE_FLOOR_BYTES, UPLOAD_PART_ADAPTIVE_CAP_BYTES,
-  UPLOAD_ETAG_PROBE_PART_NUMBER, UPLOAD_ETAG_PROBE_TEXT,
+  UPLOAD_ETAG_PROBE_PART_NUMBER, UPLOAD_ETAG_PROBE_TEXT, UPLOAD_CHECKSUM_CRC32, UPLOAD_PART_URL_BATCH_MAX,
 } = require("../../../shared/constants");
 
 const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -79,22 +79,30 @@ function createChunkedUploadService({
     return Math.ceil(clamped / MB) * MB; // round up to a whole MB
   }
 
-  async function _presignParts(uploadId, key, numbers) {
+  // entries: [{ part_number, checksum_crc32? }]; a checksum is signed into its URL.
+  async function _presignParts(uploadId, key, entries) {
     const ttlSec = storage.partUrlTtlSec;
     const expiresAt = Number.isInteger(ttlSec) ? nowMs() + ttlSec * 1000 : null;
     const parts = [];
-    for (const n of numbers) {
-      const url = await storage.presignUploadPart(uploadId, key, n);
-      parts.push(expiresAt == null ? { part_number: n, url } : { part_number: n, url, url_expires_at: expiresAt });
+    for (const e of entries) {
+      const url = await storage.presignUploadPart(uploadId, key, e.part_number, undefined, { checksumCrc32: e.checksum_crc32 });
+      const out = { part_number: e.part_number, url };
+      if (e.checksum_crc32) out.checksum_crc32 = e.checksum_crc32;
+      if (expiresAt != null) out.url_expires_at = expiresAt;
+      parts.push(out);
     }
     return parts;
   }
 
+  function _partCount(session) {
+    return Math.ceil(session.size / (session.completed_size || UPLOAD_PART_LEGACY_BYTES));
+  }
+
   // Tri-state so a client never trusts a guess: null when the probe itself fails.
-  async function _probePartEtagIsMd5(uploadId, key) {
+  async function _probePartEtagIsMd5(uploadId, key, checksum) {
     const body = Buffer.from(UPLOAD_ETAG_PROBE_TEXT, "utf8");
     try {
-      const { etag } = await storage.uploadPart(uploadId, key, UPLOAD_ETAG_PROBE_PART_NUMBER, body);
+      const { etag } = await storage.uploadPart(uploadId, key, UPLOAD_ETAG_PROBE_PART_NUMBER, body, { checksum });
       const md5 = crypto.createHash("md5").update(body).digest("hex");
       return String(etag || "").replace(/"/g, "").toLowerCase() === md5;
     } catch (err) {
@@ -122,7 +130,7 @@ function createChunkedUploadService({
 
   async function init({
     mime, size, content_hash: contentHash, signer_tip_id: signerTipId,
-    signature, timestamp, part_size: reqPartSize,
+    signature, timestamp, part_size: reqPartSize, checksum: reqChecksum,
   }) {
     if (!contentHash || !/^[0-9a-f]{64}$/.test(contentHash)) {
       throw schemaError(400, "content_hash must be 64-char lowercase hex", "content_hash_invalid");
@@ -149,6 +157,7 @@ function createChunkedUploadService({
       throw schemaError(400, "Chunked upload requires s3 media backend", "backend_not_supported");
     }
 
+    const checksum = mediaUploadSchema.validateChecksumMode(reqChecksum);
     const resolvedPartSize = _resolvePartSize(reqPartSize, size);
     const partCount = Math.ceil(size / resolvedPartSize);
     if (partCount > UPLOAD_PART_MAX_COUNT) {
@@ -156,7 +165,7 @@ function createChunkedUploadService({
     }
 
     const sessionId = dag.generateUploadSessionId();
-    const { upload_id: uploadId, key: tmpKey } = await storage.createMultipartUpload(sessionId, mime, contentHash);
+    const { upload_id: uploadId, key: tmpKey } = await storage.createMultipartUpload(sessionId, mime, contentHash, { checksum });
     const now = nowMs();
     const session = {
       session_id: sessionId,
@@ -170,23 +179,27 @@ function createChunkedUploadService({
       signature,
       parts: [],
       completed_size: resolvedPartSize, // reuse: holds part_size (node-local, no schema change)
+      checksum_algorithm: checksum,
       created_at: now,
       expires_at: now + sessionTtlMs,
     };
     await dag.createUploadSession(session);
 
-    const numbers = Array.from({ length: partCount }, (_, i) => i + 1);
+    // Checksum mode mints no URLs here: each URL is signed with its part's CRC32,
+    // which the client supplies in batches through mintPartUrls.
+    const entries = checksum ? [] : Array.from({ length: partCount }, (_, i) => ({ part_number: i + 1 }));
     const [parts, partEtagIsMd5] = await Promise.all([
-      _presignParts(uploadId, tmpKey, numbers),
-      _probePartEtagIsMd5(uploadId, tmpKey),
+      _presignParts(uploadId, tmpKey, entries),
+      _probePartEtagIsMd5(uploadId, tmpKey, checksum),
     ]);
 
-    log.info?.(`chunked-upload init: ${signerTipId} session=${sessionId} size=${size} parts=${partCount} mime=${mime}`);
+    log.info?.(`chunked-upload init: ${signerTipId} session=${sessionId} size=${size} parts=${partCount} mime=${mime}${checksum ? ` checksum=${checksum}` : ""}`);
     return {
       session_id: sessionId,
       part_size: resolvedPartSize,
       part_count: partCount,
       part_etag_is_md5: partEtagIsMd5,
+      checksum,
       parts,
       expires_at: session.expires_at,
     };
@@ -205,8 +218,8 @@ function createChunkedUploadService({
     if (state === COMPLETE) return { state, result: session.result, expires_at: session.expires_at };
     if (state === FAILED) return { state, error: session.result, expires_at: session.expires_at };
     if (state === FINALIZING) return { state, poll_after_ms: CHUNKED_STATUS_POLL_MS, expires_at: session.expires_at };
-    const psize = session.completed_size || UPLOAD_PART_LEGACY_BYTES;
-    const partCount = Math.ceil(session.size / psize);
+    const partCount = _partCount(session);
+    const checksum = session.checksum_algorithm || null;
     const uploaded = await storage.listUploadedParts(session.upload_id, session.s3_key);
     const uploadedNums = uploaded.map(p => p.part_number)
       .filter(n => n !== UPLOAD_ETAG_PROBE_PART_NUMBER)
@@ -214,13 +227,35 @@ function createChunkedUploadService({
     const have = new Set(uploadedNums);
     const missing = [];
     for (let n = 1; n <= partCount; n++) if (!have.has(n)) missing.push(n);
-    const parts = await _presignParts(session.upload_id, session.s3_key, missing);
+    // Checksum-mode URLs need each part's CRC32: minted via mintPartUrls instead.
+    const parts = checksum ? [] : await _presignParts(session.upload_id, session.s3_key, missing.map(n => ({ part_number: n })));
     return {
       state,
       part_count: partCount,
+      checksum,
       uploaded_parts: uploadedNums,
       missing_parts: missing,
       parts,
+      expires_at: session.expires_at,
+    };
+  }
+
+  // POST upload-status: URLs for a batch of parts. In checksum mode every entry
+  // carries the part's CRC32 and the URL is signed with it, so S3 rejects a part
+  // whose bytes differ; the client computes a part's CRC32 as it reads it.
+  async function mintPartUrls(sessionId, parts) {
+    const session = await dag.getUploadSession(sessionId);
+    if (!session) throw schemaError(404, "Upload session not found or expired", "session_not_found");
+    const state = session.state || UPLOADING;
+    if (state !== UPLOADING) throw schemaError(409, `Upload session is ${state}`, "session_not_uploading");
+    const checksum = session.checksum_algorithm || null;
+    const entries = mediaUploadSchema.validatePartChecksums(parts, {
+      partCount: _partCount(session), required: checksum === UPLOAD_CHECKSUM_CRC32, maxParts: UPLOAD_PART_URL_BATCH_MAX,
+    });
+    return {
+      state,
+      checksum,
+      parts: await _presignParts(session.upload_id, session.s3_key, entries),
       expires_at: session.expires_at,
     };
   }
@@ -239,15 +274,25 @@ function createChunkedUploadService({
     return _awaitFinalize(job, sessionId);
   }
 
-  function _normalizeParts(parts) {
+  function _normalizeParts(parts, checksum) {
     if (!Array.isArray(parts) || parts.length === 0) {
       throw schemaError(400, "parts (ETags) required to complete", "parts_required");
     }
+    // A checksum-typed upload cannot complete without every part's CRC32 (S3
+    // refuses), so the requirement is enforced here with a clear code.
+    const required = checksum === UPLOAD_CHECKSUM_CRC32;
     // The probe part is never part of the object, even if a client echoes it back.
     const normParts = parts
-      .map(p => ({ part_number: Number(p.part_number), etag: p.etag }))
+      .map(p => ({ part_number: Number(p.part_number), etag: p.etag, checksum_crc32: p.checksum_crc32 }))
       .filter(p => Number.isInteger(p.part_number) && typeof p.etag === "string")
       .filter(p => p.part_number !== UPLOAD_ETAG_PROBE_PART_NUMBER)
+      .map(p => {
+        if (!required) return { part_number: p.part_number, etag: p.etag };
+        if (typeof p.checksum_crc32 !== "string" || !mediaUploadSchema.CHECKSUM_CRC32_RE.test(p.checksum_crc32)) {
+          throw schemaError(400, `checksum_crc32 required for part ${p.part_number}`, "checksum_required");
+        }
+        return p;
+      })
       .sort((a, b) => a.part_number - b.part_number);
     if (normParts.length === 0) throw schemaError(400, "parts malformed", "parts_invalid");
     return normParts;
@@ -278,7 +323,7 @@ function createChunkedUploadService({
     const job = (async () => {
       let current = session;
       if (parts !== null) {
-        const normParts = _normalizeParts(parts);
+        const normParts = _normalizeParts(parts, session.checksum_algorithm);
         try {
           await storage.completeMultipartUpload(session.upload_id, session.s3_key, normParts);
         } catch (err) {
@@ -439,7 +484,7 @@ function createChunkedUploadService({
     return { removed };
   }
 
-  return { init, status, complete, abort, cleanupExpired, resumeFinalizing };
+  return { init, status, mintPartUrls, complete, abort, cleanupExpired, resumeFinalizing };
 }
 
 module.exports = { createChunkedUploadService };

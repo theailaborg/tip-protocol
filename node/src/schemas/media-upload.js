@@ -25,6 +25,7 @@
 
 const { schemaError } = require("./_common");
 const { isValidMs, nowMs } = require("../../../shared/time");
+const { UPLOAD_CHECKSUM_CRC32 } = require("../../../shared/constants");
 
 const TIP_ID_RE = /^tip:\/\/id\/[A-Z]{2}-[0-9a-f]{16}$/;
 const HEX_RE = /^[0-9a-f]+$/i;
@@ -290,13 +291,58 @@ function buildChallenge({ content_hash, mime, timestamp, signer_tip_id }) {
   return `MEDIA_UPLOAD:${content_hash}:${mime}:${timestamp}:${signer_tip_id}`;
 }
 
+// S3's CRC32 wire form: base64 of the 4-byte big-endian CRC (always 8 chars, "==" tail).
+const CHECKSUM_CRC32_RE = /^[A-Za-z0-9+/]{6}==$/;
+
+// upload-init `checksum`: absent means no per-part integrity, "crc32" opts in.
+function validateChecksumMode(value) {
+  if (value === undefined || value === null) return null;
+  if (value === UPLOAD_CHECKSUM_CRC32) return value;
+  throw schemaError(400, `checksum must be "${UPLOAD_CHECKSUM_CRC32}" or omitted`, "checksum_unsupported");
+}
+
+// A batch of part entries for URL minting or completion. `required` (checksum
+// mode) means every entry must carry a well-formed checksum_crc32; otherwise a
+// checksum is refused, since S3 only honours it on a checksum-typed upload.
+function validatePartChecksums(parts, { partCount, required, maxParts }) {
+  if (!Array.isArray(parts) || parts.length === 0) {
+    throw schemaError(400, "parts must be a non-empty array of { part_number, checksum_crc32 }", "parts_required");
+  }
+  if (maxParts && parts.length > maxParts) {
+    throw schemaError(400, `At most ${maxParts} parts per request`, "parts_too_many");
+  }
+  const seen = new Set();
+  return parts.map((p) => {
+    const n = Number(p && p.part_number);
+    if (!Number.isInteger(n) || n < 1 || n > partCount) {
+      throw schemaError(400, `part_number must be an integer in 1..${partCount}`, "part_number_invalid");
+    }
+    if (seen.has(n)) throw schemaError(400, `part_number ${n} repeated`, "part_number_invalid");
+    seen.add(n);
+    const crc = p.checksum_crc32;
+    if (required) {
+      if (typeof crc !== "string" || !CHECKSUM_CRC32_RE.test(crc)) {
+        throw schemaError(400, `checksum_crc32 required for part ${n} (base64 of the 4-byte CRC32)`, "checksum_required");
+      }
+      return { part_number: n, checksum_crc32: crc };
+    }
+    if (crc !== undefined && crc !== null) {
+      throw schemaError(400, "checksum_crc32 given but the session was not opened with checksum: \"crc32\"", "checksum_not_enabled");
+    }
+    return { part_number: n };
+  });
+}
+
 module.exports = {
   validateRequest,
   validateStreamRequest,
+  validateChecksumMode,
+  validatePartChecksums,
   detectMime,
   limitForDetectedMime,
   resolveSigner,
   buildChallenge,
+  CHECKSUM_CRC32_RE,
   TIP_ID_RE,
   MIME_RE,
   UPLOAD_TIMESTAMP_WINDOW_MS,

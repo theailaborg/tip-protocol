@@ -47,6 +47,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { Upload } = require("@aws-sdk/lib-storage");
 const {
   S3_SINGLE_COPY_MAX_BYTES, S3_COPY_PART_BYTES, S3_COPY_CONCURRENCY, UPLOAD_PART_PRESIGN_TTL_SEC,
+  UPLOAD_CHECKSUM_CRC32,
 } = require("../../../shared/constants");
 
 const DEFAULT_REGION = "us-west-2";
@@ -66,7 +67,14 @@ function createS3Backend(config = {}) {
   // Credentials come from the ambient IAM role (IRSA in EKS, EC2 instance
   // role, or `aws sso` for local). No long-lived keys in config — that's a
   // hard rule. SDK's default credential chain picks the right source.
-  const client = new S3Client({ region });
+  // WHEN_REQUIRED: the SDK's default checksum mode stamps an empty-body CRC32
+  // into every presigned part URL, which S3 ignores but a real per-part
+  // checksum would collide with.
+  const client = new S3Client({
+    region,
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
+  });
 
   function _objectKey(mediaId) {
     if (typeof mediaId !== "string" || !/^[0-9a-f]{64}$/.test(mediaId)) {
@@ -287,13 +295,16 @@ function createS3Backend(config = {}) {
 
   // Opens the multipart at the tmp key: the final media/<hash> key gets the object
   // only after complete's re-hash passes, so it never holds unverified bytes.
-  async function createMultipartUpload(sessionId, mime, contentHash) {
+  // checksum "crc32" opens a checksum-typed upload: S3 then demands a CRC32 on
+  // every part and again at complete, fixed for the upload's lifetime.
+  async function createMultipartUpload(sessionId, mime, contentHash, opts = {}) {
     const key = _tmpKey(sessionId, contentHash);
     const res = await client.send(new CreateMultipartUploadCommand({
       Bucket: bucket,
       Key: key,
       ContentType: mime,
       Metadata: { mime, "created-at": String(nowMs()) },
+      ...(opts.checksum === UPLOAD_CHECKSUM_CRC32 ? { ChecksumAlgorithm: "CRC32" } : {}),
       ...(_encryptionArgs()),
     }));
     return { upload_id: res.UploadId, key };
@@ -301,11 +312,18 @@ function createS3Backend(config = {}) {
 
   // Presigned URL for one UploadPart, the client PUTs the bytes straight to S3.
   // Own TTL: part URLs must outlive a multi-hour upload; GET presigns stay short.
-  async function presignUploadPart(uploadId, key, partNumber, ttlSec) {
+  // A checksum is signed as a HEADER (unhoistable): hoisted into the query S3
+  // ignores it, signed as a header S3 rejects a body that does not match it.
+  async function presignUploadPart(uploadId, key, partNumber, ttlSec, opts = {}) {
+    const crc = opts.checksumCrc32;
     const cmd = new UploadPartCommand({
       Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: partNumber,
+      ...(crc ? { ChecksumCRC32: crc } : {}),
     });
-    return getSignedUrl(client, cmd, { expiresIn: ttlSec || partPresignTtlSec });
+    return getSignedUrl(client, cmd, {
+      expiresIn: ttlSec || partPresignTtlSec,
+      ...(crc ? { unhoistableHeaders: new Set(["x-amz-checksum-crc32"]) } : {}),
+    });
   }
 
   // Parts S3 has received so far (resume support). Pages past 1000 parts.
@@ -407,13 +425,14 @@ function createS3Backend(config = {}) {
     }
   }
 
-  async function uploadPart(uploadId, key, partNumber, body) {
+  async function uploadPart(uploadId, key, partNumber, body, opts = {}) {
     const res = await client.send(new UploadPartCommand({
       Bucket: bucket,
       Key: key,
       UploadId: uploadId,
       PartNumber: partNumber,
       Body: body,
+      ...(opts.checksum === UPLOAD_CHECKSUM_CRC32 ? { ChecksumAlgorithm: "CRC32" } : {}),
     }));
     return { etag: res.ETag };
   }
@@ -424,7 +443,10 @@ function createS3Backend(config = {}) {
       Key: key,
       UploadId: uploadId,
       MultipartUpload: {
-        Parts: parts.map(p => ({ PartNumber: p.part_number, ETag: p.etag })),
+        Parts: parts.map(p => ({
+          PartNumber: p.part_number, ETag: p.etag,
+          ...(p.checksum_crc32 ? { ChecksumCRC32: p.checksum_crc32 } : {}),
+        })),
       },
     }));
     return { completed: true };

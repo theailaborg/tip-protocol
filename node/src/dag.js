@@ -2101,6 +2101,7 @@ class MemoryStore {
       completed_size: session.completed_size || 0,
       state: session.state || UPLOAD_SESSION_STATE.UPLOADING,
       result_json: session.result ? JSON.stringify(session.result) : null,
+      checksum_algorithm: session.checksum_algorithm || null,
       created_at: session.created_at,
       expires_at: session.expires_at,
     });
@@ -2121,6 +2122,7 @@ class MemoryStore {
       completed_size: row.completed_size,
       state: row.state || UPLOAD_SESSION_STATE.UPLOADING,
       result: row.result_json ? JSON.parse(row.result_json) : null,
+      checksum_algorithm: row.checksum_algorithm || null,
       created_at: row.created_at,
       expires_at: row.expires_at,
     };
@@ -3036,8 +3038,8 @@ class SQLiteStore {
         `INSERT OR REPLACE INTO upload_sessions
            (session_id, upload_id, s3_key, content_hash, mime, size,
             signer_tip_id, timestamp, signature, parts_json, completed_size,
-            state, result_json, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            state, result_json, checksum_algorithm, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ),
       getUploadSession: this.db.prepare(
         "SELECT * FROM upload_sessions WHERE session_id=?"
@@ -4227,6 +4229,7 @@ class SQLiteStore {
       completed_size: row.completed_size,
       state: row.state || UPLOAD_SESSION_STATE.UPLOADING,
       result: row.result_json ? JSON.parse(row.result_json) : null,
+      checksum_algorithm: row.checksum_algorithm || null,
       created_at: row.created_at,
       expires_at: row.expires_at,
     };
@@ -4239,6 +4242,7 @@ class SQLiteStore {
       JSON.stringify(session.parts || []), session.completed_size || 0,
       session.state || UPLOAD_SESSION_STATE.UPLOADING,
       session.result ? JSON.stringify(session.result) : null,
+      session.checksum_algorithm || null,
       session.created_at, session.expires_at,
     );
     return session;

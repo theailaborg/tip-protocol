@@ -467,6 +467,16 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.listUploadSessionsByState("complete").map(x => x.session_id)).toContain(s.session_id);
   });
 
+  test("upload session keeps its checksum mode; absent means null", async () => {
+    const dag = await makeDag();
+    const plain = uploadSession(uniq("session"));
+    dag.createUploadSession(plain);
+    expect(dag.getUploadSession(plain.session_id).checksum_algorithm).toBeNull();
+    const crc = uploadSession(uniq("session"), { checksum_algorithm: "crc32" });
+    dag.createUploadSession(crc);
+    expect(dag.getUploadSession(crc.session_id).checksum_algorithm).toBe("crc32");
+  });
+
   test("deleteUploadSession removes the session", async () => {
     const dag = await makeDag();
     const s = uploadSession(uniq("session"));

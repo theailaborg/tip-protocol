@@ -63,4 +63,18 @@ describe("media-storage(s3) presign TTLs", () => {
     const s3 = createS3Backend({ s3Bucket: "bucket-test", s3Region: "us-east-1" });
     expect(_expires(await s3.presignUploadPart("mpu-1", `media/cd/tmp-sess.bin`, 1, 60))).toBe(60);
   });
+
+  test("part URLs carry no stray checksum parameters and sign only the host", async () => {
+    const s3 = createS3Backend({ s3Bucket: "bucket-test", s3Region: "us-east-1" });
+    const q = new URL(await s3.presignUploadPart("mpu-1", `media/cd/tmp-sess.bin`, 1)).searchParams;
+    expect([...q.keys()].filter((k) => /checksum/i.test(k))).toEqual([]);
+    expect(q.get("X-Amz-SignedHeaders")).toBe("host");
+  });
+
+  test("a crc32-bound part URL signs the checksum as a header, never hoisted into the query", async () => {
+    const s3 = createS3Backend({ s3Bucket: "bucket-test", s3Region: "us-east-1" });
+    const q = new URL(await s3.presignUploadPart("mpu-1", `media/cd/tmp-sess.bin`, 3, undefined, { checksumCrc32: "SORArw==" })).searchParams;
+    expect(q.get("X-Amz-SignedHeaders")).toBe("host;x-amz-checksum-crc32");
+    expect([...q.keys()].filter((k) => /checksum/i.test(k))).toEqual([]);
+  });
 });

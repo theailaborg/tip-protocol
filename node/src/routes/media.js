@@ -75,6 +75,7 @@ function createRouter({ mediaService, chunkedUploadService }) {
       signature: req.body.signature,
       timestamp: req.body.timestamp,
       part_size: req.body.part_size,
+      checksum: req.body.checksum,
     });
     res.status(201).json(result);
   }));
@@ -82,6 +83,13 @@ function createRouter({ mediaService, chunkedUploadService }) {
   // Resume: which parts S3 already has + fresh presigned URLs for the missing ones.
   router.get("/media/upload-status/:sessionId", asyncHandler(async (req, res) => {
     const result = await chunkedUploadService.status(req.params.sessionId);
+    res.status(200).json(result);
+  }));
+
+  // Same resource, POST: presigned URLs for a batch of parts, each signed with
+  // the part's CRC32 on a checksum-mode session.
+  router.post("/media/upload-status/:sessionId", express.json(), asyncHandler(async (req, res) => {
+    const result = await chunkedUploadService.mintPartUrls(req.params.sessionId, req.body.parts);
     res.status(200).json(result);
   }));
 

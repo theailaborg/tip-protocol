@@ -77,30 +77,38 @@ function _fakeStorage() {
   return {
     backend: "s3",
     partUrlTtlSec: 7200,
-    async uploadPart(uploadId, key, n, body) {
+    async uploadPart(uploadId, key, n, body, opts = {}) {
       if (etagMode === "throw") throw new Error("AccessDenied");
-      probes.push({ uploadId, key, n, body: Buffer.from(body) });
+      probes.push({ uploadId, key, n, body: Buffer.from(body), checksum: opts.checksum || null });
       multiparts.get(uploadId).parts.set(n, Buffer.from(body));
       const md5 = crypto.createHash("md5").update(body).digest("hex");
       return { etag: etagMode === "md5" ? `"${md5}"` : `"opaque-${n}-x"` };
     },
     _setEtagMode(m) { etagMode = m; },
     _probes: probes,
-    async createMultipartUpload(sessionId) {
+    // opts.checksum mirrors S3: a checksum-typed upload refuses to complete
+    // without every part's checksum.
+    async createMultipartUpload(sessionId, mime, contentHash, opts = {}) {
       const uploadId = `up-${++seq}`;
       const key = `media-tmp/${sessionId}.bin`;
-      multiparts.set(uploadId, { key, parts: new Map() });
+      multiparts.set(uploadId, { key, parts: new Map(), checksum: opts.checksum || null, completedWith: null });
       return { upload_id: uploadId, key };
     },
-    async presignUploadPart(uploadId, key, n) { return `https://s3.test/${key}?u=${uploadId}&p=${n}`; },
+    async presignUploadPart(uploadId, key, n, ttl, opts = {}) {
+      return `https://s3.test/${key}?u=${uploadId}&p=${n}${opts.checksumCrc32 ? `&crc=${encodeURIComponent(opts.checksumCrc32)}` : ""}`;
+    },
     async listUploadedParts(uploadId) {
       const mp = multiparts.get(uploadId);
       return mp ? [...mp.parts.entries()].map(([n, b]) => ({ part_number: n, etag: `"e${n}"`, size: b.length })) : [];
     },
     async completeMultipartUpload(uploadId, key, parts) {
       if (assembleError) { const e = assembleError; assembleError = null; throw e; }
-      assembled += 1;
       const mp = multiparts.get(uploadId);
+      if (mp.checksum && parts.some(p => !p.checksum_crc32)) {
+        throw new Error("InvalidRequest: The upload was created using a crc32 checksum. The complete request must include the checksum for each part.");
+      }
+      mp.completedWith = parts.map(p => ({ part_number: p.part_number, checksum_crc32: p.checksum_crc32 || null }));
+      assembled += 1;
       const ordered = [...parts].sort((a, b) => a.part_number - b.part_number);
       objects.set(key, Buffer.concat(ordered.map(p => mp.parts.get(p.part_number) || Buffer.alloc(0))));
       return { completed: true };
@@ -690,5 +698,111 @@ describe("presigned chunked upload: part sizing, etag probe, url ttl", () => {
     const res = await fx.svc.complete(up.init.session_id, _completeArgs(fx, up.init.session_id, echoed));
     expect(res.media_id).toBe(up.contentHash);
     expect(res.size).toBe(file.length);
+  });
+});
+
+describe("presigned chunked upload: per-part crc32 checksums (opt-in)", () => {
+  const CRC = "SORArw=="; // any well-formed value: base64 of 4 bytes
+  function _crc32(buf) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) {
+      let c = (crc ^ buf[i]) & 0xff;
+      for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1;
+      crc = (crc >>> 8) ^ c;
+    }
+    const b = Buffer.alloc(4); b.writeUInt32BE((crc ^ 0xffffffff) >>> 0); return b.toString("base64");
+  }
+  async function _init(fx, size, extra = {}) {
+    const ts = nowMs();
+    const contentHash = extra.contentHash || "ab".repeat(32);
+    return fx.svc.init({
+      mime: "image/png", size, content_hash: contentHash, signer_tip_id: TIP, timestamp: ts,
+      signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey),
+      checksum: "crc32", ...extra,
+    });
+  }
+
+  test("init opts in: checksum-typed upload, no URLs up front, probe still runs with the checksum", async () => {
+    const fx = _setup();
+    const init = await _init(fx, 100 * 1024 * 1024);
+    expect(init.checksum).toBe("crc32");
+    expect(init.parts).toEqual([]);
+    expect(init.part_count).toBeGreaterThan(1);
+    const session = fx.dag.getUploadSession(init.session_id);
+    expect(session.checksum_algorithm).toBe("crc32");
+    expect(fx.storage._multiparts.get(session.upload_id).checksum).toBe("crc32");
+    expect(fx.storage._probes[0].checksum).toBe("crc32");
+    expect(init.part_etag_is_md5).toBe(true);
+  });
+
+  test("an unknown checksum algorithm is refused; omitting it keeps today's behaviour", async () => {
+    const fx = _setup();
+    await expect(_init(fx, 1024, { checksum: "md5" })).rejects.toMatchObject({ status: 400, code: "checksum_unsupported" });
+    const plain = await _init(fx, 1024, { checksum: undefined });
+    expect(plain.checksum).toBeNull();
+    expect(plain.parts).toHaveLength(1);
+    expect(fx.dag.getUploadSession(plain.session_id).checksum_algorithm).toBeNull();
+  });
+
+  test("mintPartUrls signs each URL with the part's crc32 and validates the batch", async () => {
+    const fx = _setup();
+    const init = await _init(fx, 100 * 1024 * 1024);
+    const out = await fx.svc.mintPartUrls(init.session_id, [
+      { part_number: 1, checksum_crc32: CRC }, { part_number: 5, checksum_crc32: "AAAAAA==" },
+    ]);
+    expect(out.checksum).toBe("crc32");
+    expect(out.parts.map(p => p.part_number)).toEqual([1, 5]);
+    expect(out.parts[0].url).toContain(`&crc=${encodeURIComponent(CRC)}`);
+    expect(out.parts[0].checksum_crc32).toBe(CRC);
+    expect(out.parts[0].url_expires_at).toBeGreaterThan(nowMs());
+    await expect(fx.svc.mintPartUrls(init.session_id, [{ part_number: 2 }]))
+      .rejects.toMatchObject({ status: 400, code: "checksum_required" });
+    await expect(fx.svc.mintPartUrls(init.session_id, [{ part_number: 2, checksum_crc32: "not-base64" }]))
+      .rejects.toMatchObject({ status: 400, code: "checksum_required" });
+    await expect(fx.svc.mintPartUrls(init.session_id, [{ part_number: init.part_count + 1, checksum_crc32: CRC }]))
+      .rejects.toMatchObject({ status: 400, code: "part_number_invalid" });
+    const tooMany = Array.from({ length: 65 }, (_, i) => ({ part_number: i + 1, checksum_crc32: CRC }));
+    await expect(fx.svc.mintPartUrls(init.session_id, tooMany)).rejects.toMatchObject({ status: 400, code: "parts_too_many" });
+    await expect(fx.svc.mintPartUrls(init.session_id, [])).rejects.toMatchObject({ status: 400, code: "parts_required" });
+    // GET-style status on a checksum session lists what is missing but mints nothing
+    const st = await fx.svc.status(init.session_id);
+    expect(st.checksum).toBe("crc32");
+    expect(st.missing_parts).toHaveLength(init.part_count);
+    expect(st.parts).toEqual([]);
+  });
+
+  test("a session without checksum mode refuses checksums but still mints plain URLs on demand", async () => {
+    const fx = _setup();
+    const init = await _init(fx, 100 * 1024 * 1024, { checksum: undefined });
+    await expect(fx.svc.mintPartUrls(init.session_id, [{ part_number: 1, checksum_crc32: CRC }]))
+      .rejects.toMatchObject({ status: 400, code: "checksum_not_enabled" });
+    const out = await fx.svc.mintPartUrls(init.session_id, [{ part_number: 1 }, { part_number: 2 }]);
+    expect(out.checksum).toBeNull();
+    expect(out.parts.map(p => p.url)).toEqual([expect.not.stringContaining("crc="), expect.not.stringContaining("crc=")]);
+  });
+
+  test("complete on a checksum session requires every part's crc32 and passes them to S3", async () => {
+    const fx = _setup();
+    const file = _png(4096);
+    const contentHash = shake256(file);
+    const init = await _init(fx, file.length, { contentHash });
+    const session = fx.dag.getUploadSession(init.session_id);
+    const crc = _crc32(file);
+    await fx.svc.mintPartUrls(init.session_id, [{ part_number: 1, checksum_crc32: crc }]);
+    const etag = fx.storage._put(session.upload_id, 1, file);
+    await expect(fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, [{ part_number: 1, etag }])))
+      .rejects.toMatchObject({ status: 400, code: "checksum_required" });
+    const res = await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, [{ part_number: 1, etag, checksum_crc32: crc }]));
+    expect(res.media_id).toBe(contentHash);
+    expect(fx.storage._multiparts.get(session.upload_id).completedWith).toEqual([{ part_number: 1, checksum_crc32: crc }]);
+  });
+
+  test("mintPartUrls refuses a session that is no longer uploading", async () => {
+    const fx = _setup();
+    const file = _png(2048);
+    const up = await _upload(fx, file, "image/png");
+    await fx.svc.complete(up.init.session_id, _completeArgs(fx, up.init.session_id, up.parts));
+    await expect(fx.svc.mintPartUrls(up.init.session_id, [{ part_number: 1 }]))
+      .rejects.toMatchObject({ status: 409, code: "session_not_uploading" });
   });
 });
