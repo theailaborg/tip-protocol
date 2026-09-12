@@ -9,11 +9,13 @@
  * and commit-handler (consensus replay) import this module — the field
  * list, default-fill rules, and verifier all live here.
  *
- * Quick summary of the 9 signed fields (alphabetical):
+ * Quick summary of the 11 signed fields (alphabetical):
  *
  *   algorithm         string,       new key's algorithm (default ml-dsa-65)
+ *   biometric_commit  string,       optional (VP-attested face-template SHAKE-256 hex; strip-when-absent)
  *   creator_name      string,       optional (VP-attested display name)
  *   dedup_hash        string,       required (Poseidon field element from ZK proof)
+ *   org_type          string,       optional (organization identities only; strip-when-absent)
  *   public_key        string,       required (raw ML-DSA-65 hex, 3904 chars)
  *   region            string,       default "US", uppercased
  *   tip_id_type       string,       default "personal" (enum: personal/organization)
@@ -160,14 +162,21 @@ function validateRequest(body, deps) {
       "creator_name_required",
     );
   }
+  // biometric_commit shape gate — absent/null, or a 64-char lowercase hex.
+  if (body.biometric_commit !== undefined && body.biometric_commit !== null) {
+    if (typeof body.biometric_commit !== "string" || !/^[0-9a-f]{64}$/.test(body.biometric_commit)) {
+      throw schemaError(400, "biometric_commit must be a 64-char lowercase hex string", "biometric_commit_invalid");
+    }
+  }
   // DAG presence — VP must exist and be active.
   resolveVP(body.vp_id, deps.dag);
 }
 
 /**
- * Build the canonical 9-field signed payload. All fields always
- * present; defaults fill in for omitted optionals. Reject-on-extra:
- * picks exactly these 9 keys.
+ * Build the canonical signed payload (8 required fields always present;
+ * defaults fill in for omitted optionals). The 3 optional fields
+ * (biometric_commit, creator_name, org_type) are stripped when absent, so the
+ * payload carries 8-11 keys. Reject-on-extra: picks exactly these keys.
  */
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {
@@ -233,8 +242,20 @@ function buildSigningPayload(input) {
     throw schemaError(400, "org_type must be 2-64 chars, lowercase letters, digits or hyphens", "org_type_invalid");
   }
 
+  // biometric_commit: optional VP-attested face-template commitment (SHAKE-256
+  // hex digest computed by the VP over the off-DAG embedding + model + landmarks).
+  // The node treats it as an opaque hex string — it never recomputes it. When
+  // present it must be 64-char lowercase hex; absent/null strips out (strip-rule)
+  // so identities without a biometric sign byte-identically to before this field.
+  const biometricCommit = input.biometric_commit;
+  if (biometricCommit != null
+    && (typeof biometricCommit !== "string" || !/^[0-9a-f]{64}$/.test(biometricCommit))) {
+    throw schemaError(400, "biometric_commit must be a 64-char lowercase hex string", "biometric_commit_invalid");
+  }
+
   const normalised = {
     algorithm,
+    biometric_commit: biometricCommit,
     dedup_hash: input.dedup_hash,
     public_key: input.public_key,
     // buildSigningPayload runs on BOTH the API and verifyTx paths, so bounding
@@ -252,7 +273,7 @@ function buildSigningPayload(input) {
       "algorithm", "dedup_hash", "public_key", "region",
       "tip_id_type", "verification_tier", "vp_id", "zk_proof",
     ],
-    optional: ["creator_name", "org_type"],
+    optional: ["biometric_commit", "creator_name", "org_type"],
   });
 }
 
