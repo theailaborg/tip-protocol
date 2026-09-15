@@ -95,6 +95,7 @@ Register a new TIP-ID. Requires VP signature.
 
 **Errors:**
 - `400`: Missing required fields
+- `400` `region_invalid`: `region` is not an ISO 3166-1 alpha-2 country code (send `IN`, not `IND`)
 - `409`: TIP-ID already registered
 - `422`: Duplicate identity (dedup_hash exists)
 - `403`: Invalid VP signature or VP not accredited
