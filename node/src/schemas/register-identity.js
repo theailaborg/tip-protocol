@@ -40,11 +40,11 @@
 const {
   signPayload, verifyPayload, schemaError, canonicalJson, assertBounded,
 } = require("./_common");
+const { ISO_3166_ALPHA2 } = require("../../../shared/constants");
 
-// identities.region is varchar(8). Bound + charset only, deliberately NOT
-// ISO 3166-1 alpha-2: every value today is 2 chars but the column allows 8,
-// so narrowing the semantics is a separate product decision. This exists to
-// stop an overlong value reaching the column and fail-stopping the node.
+// identities.region is varchar(8). The signing path keeps only this 2-8 bound so
+// already-committed values still verify on replay; new registrations are held
+// to ISO 3166-1 alpha-2 at the API gate in validateRequest.
 const REGION_SPEC = Object.freeze({
   field: "region", max: 8,
   pattern: /^[A-Z0-9-]{2,8}$/, describe: "2-8 uppercase letters, digits or hyphens",
@@ -106,8 +106,14 @@ function validateRequest(body, deps) {
   if (!body || typeof body !== "object") {
     throw schemaError(400, "request body is required", "body_invalid");
   }
-  // Uppercased before the bound check so the client may send either case.
-  if (typeof body.region === "string") assertBounded(body.region.toUpperCase(), REGION_SPEC);
+  // Uppercased before the checks so the client may send either case.
+  if (typeof body.region === "string") {
+    const region = body.region.toUpperCase();
+    assertBounded(region, REGION_SPEC);
+    if (!ISO_3166_ALPHA2.has(region)) {
+      throw schemaError(400, `region must be an ISO 3166-1 alpha-2 country code (got "${region}")`, "region_invalid");
+    }
+  }
   if (typeof body.public_key !== "string" || body.public_key.length === 0) {
     throw schemaError(400, "public_key is required (hex-encoded ML-DSA-65)", "public_key_required");
   }
