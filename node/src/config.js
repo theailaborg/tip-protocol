@@ -161,6 +161,11 @@ function loadConfig() {
     // Optional: nodes without a public surface simply never announce.
     apiEndpoint: process.env.TIP_API_ENDPOINT || null,
 
+    // ── Classifier callbacks ──────────────────────────────────────────────────
+    // Verifies the classifier's signed job callbacks; blank means no callback_url
+    // is sent and prescan jobs are polled.
+    classifierCallbackSecret: process.env.TIP_CLASSIFIER_CALLBACK_SECRET || "",
+
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),
 

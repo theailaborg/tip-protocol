@@ -64,6 +64,20 @@ const CLASSIFIER_CLIENT = Object.freeze({
   FILE_TIMEOUT_MS: 180_000,
 });
 
+// Pre-scans the classifier runs as a job (202): the worker polls on a backoff
+// schedule, a signed callback wakes it early, and BUDGET_MS bounds the wait
+// before failing open. Media links for a job must outlive a queued job.
+const PRESCAN_JOB = Object.freeze({
+  BUDGET_MS: 30 * 60_000,
+  POLL_MIN_MS: 30_000,
+  POLL_MAX_MS: 5 * 60_000,
+  POLL_STEPS_MS: Object.freeze([60_000, 120_000, 240_000]),
+  POLL_JITTER: 0.1,
+  RATE_BYTES_PER_SEC: 10 * 1024 * 1024,
+  MODEL_FLOOR_MS: 60_000,
+  MEDIA_URL_TTL_SEC: 3_600,
+});
+
 // Joiner-side DoS guards for downloading a snapshot from a peer (#94). Local
 // operational caps (NOT consensus state, NOT genesis): each node protects its
 // own memory + liveness, so a divergent value can't fork the chain. Sized
@@ -1147,4 +1161,5 @@ module.exports = {
   OAUTH_REQUIRED_PLATFORMS,
   PRIVATE_NETWORK_CIDRS,
   ISO_3166_ALPHA2,
+  PRESCAN_JOB,
 };

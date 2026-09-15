@@ -33,7 +33,7 @@
 
 "use strict";
 
-const { TX_TYPES, PRESCAN_PERMANENT_MEDIA_ERRORS } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_PERMANENT_MEDIA_ERRORS, PRESCAN_JOB } = require("../../../shared/constants");
 const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { nowMs } = require("../../../shared/time");
 const { aggregate } = require("../services/prescan-aggregator");
@@ -67,7 +67,7 @@ const STAGE_AUDIO = "audio";
  * @param {() => number} [deps.now]         Time source for tests.
  * @param {() => Promise<void>} [deps.sleep] Sleep impl for tests.
  */
-function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, log, now: nowFn, sleep: sleepFn, workerTag = "", mediaService }) {
+function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, log, now: nowFn, sleep: sleepFn, random: randomFn, workerTag = "", mediaService }) {
   if (!dag) throw new Error("prescan-worker: dag required");
   if (!jobs) throw new Error("prescan-worker: jobs required");
   if (!classifierClient) throw new Error("prescan-worker: classifierClient required");
@@ -232,7 +232,8 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     let classifierVersion;
     let skipped = false;
     try {
-      const scan = await _runClassifierScan(payload);
+      const scan = await _runClassifierScan(job, payload);
+      if (scan.handled) return;
       modalityResults = scan.modalityResults;
       mediaResults = scan.mediaResults || [];
       providersUsed = scan.providersUsed;
@@ -446,6 +447,108 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     jobs.markFailed(job.job_id, reason);
   }
 
+  // Media pre-scans may run as a classifier job (202). The job id and the poll
+  // state live on the queue row, so a restarted worker resumes the same job.
+  // Presigned links cover the whole job budget: a queued job fetches them late.
+  async function _mediaScan(job, { originCode, text, media, cleared, authorTip }) {
+    if (job.classifier_job_id) return _pollClassifierJob(job);
+    const files = await mediaService.presignForClassifier(media, { ttlSec: PRESCAN_JOB.MEDIA_URL_TTL_SEC, withSize: true });
+    const request = {
+      originCode, text, files,
+      creatorClearedCount: cleared, authorTipId: authorTip,
+      clientRef: job.job_id,
+    };
+    let res;
+    try {
+      res = await classifierClient.prescan(request);
+    } catch (err) {
+      if (!_isCutOff(err)) throw err;
+      // The classifier keeps working after the connection is cut; the same
+      // client_ref returns that job instead of starting a second download.
+      logger.warn?.(`prescan-worker: classifier call cut off on ${job.job_id} (${err.message || err.code}); resending by client_ref`);
+      res = await classifierClient.prescan(request);
+    }
+    if (!res || !res.pending) return { response: res };
+    if (res.state === "failed") return _classifierJobFailed(job, res.error || "job_failed");
+    jobs.setClassifierRef(job.job_id, res.job_id);
+    const bytes = files.reduce((n, f) => n + (f.size || 0), 0);
+    _deferPoll(job, 0, _pollDelay(0, bytes, res.poll_after_ms));
+    return { handled: true };
+  }
+
+  async function _pollClassifierJob(job) {
+    const startedAt = Number(job.classifier_job_at) || now();
+    if (now() - startedAt > PRESCAN_JOB.BUDGET_MS) {
+      logger.warn?.(`prescan-worker: classifier job ${job.classifier_job_id} for ${job.job_id} ran past its budget; failing open`);
+      _emitFailOpen(job, job.payload?.content_type, "classifier_job_timeout");
+      return { handled: true };
+    }
+    const polls = (Number(job.classifier_polls) || 0) + 1;
+    if (typeof classifierClient.prescanStatus !== "function") {
+      jobs.setClassifierRef(job.job_id, null);
+      _deferPoll(job, polls, 0, "classifier_without_jobs");
+      return { handled: true };
+    }
+    let status;
+    try {
+      status = await classifierClient.prescanStatus(job.classifier_job_id);
+    } catch (err) {
+      // A failed poll says nothing about the job, so it is never a retry.
+      logger.warn?.(`prescan-worker: status poll failed for ${job.job_id} (${err.message || err.code}); polling again later`);
+      _deferPoll(job, polls, _pollDelay(polls, 0));
+      return { handled: true };
+    }
+    if (status.state === "done") {
+      if (status.result) return { response: status.result };
+      return _classifierJobFailed(job, "job_result_missing");
+    }
+    if (status.state === "failed") return _classifierJobFailed(job, status.error || "job_failed");
+    if (status.state === "lost") {
+      logger.warn?.(`prescan-worker: classifier lost job ${job.classifier_job_id} for ${job.job_id}; resubmitting`);
+      jobs.setClassifierRef(job.job_id, null);
+      _deferPoll(job, polls, 0, "classifier_job_lost");
+      return { handled: true };
+    }
+    _deferPoll(job, polls, _pollDelay(polls, 0));
+    return { handled: true };
+  }
+
+  // A failed job is resubmitted with fresh links through the normal retry
+  // budget, unless the classifier says the media itself can never be scanned.
+  function _classifierJobFailed(job, error) {
+    jobs.setClassifierRef(job.job_id, null);
+    const rejected = PRESCAN_PERMANENT_MEDIA_ERRORS.find(c => String(error).includes(c));
+    if (rejected) {
+      _emitFailOpen(job, job.payload?.content_type, `classifier_rejected_media: ${rejected}`);
+      return { handled: true };
+    }
+    throw { code: "classifier_job_failed", message: `classifier job failed: ${error}` };
+  }
+
+  function _isCutOff(err) {
+    if (err?.code === "classifier_timeout") return true;
+    return err?.code === "classifier_http_error" && [502, 504, 524].includes(err.status);
+  }
+
+  function _deferPoll(job, polls, delayMs, note = "awaiting_classifier_job") {
+    jobs.deferForPoll(job.job_id, { retryAfter: now() + delayMs, polls, note });
+  }
+
+  // First poll waits about as long as the classifier needs to fetch and scan the
+  // media; later polls back off to POLL_MAX_MS. Jitter keeps jobs out of step.
+  function _pollDelay(polls, bytes, hintMs) {
+    let base;
+    if (polls === 0) {
+      base = Math.round((bytes / PRESCAN_JOB.RATE_BYTES_PER_SEC) * 1000) + PRESCAN_JOB.MODEL_FLOOR_MS;
+      if (Number.isFinite(hintMs)) base = Math.max(base, hintMs);
+    } else {
+      base = PRESCAN_JOB.POLL_STEPS_MS[polls - 1] ?? PRESCAN_JOB.POLL_MAX_MS;
+    }
+    const clamped = Math.min(PRESCAN_JOB.POLL_MAX_MS, Math.max(PRESCAN_JOB.POLL_MIN_MS, base));
+    const r = typeof randomFn === "function" ? randomFn() : Math.random();
+    return Math.round(clamped * (1 + (r * 2 - 1) * PRESCAN_JOB.POLL_JITTER));
+  }
+
   function _submitPrescanCompleted(data) {
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_COMPLETED,
@@ -462,7 +565,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
    * per-media fan-out, no base64). Returns the per-modality result
    * entries, attributed per file via the echoed media_id.
    */
-  async function _runClassifierScan(payload) {
+  async function _runClassifierScan(job, payload) {
     const text = typeof payload.text === "string" ? payload.text : "";
     const originCode = payload.origin_code;
     const media = Array.isArray(payload.media) ? payload.media : [];
@@ -476,14 +579,9 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       if (!mediaService) {
         throw new Error("prescan-worker: mediaService not wired but payload carries media[]");
       }
-      // Presign one GET URL per media ref; the classifier downloads the
-      // bytes itself (files[] by-reference contract). One request carries
-      // text + all media — no fan-out, no base64.
-      const files = await mediaService.presignForClassifier(media);
-      calls.push(classifierClient.prescan({
-        originCode, text, files,
-        creatorClearedCount: cleared, authorTipId: authorTip,
-      }));
+      const outcome = await _mediaScan(job, { originCode, text, media, cleared, authorTip });
+      if (outcome.handled) return outcome;
+      calls.push(outcome.response);
     }
 
     const responses = await Promise.all(calls);
