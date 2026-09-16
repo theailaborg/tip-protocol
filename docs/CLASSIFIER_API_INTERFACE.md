@@ -112,6 +112,87 @@ protocol constants. The classifier does **not** decide flag/status/grace , it
 returns evidence (probability + provenance + per-file error). This keeps the
 classifier freely swappable without affecting consensus.
 
+## Long jobs: 202, status polling and callbacks
+
+Media can take longer than any HTTP request should stay open. Instead of holding
+the connection, the classifier may accept the work and answer later.
+
+### Request fields for jobs
+
+Two optional fields the node adds on requests that carry `files[]`.
+
+| Field | Meaning |
+|---|---|
+| `client_ref` | The node's own id for this pre-scan, stable across retries. Deduplicate on `(caller, client_ref)`: if the node resends after a dropped connection, return the job already running rather than starting a second download. |
+| `callback_url` | Where to notify when the job reaches a terminal state. Sent only when the node has a callback secret configured. Optional to honour; the node polls regardless. |
+
+### Accepting the work
+
+Answer **200** with the usual verdict body whenever the work is quick. Otherwise
+answer **202** once the request is validated and the job is queued:
+
+```json
+{ "job_id": "cj_8f21", "state": "queued", "poll_after_ms": 30000 }
+```
+
+`poll_after_ms` tells the node when to check back. Send it on every response,
+including status responses, and the node follows it.
+
+### `GET /v1/prescan/{job_id}`
+
+Same `X-TIP-Classifier-Key` header. One of four shapes:
+
+```json
+{ "job_id": "cj_8f21", "state": "queued",  "poll_after_ms": 60000 }
+{ "job_id": "cj_8f21", "state": "running", "poll_after_ms": 60000 }
+{ "job_id": "cj_8f21", "state": "done",    "result": { ...the usual verdict body... } }
+{ "job_id": "cj_8f21", "state": "failed",  "error": "download_timeout" }
+```
+
+| State | What the node does |
+|---|---|
+| `queued`, `running` | Waits `poll_after_ms` and asks again. Never counts as a retry. |
+| `done` | Uses `result` exactly as it would a 200 body. A `done` without `result` is treated as a failure. |
+| `failed` | Retries the whole request with fresh links, unless `error` contains one of the permanent media codes above, in which case it fails open at once. |
+| `404` | The job is unknown or expired. The node resubmits under the same `client_ref`. |
+
+Keep a finished job readable for **at least one hour** so a restarted node can
+still collect the result.
+
+### Callbacks
+
+When `callback_url` is present, POST to it as soon as the job is `done` or
+`failed`:
+
+```
+POST <callback_url>
+X-TIP-Prescan-Signature: hmac-sha256=<hex digest of the raw request body>
+Content-Type: application/json
+
+{ "job_id": "cj_8f21", "state": "done" }
+```
+
+The digest is HMAC-SHA256 over the exact bytes sent, keyed with the shared
+callback secret. The node compares it in constant time and answers `200` when it
+accepted the wake-up, `401` on a bad signature, `404` when no job is waiting on
+that id.
+
+The callback never carries the verdict. It only tells the node to stop waiting
+and fetch the result over the authenticated status call, so a forged callback
+can cost an early poll and nothing more. Delivery is best effort: a failed
+callback needs no retry, because the node keeps polling anyway.
+
+### How long the node waits
+
+The node stops waiting when the network's own pre-scan deadline arrives, which
+is measured from the moment the content was registered, not from when the job
+was accepted. Content still unscanned at that point gets the neutral verdict
+(probability 0.5) from whichever node notices first, so a result arriving later
+cannot change the outcome. The node does not estimate job duration from file
+size; pace the work with `poll_after_ms` instead.
+
+---
+
 ### Per-file error codes the node acts on
 
 `modality_results[].error` is matched by substring against this list:
