@@ -21,7 +21,7 @@ const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto")
 const { initDAG } = require(path.resolve(__dirname, "../../src/dag"));
 const { createPrescanJobs } = require(path.resolve(__dirname, "../../src/services/prescan-jobs"));
 const { createPrescanWorker } = require(path.resolve(__dirname, "../../src/workers/prescan-worker"));
-const { TX_TYPES, PRESCAN_JOB } = require(path.join(SHARED, "constants"));
+const { TX_TYPES, PRESCAN_JOB, PRESCAN_FAIL_OPEN_AFTER_MS } = require(path.join(SHARED, "constants"));
 
 const MEDIA_ID = "cd".repeat(32);
 const CTID = "tip://c/OH-7f2a91bc3d5e4a-b1c2";
@@ -61,7 +61,6 @@ async function setup({ prescan, prescanStatus, maxBacklog = 0 }) {
     async presignForClassifier(media, opts = {}) {
       return media.map(m => ({
         media_id: m.media_id, mime: m.mime, url: `https://bucket/${m.media_id}?ttl=${opts.ttlSec}`,
-        ...(opts.withSize ? { size: 5 * 1024 * 1024 } : {}),
       }));
     },
   };
@@ -81,8 +80,10 @@ async function setup({ prescan, prescanStatus, maxBacklog = 0 }) {
 }
 
 const QUEUED = { pending: true, job_id: "cj_1", state: "queued", poll_after_ms: 30000 };
-// 5 MiB at 10 MiB/s plus the model floor, jitter neutralised by random() = 0.5
-const FIRST_DELAY = Math.round((5 * 1024 * 1024 / PRESCAN_JOB.RATE_BYTES_PER_SEC) * 1000) + PRESCAN_JOB.MODEL_FLOOR_MS;
+// The classifier's own poll_after_ms: the worker obeys it. Jitter neutralised by random() = 0.5.
+const FIRST_DELAY = QUEUED.poll_after_ms;
+// Content registered at T0, so the network commits the neutral verdict here.
+const DEADLINE_AT = PRESCAN_FAIL_OPEN_AFTER_MS - PRESCAN_JOB.BUDGET_MARGIN_MS;
 
 describe("media pre-scan as a classifier job", () => {
   test("a 202 stores the classifier job and defers without spending a retry", async () => {
@@ -166,13 +167,40 @@ describe("media pre-scan as a classifier job", () => {
     expect(s.txs).toHaveLength(0);
   });
 
-  test("a job still running past the budget fails open", async () => {
+  test("a job still running at the network's fail-open deadline fails open", async () => {
     const s = await setup({ prescan: () => QUEUED, prescanStatus: () => ({ state: "running" }) });
     await s.worker.tick();
-    s.clock.advance(PRESCAN_JOB.BUDGET_MS + 1);
+    s.clock.advance(DEADLINE_AT - 1);
+    await s.worker.tick();
+    expect(s.txs).toHaveLength(0);
+    s.clock.advance(PRESCAN_JOB.POLL_STEPS_MS[0] + 1);
     await s.worker.tick();
     expect(s.txs).toHaveLength(1);
     expect(s.txs[0].data).toEqual(expect.objectContaining({ failed: true, failure_reason: "classifier_job_timeout" }));
+  });
+
+  // The deadline is measured from the content's registration, the same clock the
+  // cross-node trigger uses, not from when the classifier accepted the job.
+  test("content registered earlier reaches the deadline earlier", async () => {
+    const s = await setup({ prescan: () => QUEUED, prescanStatus: () => ({ state: "running" }) });
+    const content = s.dag.getContent(CTID);
+    s.dag.saveContent({ ...content, ctid: CTID, registered_at: content.registered_at - 600_000 });
+    await s.worker.tick();
+    s.clock.advance(DEADLINE_AT - 600_000 + 1);
+    await s.worker.tick();
+    expect(s.txs).toHaveLength(1);
+    expect(s.txs[0].data.failure_reason).toBe("classifier_job_timeout");
+  });
+
+  test("a later poll waits as long as the classifier asks", async () => {
+    const s = await setup({
+      prescan: () => QUEUED,
+      prescanStatus: () => ({ state: "running", poll_after_ms: 200_000 }),
+    });
+    await s.worker.tick();
+    s.clock.advance(FIRST_DELAY);
+    await s.worker.tick();
+    expect(s.dag.getPrescanJob(s.jobId).retry_after).toBe(T0 + FIRST_DELAY + 200_000);
   });
 
   test("a submit cut off by a timeout is resent once by client_ref", async () => {

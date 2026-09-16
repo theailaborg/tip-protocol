@@ -74,6 +74,8 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
   if (typeof submitTx !== "function") throw new Error("prescan-worker: submitTx required");
   if (!config?.nodePrivateKey) throw new Error("prescan-worker: config.nodePrivateKey required");
 
+  const _failOpenAfterMs = Number(config?.prescanFailOpenAfterMs) || PRESCAN_WORKER.FAIL_OPEN_AFTER_MS;
+
   const logger = log || console;
   // workerId identifies this worker in the queue's claimed_by column —
   // useful for debugging stuck claims when multiple workers run against
@@ -362,6 +364,15 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     jobs.markDone(job.job_id);
   }
 
+  // The network commits the neutral verdict this long after the content was
+  // registered, so waiting past it cannot change the outcome. Same clock the
+  // cross-node trigger reads (content.registered_at).
+  function _failOpenDeadline(job) {
+    const content = dag.getContent(job.ctid);
+    const from = Number(content?.registered_at) || Number(job.created_at) || now();
+    return from + _failOpenAfterMs - PRESCAN_JOB.BUDGET_MARGIN_MS;
+  }
+
   function _alreadyDecided(job) {
     const content = dag.getContent(job.ctid);
     return !!content && content.prescan_status === "completed";
@@ -452,7 +463,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
   // Presigned links cover the whole job budget: a queued job fetches them late.
   async function _mediaScan(job, { originCode, text, media, cleared, authorTip }) {
     if (job.classifier_job_id) return _pollClassifierJob(job);
-    const files = await mediaService.presignForClassifier(media, { ttlSec: PRESCAN_JOB.MEDIA_URL_TTL_SEC, withSize: true });
+    const files = await mediaService.presignForClassifier(media, { ttlSec: PRESCAN_JOB.MEDIA_URL_TTL_SEC });
     const request = {
       originCode, text, files,
       creatorClearedCount: cleared, authorTipId: authorTip,
@@ -471,15 +482,13 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     if (!res || !res.pending) return { response: res };
     if (res.state === "failed") return _classifierJobFailed(job, res.error || "job_failed");
     jobs.setClassifierRef(job.job_id, res.job_id);
-    const bytes = files.reduce((n, f) => n + (f.size || 0), 0);
-    _deferPoll(job, 0, _pollDelay(0, bytes, res.poll_after_ms));
+    _deferPoll(job, 0, _pollDelay(0, res.poll_after_ms));
     return { handled: true };
   }
 
   async function _pollClassifierJob(job) {
-    const startedAt = Number(job.classifier_job_at) || now();
-    if (now() - startedAt > PRESCAN_JOB.BUDGET_MS) {
-      logger.warn?.(`prescan-worker: classifier job ${job.classifier_job_id} for ${job.job_id} ran past its budget; failing open`);
+    if (now() > _failOpenDeadline(job)) {
+      logger.warn?.(`prescan-worker: classifier job ${job.classifier_job_id} for ${job.job_id} reached the fail-open deadline; failing open`);
       _emitFailOpen(job, job.payload?.content_type, "classifier_job_timeout");
       return { handled: true };
     }
@@ -495,7 +504,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     } catch (err) {
       // A failed poll says nothing about the job, so it is never a retry.
       logger.warn?.(`prescan-worker: status poll failed for ${job.job_id} (${err.message || err.code}); polling again later`);
-      _deferPoll(job, polls, _pollDelay(polls, 0));
+      _deferPoll(job, polls, _pollDelay(polls));
       return { handled: true };
     }
     if (status.state === "done") {
@@ -509,7 +518,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       _deferPoll(job, polls, 0, "classifier_job_lost");
       return { handled: true };
     }
-    _deferPoll(job, polls, _pollDelay(polls, 0));
+    _deferPoll(job, polls, _pollDelay(polls, status.poll_after_ms));
     return { handled: true };
   }
 
@@ -534,16 +543,14 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     jobs.deferForPoll(job.job_id, { retryAfter: now() + delayMs, polls, note });
   }
 
-  // First poll waits about as long as the classifier needs to fetch and scan the
-  // media; later polls back off to POLL_MAX_MS. Jitter keeps jobs out of step.
-  function _pollDelay(polls, bytes, hintMs) {
-    let base;
-    if (polls === 0) {
-      base = Math.round((bytes / PRESCAN_JOB.RATE_BYTES_PER_SEC) * 1000) + PRESCAN_JOB.MODEL_FLOOR_MS;
-      if (Number.isFinite(hintMs)) base = Math.max(base, hintMs);
-    } else {
-      base = PRESCAN_JOB.POLL_STEPS_MS[polls - 1] ?? PRESCAN_JOB.POLL_MAX_MS;
-    }
+  // The classifier sets the cadence when it sends one; otherwise back off on a
+  // fixed schedule. Jitter keeps jobs out of step. No estimate from file size:
+  // throughput is the classifier's to know, not ours to guess.
+  function _pollDelay(polls, hintMs) {
+    let base = polls === 0
+      ? PRESCAN_JOB.POLL_FIRST_MS
+      : (PRESCAN_JOB.POLL_STEPS_MS[polls - 1] ?? PRESCAN_JOB.POLL_MAX_MS);
+    if (Number.isFinite(hintMs) && hintMs > 0) base = hintMs;
     const clamped = Math.min(PRESCAN_JOB.POLL_MAX_MS, Math.max(PRESCAN_JOB.POLL_MIN_MS, base));
     const r = typeof randomFn === "function" ? randomFn() : Math.random();
     return Math.round(clamped * (1 + (r * 2 - 1) * PRESCAN_JOB.POLL_JITTER));

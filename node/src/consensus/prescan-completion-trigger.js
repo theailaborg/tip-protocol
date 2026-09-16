@@ -53,6 +53,7 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
   const _myNodeId = config?.nodeRegisteredId || config?.nodeId;
   const _nodePrivateKey = config?.nodePrivateKey;
   const _lastEmittedAt = new Map();  // ctid → last fail-open emission (re-emit cooldown)
+  const _failOpenAfterMs = Number(config?.prescanFailOpenAfterMs) || PRESCAN_WORKER.FAIL_OPEN_AFTER_MS;
 
   function _isMyRoundLeader(round) {
     if (typeof getCommittee !== "function") return true;
@@ -73,7 +74,7 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
   }
 
   function _emitFailOpenCompletions(certTimestamp, round) {
-    const cutoff = certTimestamp - PRESCAN_WORKER.FAIL_OPEN_AFTER_MS;
+    const cutoff = certTimestamp - _failOpenAfterMs;
     let stuck;
     try {
       stuck = dag.getContentsStuckInPrescan(cutoff);
