@@ -49,9 +49,11 @@ const { CONSENSUS } = require("../../../shared/protocol-constants");
 
 function processSection(config) {
   const mem = process.memoryUsage();
+  // Version stays off the sampled series: it is a label value that changes on
+  // every release, which would fork the time series and show one node twice for
+  // the whole lookback window. It lives on tip_node_build_info instead.
   const idLabels = {
     node_id: config.nodeRegisteredId || config.nodeId || "unknown",
-    version: config.nodeVersion || "0.0.0",
   };
   return [
     // Which build a node is actually running. The version label is the release
