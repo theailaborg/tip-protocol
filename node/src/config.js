@@ -68,7 +68,7 @@ function loadConfig() {
     nodeId: defaultNodeId,
     nodeType: process.env.TIP_NODE_TYPE || "full",  // full | light | vp | archive
     region: process.env.TIP_REGION || "US",
-    nodeVersion: require("../../package.json").version,
+    nodeVersion: process.env.TIP_BUILD_VERSION || require("../package.json").version,
 
     // ── Network ───────────────────────────────────────────────────────────────
     port: parseInt(process.env.PORT || "4000", 10),
