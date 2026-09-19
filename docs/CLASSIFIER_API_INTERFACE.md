@@ -166,7 +166,7 @@ When `callback_url` is present, POST to it as soon as the job is `done` or
 
 ```
 POST <callback_url>
-X-TIP-Prescan-Signature: hmac-sha256=<hex digest of the raw request body>
+X-TIP-Classifier-Signature: hmac-sha256=<hex digest of the raw request body>
 Content-Type: application/json
 
 { "job_id": "cj_8f21", "state": "done" }
