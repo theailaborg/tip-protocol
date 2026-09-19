@@ -23,6 +23,7 @@ const DEFAULT_EXAMPLE = path.resolve(__dirname, "../.env.example");
 // Backstop only: generators are expected not to supply them in the first place.
 const NEVER_EMIT = new Set([
   "TIP_CLASSIFIER_KEY",
+  "TIP_CLASSIFIER_CALLBACK_SECRET",
   "TIP_METRICS_TOKEN",
   "TIP_NODE_PRIVATE_KEY",
   "DATABASE_URL",

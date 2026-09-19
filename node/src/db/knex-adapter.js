@@ -500,6 +500,10 @@ class KnexAdapter {
         last_error: row.last_error,
         created_at: row.created_at,
         completed_at: row.completed_at,
+        retry_after: Number(row.retry_after) || 0,
+        classifier_job_id: row.classifier_job_id || null,
+        classifier_job_at: row.classifier_job_at == null ? null : Number(row.classifier_job_at),
+        classifier_polls: Number(row.classifier_polls) || 0,
       });
     }
 
@@ -1042,6 +1046,10 @@ class KnexAdapter {
         last_error: null,
         created_at: rec.created_at,
         completed_at: null,
+        retry_after: 0,
+        classifier_job_id: null,
+        classifier_job_at: null,
+        classifier_polls: 0,
       }, "ignore"));
     }
     return fresh;
@@ -1180,10 +1188,45 @@ class KnexAdapter {
           claimed_at: null,
           claimed_by: null,
           last_error: opts.lastError || null,
+          retry_after: opts.retryAfter || 0,
         })
         .then(() => this._k("prescan_jobs")
           .where("job_id", jobId)
           .increment("retries", 1)));
+    }
+    return changed;
+  }
+  setPrescanJobClassifierRef(jobId, opts) {
+    const changed = this.mirror.setPrescanJobClassifierRef(jobId, opts);
+    if (changed) {
+      const row = this.mirror.getPrescanJob(jobId);
+      this._ff(() => this._k("prescan_jobs")
+        .where("job_id", jobId)
+        .update({ classifier_job_id: row.classifier_job_id || null, classifier_job_at: row.classifier_job_at ?? null }));
+    }
+    return changed;
+  }
+  deferPrescanJobForPoll(jobId, opts) {
+    const changed = this.mirror.deferPrescanJobForPoll(jobId, opts);
+    if (changed) {
+      this._ff(() => this._k("prescan_jobs")
+        .where("job_id", jobId)
+        .update({
+          status: "queued",
+          claimed_at: null,
+          claimed_by: null,
+          last_error: opts.note || null,
+          classifier_polls: opts.polls,
+          retry_after: opts.retryAfter || 0,
+        }));
+    }
+    return changed;
+  }
+  getPrescanJobByClassifierRef(classifierJobId) { return this.mirror.getPrescanJobByClassifierRef(classifierJobId); }
+  wakePrescanJob(jobId) {
+    const changed = this.mirror.wakePrescanJob(jobId);
+    if (changed) {
+      this._ff(() => this._k("prescan_jobs").where("job_id", jobId).update({ retry_after: 0 }));
     }
     return changed;
   }

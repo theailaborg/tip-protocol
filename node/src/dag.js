@@ -1933,6 +1933,10 @@ class MemoryStore {
       last_error: null,
       created_at: rec.created_at,
       completed_at: null,
+      retry_after: 0,
+      classifier_job_id: null,
+      classifier_job_at: null,
+      classifier_polls: 0,
     });
     return true;
   }
@@ -2091,6 +2095,39 @@ class MemoryStore {
     row.last_error = lastError || null;
     row.retries = (row.retries || 0) + 1;
     row.retry_after = retryAfter || 0;
+    return true;
+  }
+  // classifier_job_at is the first acceptance time and survives a resubmit, so the
+  // polling budget cannot be reset by the classifier losing a job.
+  setPrescanJobClassifierRef(jobId, { classifierJobId, startedAt }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.classifier_job_id = classifierJobId || null;
+    if (classifierJobId && !row.classifier_job_at) row.classifier_job_at = startedAt;
+    return true;
+  }
+  // Waiting on a classifier job is not a failed attempt, so retries is untouched.
+  deferPrescanJobForPoll(jobId, { retryAfter, polls, note }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.status = "queued";
+    row.claimed_at = null;
+    row.claimed_by = null;
+    row.last_error = note || null;
+    row.classifier_polls = polls;
+    row.retry_after = retryAfter || 0;
+    return true;
+  }
+  getPrescanJobByClassifierRef(classifierJobId) {
+    for (const row of this._prescanJobs.values()) {
+      if (row.classifier_job_id === classifierJobId) return row;
+    }
+    return null;
+  }
+  wakePrescanJob(jobId) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row || row.status !== "queued") return false;
+    row.retry_after = 0;
     return true;
   }
 
@@ -2278,6 +2315,12 @@ class SQLiteStore {
     // cert was GC'd (same pre-fix behaviour for old rows). Every new
     // commit written after this migration includes the column directly,
     // so going forward each commit row is self-contained.
+    // Pre-existing prescan_jobs tables predate retry_after and the classifier job columns.
+    const pjCols = this.db.prepare("PRAGMA table_info(prescan_jobs)").all().map(c => c.name);
+    if (!pjCols.includes("retry_after")) this.db.exec("ALTER TABLE prescan_jobs ADD COLUMN retry_after INTEGER NOT NULL DEFAULT 0");
+    if (!pjCols.includes("classifier_job_id")) this.db.exec("ALTER TABLE prescan_jobs ADD COLUMN classifier_job_id TEXT");
+    if (!pjCols.includes("classifier_job_at")) this.db.exec("ALTER TABLE prescan_jobs ADD COLUMN classifier_job_at INTEGER");
+    if (!pjCols.includes("classifier_polls")) this.db.exec("ALTER TABLE prescan_jobs ADD COLUMN classifier_polls INTEGER NOT NULL DEFAULT 0");
     const commitCols = this.db.prepare("PRAGMA table_info(commits)").all().map(c => c.name);
     if (!commitCols.includes("anchor_batch_hash")) {
       this.db.exec("ALTER TABLE commits ADD COLUMN anchor_batch_hash TEXT");
@@ -3020,7 +3063,7 @@ class SQLiteStore {
             SET status='claimed', claimed_at=?, claimed_by=?
           WHERE job_id = (
             SELECT job_id FROM prescan_jobs
-             WHERE (status='queued'
+             WHERE ((status='queued' AND retry_after <= ?)
                 OR (status='claimed' AND claimed_at < ?))
                AND EXISTS (SELECT 1 FROM content WHERE content.tip_ctid = prescan_jobs.tip_ctid)
              ORDER BY created_at
@@ -3039,11 +3082,28 @@ class SQLiteStore {
       releasePrescanJobForRetry: this.db.prepare(
         `UPDATE prescan_jobs
             SET status='queued', claimed_at=NULL, claimed_by=NULL,
-                last_error=?, retries=retries+1
+                last_error=?, retries=retries+1, retry_after=?
           WHERE job_id=?`
       ),
       countPendingPrescanJobs: this.db.prepare(
         "SELECT COUNT(*) AS n FROM prescan_jobs WHERE status IN ('queued','claimed')"
+      ),
+      setPrescanJobClassifierRef: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET classifier_job_id=?, classifier_job_at=COALESCE(classifier_job_at, ?)
+          WHERE job_id=?`
+      ),
+      deferPrescanJobForPoll: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='queued', claimed_at=NULL, claimed_by=NULL,
+                last_error=?, classifier_polls=?, retry_after=?
+          WHERE job_id=?`
+      ),
+      getPrescanJobByClassifierRef: this.db.prepare(
+        "SELECT * FROM prescan_jobs WHERE classifier_job_id=?"
+      ),
+      wakePrescanJob: this.db.prepare(
+        "UPDATE prescan_jobs SET retry_after=0 WHERE job_id=? AND status='queued'"
       ),
 
       // Upload sessions (node-local ephemeral chunked-upload state).
@@ -4378,7 +4438,7 @@ class SQLiteStore {
     return this._stmts.getAudioClip.get(clipId) || null;
   }
   claimPrescanJob({ workerId, now, claimTimeoutMs }) {
-    return this._hydratePrescanJob(this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs));
+    return this._hydratePrescanJob(this._stmts.claimPrescanJob.get(now, workerId, now, now - claimTimeoutMs));
   }
   markPrescanJobDone(jobId, { completedAt }) {
     void completedAt;
@@ -4387,8 +4447,21 @@ class SQLiteStore {
   markPrescanJobFailed(jobId, { lastError, completedAt }) {
     return this._stmts.markPrescanJobFailed.run(completedAt, lastError || null, jobId).changes > 0;
   }
-  releasePrescanJobForRetry(jobId, { lastError }) {
-    return this._stmts.releasePrescanJobForRetry.run(lastError || null, jobId).changes > 0;
+  releasePrescanJobForRetry(jobId, { lastError, retryAfter }) {
+    return this._stmts.releasePrescanJobForRetry.run(lastError || null, retryAfter || 0, jobId).changes > 0;
+  }
+  setPrescanJobClassifierRef(jobId, { classifierJobId, startedAt }) {
+    return this._stmts.setPrescanJobClassifierRef
+      .run(classifierJobId || null, classifierJobId ? startedAt : null, jobId).changes > 0;
+  }
+  deferPrescanJobForPoll(jobId, { retryAfter, polls, note }) {
+    return this._stmts.deferPrescanJobForPoll.run(note || null, polls, retryAfter || 0, jobId).changes > 0;
+  }
+  getPrescanJobByClassifierRef(classifierJobId) {
+    return this._hydratePrescanJob(this._stmts.getPrescanJobByClassifierRef.get(classifierJobId));
+  }
+  wakePrescanJob(jobId) {
+    return this._stmts.wakePrescanJob.run(jobId).changes > 0;
   }
 
   saveDisputeDetails(rec) {
@@ -4829,6 +4902,10 @@ function _buildDagHandle(store, config) {
     markPrescanJobDone: (jobId, opts) => store.markPrescanJobDone(jobId, opts),
     markPrescanJobFailed: (jobId, opts) => store.markPrescanJobFailed(jobId, opts),
     releasePrescanJobForRetry: (jobId, opts) => store.releasePrescanJobForRetry(jobId, opts),
+    setPrescanJobClassifierRef: (jobId, opts) => store.setPrescanJobClassifierRef(jobId, opts),
+    deferPrescanJobForPoll: (jobId, opts) => store.deferPrescanJobForPoll(jobId, opts),
+    getPrescanJobByClassifierRef: (id) => store.getPrescanJobByClassifierRef(id),
+    wakePrescanJob: (jobId) => store.wakePrescanJob(jobId),
 
     // ── Upload sessions (node-local ephemeral chunked-upload state) ─────
     createUploadSession: (session) => store.createUploadSession(session),

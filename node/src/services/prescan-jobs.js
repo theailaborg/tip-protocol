@@ -115,6 +115,21 @@ function createPrescanJobs({ dag, now: nowFn }) {
     });
   }
 
+  function setClassifierRef(jobId, classifierJobId) {
+    return dag.setPrescanJobClassifierRef(jobId, { classifierJobId, startedAt: now() });
+  }
+
+  function deferForPoll(jobId, { retryAfter, polls, note }) {
+    return dag.deferPrescanJobForPoll(jobId, { retryAfter, polls, note });
+  }
+
+  // A verified classifier callback names its job; waking it makes the next
+  // worker tick poll the classifier instead of waiting for the backoff.
+  function wakeByClassifierRef(classifierJobId) {
+    const row = dag.getPrescanJobByClassifierRef(classifierJobId);
+    return row ? dag.wakePrescanJob(row.job_id) : false;
+  }
+
   /**
    * Read job status for a given ctid (used by the
    * GET /v1/content/:ctid/prescan_status endpoint).
@@ -129,7 +144,10 @@ function createPrescanJobs({ dag, now: nowFn }) {
     return row ? _decode(row) : null;
   }
 
-  return { enqueue, claim, markDone, markFailed, releaseForRetry, getByCtid, get };
+  return {
+    enqueue, claim, markDone, markFailed, releaseForRetry,
+    setClassifierRef, deferForPoll, wakeByClassifierRef, getByCtid, get,
+  };
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
