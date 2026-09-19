@@ -64,6 +64,27 @@ const CLASSIFIER_CLIENT = Object.freeze({
   FILE_TIMEOUT_MS: 180_000,
 });
 
+// Pre-scans the classifier runs as a job (202): the worker polls on a backoff
+// schedule and a signed callback wakes it early. The wait ends at the network's
+// fail-open deadline, never at a duration guessed from file size. Media links
+// for a job must outlive a queued job.
+const PRESCAN_JOB = Object.freeze({
+  POLL_FIRST_MS: 60_000,
+  POLL_MIN_MS: 30_000,
+  POLL_MAX_MS: 5 * 60_000,
+  POLL_STEPS_MS: Object.freeze([60_000, 120_000, 240_000]),
+  POLL_JITTER: 0.1,
+  BUDGET_MARGIN_MS: 120_000,
+  MEDIA_URL_TTL_SEC: 3_600,
+});
+
+// How long content may sit unscanned before any node commits the neutral
+// verdict. Node policy, not consensus: the timing is not validated when the
+// verdict applies, so a longer wait cannot fork the chain and the fleet's
+// effective window is the shortest one running. In code (not genesis) until
+// PROTOCOL_PARAM_UPDATE ships; changing genesis on a live chain is not an option.
+const PRESCAN_FAIL_OPEN_AFTER_MS = 2 * 60 * 60_000;
+
 // Joiner-side DoS guards for downloading a snapshot from a peer (#94). Local
 // operational caps (NOT consensus state, NOT genesis): each node protects its
 // own memory + liveness, so a divergent value can't fork the chain. Sized
@@ -1147,4 +1168,6 @@ module.exports = {
   OAUTH_REQUIRED_PLATFORMS,
   PRIVATE_NETWORK_CIDRS,
   ISO_3166_ALPHA2,
+  PRESCAN_JOB,
+  PRESCAN_FAIL_OPEN_AFTER_MS,
 };

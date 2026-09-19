@@ -54,6 +54,7 @@ const dagRoutes = require("./routes/dag");
 const domainRoutes = require("./routes/domain");
 const reviewRoutes = require("./routes/reviews");
 const mediaRoutes = require("./routes/media");
+const prescanCallbackRoutes = require("./routes/prescan-callback");
 
 function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null, prescanJobs = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
@@ -117,6 +118,8 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // Middleware
   app.use(requestId);
   app.use(helmet({ contentSecurityPolicy: false }));
+  // Ahead of the JSON parser: the classifier signs the raw callback body.
+  app.use("/v1", prescanCallbackRoutes.createRouter({ prescanJobs, config }));
   // Body-parser cap = the genesis-configured request_body_max_bytes (25 MB via
   // config), not a hardcoded literal. Sized for content registrations that
   // carry a gzipped perceptual `fingerprints` envelope (a long song's landmark

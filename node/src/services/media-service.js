@@ -89,17 +89,19 @@ function createMediaService({ storage, dag, log, mediaLimits = MEDIA_LIMITS, sel
   // by-reference shape the classifier's files[] contract expects (it
   // downloads the bytes itself). Throws when the backend cannot presign
   // (fs), since media prescan needs a fetchable URL (set TIP_MEDIA_BACKEND=s3).
-  async function presignForClassifier(media) {
+  async function presignForClassifier(media, opts = {}) {
     if (!Array.isArray(media) || media.length === 0) return [];
     return Promise.all(media.map(async (m, i) => {
-      const url = await storage.presignedGet(m.media_id);
+      const url = await storage.presignedGet(m.media_id, opts.ttlSec ? { ttlSec: opts.ttlSec } : {});
       if (!url) {
         throw new Error(
           `media-service: no presigned GET for media[${i}] ${m.media_id} ` +
           "(backend does not presign — set TIP_MEDIA_BACKEND=s3)",
         );
       }
-      return { media_id: m.media_id, mime: m.mime, url };
+      if (!opts.withSize) return { media_id: m.media_id, mime: m.mime, url };
+      const meta = typeof storage.head === "function" ? await storage.head(m.media_id).catch(() => null) : null;
+      return { media_id: m.media_id, mime: m.mime, url, size: meta?.size || 0 };
     }));
   }
 

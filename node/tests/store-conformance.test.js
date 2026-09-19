@@ -400,6 +400,35 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getPrescanJob(newer.job_id)).toEqual(expect.objectContaining({ status: "queued", retries: 1, last_error: "boom", claimed_by: null }));
   });
 
+  test("prescan classifier job ref: set, look up, defer without a retry, wake, clear", async () => {
+    const dag = await makeDag();
+    const job = prescanJob(uniq("job"), T0);
+    dag.saveContent(contentRec(job.ctid, uniq("a")));
+    dag.enqueuePrescanJob(job);
+    dag.claimPrescanJob({ workerId: "w1", now: T0 + 1000, claimTimeoutMs: 60000 });
+
+    const ref = uniq("cj");
+    expect(dag.setPrescanJobClassifierRef(job.job_id, { classifierJobId: ref, startedAt: T0 + 1000 })).toBe(true);
+    expect(dag.getPrescanJobByClassifierRef(ref).job_id).toBe(job.job_id);
+
+    expect(dag.deferPrescanJobForPoll(job.job_id, { retryAfter: T0 + 60000, polls: 1, note: "awaiting_classifier_job" })).toBe(true);
+    const deferred = dag.getPrescanJob(job.job_id);
+    expect(deferred).toEqual(expect.objectContaining({ status: "queued", retries: 0, classifier_job_id: ref, classifier_polls: 1 }));
+    expect(Number(deferred.classifier_job_at)).toBe(T0 + 1000);
+
+    // Deferred until retry_after; a callback wake makes it claimable now
+    expect(dag.claimPrescanJob({ workerId: "w2", now: T0 + 2000, claimTimeoutMs: 60000 })).toBeNull();
+    expect(dag.wakePrescanJob(job.job_id)).toBe(true);
+    expect(dag.claimPrescanJob({ workerId: "w2", now: T0 + 2000, claimTimeoutMs: 60000 }).job_id).toBe(job.job_id);
+
+    // Clearing the ref keeps the budget start
+    expect(dag.setPrescanJobClassifierRef(job.job_id, { classifierJobId: null, startedAt: T0 + 5000 })).toBe(true);
+    const cleared = dag.getPrescanJob(job.job_id);
+    expect(cleared.classifier_job_id).toBeNull();
+    expect(Number(cleared.classifier_job_at)).toBe(T0 + 1000);
+    expect(dag.getPrescanJobByClassifierRef(ref)).toBeNull();
+  });
+
   test("claim is single-winner: one queued job is never handed to two claimants", async () => {
     const dag = await makeDag();
     const job = prescanJob(uniq("job"), T0);

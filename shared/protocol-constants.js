@@ -20,6 +20,7 @@
 "use strict";
 
 const LC = require("./local-config");
+const { PRESCAN_FAIL_OPEN_AFTER_MS } = require("./constants");
 
 let _instance = null;
 
@@ -247,7 +248,9 @@ const PRESCAN_WORKER = {
   get RETRY_BACKOFF_MS() { return _ps().worker_retry_backoff_ms; },
   get CLAIM_TIMEOUT_MS() { return _ps().worker_claim_timeout_ms; },
   get TAKEOVER_AFTER_MS() { return _ps().takeover_after_ms; },
-  get FAIL_OPEN_AFTER_MS() { return _ps().fail_open_after_ms; },
+  // Node policy, not consensus (see PRESCAN_FAIL_OPEN_AFTER_MS): the genesis
+  // value is kept for the founding record but no longer read here.
+  get FAIL_OPEN_AFTER_MS() { return PRESCAN_FAIL_OPEN_AFTER_MS; },
   get POLL_AFTER_MS() { return _ps().poll_after_ms; },
   get POLL_MAX_ATTEMPTS() { return _ps().poll_max_attempts; },
 };

@@ -13,7 +13,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { MEDIA_LIMITS } = require("../../shared/constants");
+const { MEDIA_LIMITS, PRESCAN_FAIL_OPEN_AFTER_MS } = require("../../shared/constants");
 const { CONTENT_LIMITS } = require("../../shared/protocol-constants");
 
 // Fail closed: dev-gated paths check NODE_ENV !== "production", so an unset
@@ -160,6 +160,14 @@ function loadConfig() {
     // nodes row — peers redirect reviewers here for media this node holds.
     // Optional: nodes without a public surface simply never announce.
     apiEndpoint: process.env.TIP_API_ENDPOINT || null,
+
+    // ── Classifier callbacks ──────────────────────────────────────────────────
+    // Verifies the classifier's signed job callbacks; blank means no callback_url
+    // is sent and prescan jobs are polled.
+    classifierCallbackSecret: process.env.TIP_CLASSIFIER_CALLBACK_SECRET || "",
+    // Node policy: how long content may sit unscanned before any node commits
+    // the neutral verdict. The fleet's effective window is the shortest running.
+    prescanFailOpenAfterMs: parseInt(process.env.TIP_PRESCAN_FAIL_OPEN_AFTER_MS || "", 10) || PRESCAN_FAIL_OPEN_AFTER_MS,
 
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),

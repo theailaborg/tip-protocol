@@ -90,6 +90,13 @@ function createClassifierClient(opts = {}) {
     );
   }
   const key = opts.key ?? process.env.TIP_CLASSIFIER_KEY ?? "";
+  // A callback is only usable when the node can verify its signature; without
+  // the secret the node sends no callback_url and relies on polling.
+  const callbackSecret = opts.callbackSecret ?? opts.config?.classifierCallbackSecret ?? process.env.TIP_CLASSIFIER_CALLBACK_SECRET ?? "";
+  const apiEndpoint = opts.apiEndpoint ?? opts.config?.apiEndpoint ?? process.env.TIP_API_ENDPOINT ?? "";
+  const callbackUrl = callbackSecret && apiEndpoint
+    ? `${String(apiEndpoint).replace(/\/+$/, "")}/v1/prescan/callback`
+    : null;
   const timeouts = {
     text: opts.timeouts?.text ?? CLASSIFIER_CLIENT.TEXT_TIMEOUT_MS,
     file: opts.timeouts?.file ?? CLASSIFIER_CLIENT.FILE_TIMEOUT_MS,
@@ -126,6 +133,11 @@ function createClassifierClient(opts = {}) {
       try { parsed = text ? JSON.parse(text) : null; }
       catch { /* keep null */ }
       return { status: res.status, wall_ms: elapsed, body: parsed, raw: text };
+    } catch (err) {
+      if (ac.signal.aborted) {
+        throw { code: "classifier_timeout", message: `classifier ${path} timed out after ${timeoutMs} ms` };
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }
@@ -145,6 +157,11 @@ function createClassifierClient(opts = {}) {
       try { parsed = text ? JSON.parse(text) : null; }
       catch { /* keep null */ }
       return { status: res.status, body: parsed, raw: text };
+    } catch (err) {
+      if (ac.signal.aborted) {
+        throw { code: "classifier_timeout", message: `classifier ${path} timed out after ${timeoutMs} ms` };
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }
@@ -199,10 +216,24 @@ function createClassifierClient(opts = {}) {
     if (hasFiles) {
       for (const f of files) _assertFileAllowed(f, mediaLimits);
       body.files = files.map(f => ({ media_id: f.media_id, mime: f.mime, url: f.url }));
+      // The classifier dedupes media jobs on (owner, client_ref), so a resend after a
+      // timeout returns the running job instead of starting a second download.
+      if (typeof args.clientRef === "string" && args.clientRef.length > 0) {
+        body.client_ref = args.clientRef;
+        if (callbackUrl) body.callback_url = callbackUrl;
+      }
     }
 
     const timeoutMs = hasFiles ? timeouts.file : timeouts.text;
     const res = await _post(PATHS.PRESCAN, body, timeoutMs);
+    if (res.status === 202 && res.body && typeof res.body.job_id === "string") {
+      return {
+        pending: true,
+        job_id: res.body.job_id,
+        state: res.body.state || "queued",
+        poll_after_ms: res.body.poll_after_ms,
+      };
+    }
     if (res.status < 200 || res.status >= 300) {
       throw {
         code: "classifier_http_error",
@@ -263,7 +294,23 @@ function createClassifierClient(opts = {}) {
     return res.body;
   }
 
-  return { prescan, stage1, providers, health };
+  // A 404 means the job is unknown or expired on the classifier; the caller
+  // resubmits with the same client_ref.
+  async function prescanStatus(jobId) {
+    const res = await _get(`${PATHS.PRESCAN}/${encodeURIComponent(jobId)}`, timeouts.text);
+    if (res.status === 404) return { job_id: jobId, state: "lost" };
+    if (res.status < 200 || res.status >= 300 || !res.body || typeof res.body.state !== "string") {
+      throw {
+        code: "classifier_http_error",
+        status: res.status,
+        message: `classifier job status returned ${res.status}`,
+        body: res.body ?? res.raw,
+      };
+    }
+    return res.body;
+  }
+
+  return { prescan, prescanStatus, stage1, providers, health };
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
