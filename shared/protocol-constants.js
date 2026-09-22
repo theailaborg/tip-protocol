@@ -383,6 +383,7 @@ const CONSENSUS = {
   get GC_INTERVAL_COMMITS() { return LC.GC_INTERVAL_COMMITS; },
   get ANTI_ENTROPY_INTERVAL_MS() { return LC.ANTI_ENTROPY_INTERVAL_MS; },
   get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return LC.ANTI_ENTROPY_PEER_TIMEOUT_MS; },
+  get PEER_STATUS_STALE_AFTER_MS() { return LC.PEER_STATUS_STALE_AFTER_MS; },
   // Snapshot-install collision retry: when two minority nodes race into
   // byzantine_fork recovery, the second may hit a peer that's busy serving
   // the first. Retry the SAME peer this many times with this delay before

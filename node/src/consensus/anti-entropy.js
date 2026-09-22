@@ -65,6 +65,31 @@ const log = getLogger("tip.anti-entropy");
  * @param {Object} [options.log]            Override logger (for tests)
  * @returns {Object} { start, stop, getStatus, queryPeer, checkAndReconcile, registerProtocol, _handleIncomingSyncStatus, _metrics }
  */
+/**
+ * Summarise the peer-status cache, counting only entries observed inside the
+ * window. The cache is never pruned, so an isolated node still holds entries
+ * for peers that are long gone, frozen at the round it is itself stuck on.
+ * Treating those as evidence makes the resync guard conclude nothing is ahead
+ * and skip the recovery it needs.
+ *
+ * @param {Map<string,Object>} statusMap   node_id → last seen peer status
+ * @param {number}             staleAfterMs
+ * @param {number}             now         epoch ms
+ * @returns {{fresh: number, maxCommitted: number}}
+ */
+function summarizeFreshPeers(statusMap, staleAfterMs, now) {
+  const cutoff = now - staleAfterMs;
+  let fresh = 0;
+  let maxCommitted = 0;
+  for (const [, s] of statusMap.entries()) {
+    if (!s || Number(s._observedAtMs || 0) < cutoff) continue;
+    fresh++;
+    const cr = Number(s.committed_round || 0);
+    if (cr > maxCommitted) maxCommitted = cr;
+  }
+  return { fresh, maxCommitted };
+}
+
 function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, getSelfNodeId, getConsensusState, isAuthorizedPeer, cancelPendingCommit: cancelPendingCommitCb = null, log: customLog } = {}) {
   const _log = customLog || log;
   const _isAuthorizedPeer = typeof isAuthorizedPeer === "function" ? isAuthorizedPeer : null;
@@ -1064,6 +1089,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // Annotate with libp2p peerId so triggerSnapshotResync can cross-reference
     // status entries back to the network address needed for snapshot requests.
     peerStatus._libp2pPeerId = peerId;
+    peerStatus._observedAtMs = nowMs();
     _lastStatus.set(peerStatus.node_id || peerId, peerStatus);
 
     const selfCommitted = Number(selfState.committed_round || 0);
@@ -1800,12 +1826,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       );
     }
     catch { /* best-effort — fall through to the fresh-check backstop below */ }
-    let _maxPeerCommitted = 0;
-    for (const [, s] of _lastStatus.entries()) {
-      const cr = Number((s && s.committed_round) || 0);
-      if (cr > _maxPeerCommitted) _maxPeerCommitted = cr;
-    }
-    if (!_selfByzHaltResync && !_selfStateInconsistent && _lastStatus.size > 0 && _selfCommittedNow > 0 && _maxPeerCommitted <= _selfCommittedNow) {
+    const { fresh: _freshPeers, maxCommitted: _maxPeerCommitted } =
+      summarizeFreshPeers(_lastStatus, CONSENSUS.PEER_STATUS_STALE_AFTER_MS, nowMs());
+    if (!_selfByzHaltResync && !_selfStateInconsistent && _freshPeers > 0 && _selfCommittedNow > 0 && _maxPeerCommitted <= _selfCommittedNow) {
       _log.warn(
         `anti-entropy: triggerSnapshotResync: no peer ahead of committed_round=${_selfCommittedNow} ` +
         `(best peer at ${_maxPeerCommitted}); skipping resync to avoid regressing state`
@@ -2107,4 +2130,4 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   };
 }
 
-module.exports = { createAntiEntropy };
+module.exports = { createAntiEntropy, summarizeFreshPeers };
