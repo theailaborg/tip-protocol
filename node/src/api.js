@@ -54,6 +54,7 @@ const dagRoutes = require("./routes/dag");
 const domainRoutes = require("./routes/domain");
 const reviewRoutes = require("./routes/reviews");
 const mediaRoutes = require("./routes/media");
+const prescanCallbackRoutes = require("./routes/prescan-callback");
 
 function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null, prescanJobs = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
@@ -117,6 +118,21 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // Middleware
   app.use(requestId);
   app.use(helmet({ contentSecurityPolicy: false }));
+  morgan.token("req-id", (req) => req.id);
+  // Routine requests go ONLY to access.log (audit trail, separate from the
+  // debug/error logs). A failed request (>=400) is the exception: it surfaces in
+  // the main logs at warn so it isn't buried. Internal probes are dropped.
+  const httpLog = getLogger("tip.http");
+  // :remote-addr resolves to req.ip, the same value the rate limiter keys on, so
+  // per-IP demand can be measured from the access log before tuning the limit.
+  const _accessFmt = ":remote-addr :req-id :method :url :status :response-time ms";
+  const _isProbe = (req) => req.path === "/metrics" || req.path === "/health" || req.path === "/v1/health"
+    || req.path === "/ready" || req.path === "/v1/ready";
+  app.use(morgan(_accessFmt, { stream: { write: (l) => logAccess(l.trimEnd()) }, skip: (req, res) => _isProbe(req) || res.statusCode >= 400 }));
+  app.use(morgan(_accessFmt, { stream: { write: (l) => httpLog.warn(l.trimEnd()) }, skip: (req, res) => res.statusCode < 400 }));
+
+  // Ahead of the JSON parser: the classifier signs the raw callback body.
+  app.use("/v1", prescanCallbackRoutes.createRouter({ prescanJobs, config }));
   // Body-parser cap = the genesis-configured request_body_max_bytes (25 MB via
   // config), not a hardcoded literal. Sized for content registrations that
   // carry a gzipped perceptual `fingerprints` envelope (a long song's landmark
@@ -130,18 +146,6 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   //   - incoming: ISO 8601 in request bodies → integer ms
   //   - outgoing: integer ms in response bodies → ISO 8601
   app.use(createTimestampFormat({ outgoing: true, incoming: true }));
-  morgan.token("req-id", (req) => req.id);
-  // Routine requests go ONLY to access.log (audit trail, separate from the
-  // debug/error logs). A failed request (>=400) is the exception: it surfaces in
-  // the main logs at warn so it isn't buried. Internal probes are dropped.
-  const httpLog = getLogger("tip.http");
-  // :remote-addr resolves to req.ip, the same value the rate limiter keys on, so
-  // per-IP demand can be measured from the access log before tuning the limit.
-  const _accessFmt = ":remote-addr :req-id :method :url :status :response-time ms";
-  const _isProbe = (req) => req.path === "/metrics" || req.path === "/health" || req.path === "/v1/health"
-    || req.path === "/ready" || req.path === "/v1/ready";
-  app.use(morgan(_accessFmt, { stream: { write: (l) => logAccess(l.trimEnd()) }, skip: (req, res) => _isProbe(req) || res.statusCode >= 400 }));
-  app.use(morgan(_accessFmt, { stream: { write: (l) => httpLog.warn(l.trimEnd()) }, skip: (req, res) => res.statusCode < 400 }));
 
   const limiter = rateLimit({
     windowMs: config.rateLimitWindow, max: config.rateLimitMax,

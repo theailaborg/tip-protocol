@@ -187,6 +187,7 @@ function createFallbackClassifierClient({ primary, local, log }) {
 
   return {
     prescan,
+    prescanStatus: (...a) => primary.prescanStatus(...a),
     stage1: (...a) => primary.stage1(...a),
     providers: (...a) => primary.providers(...a),
     health: (...a) => primary.health(...a),

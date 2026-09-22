@@ -112,6 +112,87 @@ protocol constants. The classifier does **not** decide flag/status/grace , it
 returns evidence (probability + provenance + per-file error). This keeps the
 classifier freely swappable without affecting consensus.
 
+## Long jobs: 202, status polling and callbacks
+
+Media can take longer than any HTTP request should stay open. Instead of holding
+the connection, the classifier may accept the work and answer later.
+
+### Request fields for jobs
+
+Two optional fields the node adds on requests that carry `files[]`.
+
+| Field | Meaning |
+|---|---|
+| `client_ref` | The node's own id for this pre-scan, stable across retries. Deduplicate on `(caller, client_ref)`: if the node resends after a dropped connection, return the job already running rather than starting a second download. |
+| `callback_url` | Where to notify when the job reaches a terminal state. Sent only when the node has a callback secret configured. Optional to honour; the node polls regardless. |
+
+### Accepting the work
+
+Answer **200** with the usual verdict body whenever the work is quick. Otherwise
+answer **202** once the request is validated and the job is queued:
+
+```json
+{ "job_id": "cj_8f21", "state": "queued", "poll_after_ms": 30000 }
+```
+
+`poll_after_ms` tells the node when to check back. Send it on every response,
+including status responses, and the node follows it.
+
+### `GET /v1/prescan/{job_id}`
+
+Same `X-TIP-Classifier-Key` header. One of four shapes:
+
+```json
+{ "job_id": "cj_8f21", "state": "queued",  "poll_after_ms": 60000 }
+{ "job_id": "cj_8f21", "state": "running", "poll_after_ms": 60000 }
+{ "job_id": "cj_8f21", "state": "done",    "result": { ...the usual verdict body... } }
+{ "job_id": "cj_8f21", "state": "failed",  "error": "download_timeout" }
+```
+
+| State | What the node does |
+|---|---|
+| `queued`, `running` | Waits `poll_after_ms` and asks again. Never counts as a retry. |
+| `done` | Uses `result` exactly as it would a 200 body. A `done` without `result` is treated as a failure. |
+| `failed` | Retries the whole request with fresh links, unless `error` contains one of the permanent media codes above, in which case it fails open at once. |
+| `404` | The job is unknown or expired. The node resubmits under the same `client_ref`. |
+
+Keep a finished job readable for **at least one hour** so a restarted node can
+still collect the result.
+
+### Callbacks
+
+When `callback_url` is present, POST to it as soon as the job is `done` or
+`failed`:
+
+```
+POST <callback_url>
+X-TIP-Classifier-Signature: hmac-sha256=<hex digest of the raw request body>
+Content-Type: application/json
+
+{ "job_id": "cj_8f21", "state": "done" }
+```
+
+The digest is HMAC-SHA256 over the exact bytes sent, keyed with the shared
+callback secret. The node compares it in constant time and answers `200` when it
+accepted the wake-up, `401` on a bad signature, `404` when no job is waiting on
+that id.
+
+The callback never carries the verdict. It only tells the node to stop waiting
+and fetch the result over the authenticated status call, so a forged callback
+can cost an early poll and nothing more. Delivery is best effort: a failed
+callback needs no retry, because the node keeps polling anyway.
+
+### How long the node waits
+
+The node stops waiting when the network's own pre-scan deadline arrives, which
+is measured from the moment the content was registered, not from when the job
+was accepted. Content still unscanned at that point gets the neutral verdict
+(probability 0.5) from whichever node notices first, so a result arriving later
+cannot change the outcome. The node does not estimate job duration from file
+size; pace the work with `poll_after_ms` instead.
+
+---
+
 ### Per-file error codes the node acts on
 
 `modality_results[].error` is matched by substring against this list:
@@ -129,7 +210,9 @@ What the classifier can rely on, and what happens when it does not answer.
 
 - **Only `OH` content is sent.** `AA`, `AG` and `MX` registrations are short-circuited on the node (`TIP_CLASSIFIER_SCAN_NON_OH=false`, the default) and never reach the classifier.
 - **One request per registration**, text plus every media item in `files[]`, at most `TIP_PRESCAN_CONCURRENCY` requests in flight per node (mainnet runs 4).
-- **Timeouts:** the node aborts the request after **60 s** for text-only and **180 s** when `files[]` is present (`CLASSIFIER_CLIENT.TEXT_TIMEOUT_MS` / `FILE_TIMEOUT_MS`). Download plus inference must finish inside that, or the call counts as failed. The presigned URL is generated immediately before the call.
+- **Timeouts:** the node aborts the request after **60 s** for text-only and **180 s** when `files[]` is present (`CLASSIFIER_CLIENT.TEXT_TIMEOUT_MS` / `FILE_TIMEOUT_MS`). Download plus inference must finish inside that, or the call counts as failed. The presigned URL is generated immediately before the call. A media request also carries `client_ref` (the node's queue job id), so a classifier that runs it as a job answers `202` at once and the timeout no longer bounds the scan. A media call cut off by the timeout or by a proxy `502`, `504` or `524` is resent once with the same `client_ref`, which returns the running job instead of starting a second download.
+- **Jobs.** On `202 { job_id, state, poll_after_ms }` the node stores `job_id` on its queue row and polls `GET /v1/prescan/{job_id}`. The first poll comes after about the time the media needs to download and scan (total size at 10 MB/s plus 60 s, never before `poll_after_ms`, clamped to 30 s to 5 min), then after 1, 2 and 4 min and every 5 min after that, with 10% jitter. Waiting on a job never spends a retry, and the job survives a node restart. `done` feeds `result` into the normal verdict path. `failed` goes through the retry budget with fresh links, except `file_too_large`, `unsupported_mime` and `download_blocked`, which fail open at once. A `404` resubmits by `client_ref`. A failed poll simply waits for the next one. 30 min (`PRESCAN_JOB.BUDGET_MS`) after the first `202` the node fails open with `failure_reason: classifier_job_timeout`.
+- **Callbacks.** When `TIP_CLASSIFIER_CALLBACK_SECRET` and `TIP_API_ENDPOINT` are set, media requests also carry `callback_url` (`<TIP_API_ENDPOINT>/v1/prescan/callback`). The classifier posts `{ job_id, client_ref, state }` there, signed `X-TIP-Classifier-Signature: hmac-sha256=<hex HMAC-SHA256 of the raw body>` with the owner's callback secret. The node checks the signature over the raw body with a timing-safe comparison (`401` on mismatch, `404` for an unknown job) and then polls that job at once; it never trusts the callback's `state`. Without the secret the node sends no `callback_url` and relies on polling.
 - **Failures are never verdicts.** Any non-2xx status (including `404` for a missing route), a timeout, or a connection error is retried up to 4 times, 5 s apart (`worker_max_retries_on_error`). After that the job waits, re-asking every 5 s, until `fail_open_after_ms` (1 hour) from registration; then the node records a fail-open verdict: probability 0.5, tier low, not flagged, `overall_degraded=true`, `failure_reason: prescan_pending_past_fail_open_deadline`. That verdict is final for the content; a later classifier recovery does not re-scan it.
 - **Heuristic fallback is off in production.** With `TIP_CLASSIFIER_FALLBACK=1` a node falls back to local heuristics after 3 consecutive network-level failures (60 s cooldown); mainnet and the test cluster run `TIP_CLASSIFIER_FALLBACK=0`, so they wait for the real classifier as above.
 - **No bytes ever go through the node.** The node cannot upload media to the classifier: its own request timeout, per-node bandwidth and the proxy's request-body limit all rule it out. Media is only ever delivered as a presigned URL for the classifier to fetch.
@@ -141,6 +224,8 @@ What the classifier can rely on, and what happens when it does not answer.
 The `files[].url` is a signed S3 link that expires after a fixed window (TTL).
 After TTL seconds from when the node generated it, S3 returns `403`. Current
 default: **300 s** (`TIP_MEDIA_PRESIGN_TTL_SEC`).
+
+Media requests sent with `client_ref` use **3600 s** instead (`PRESCAN_JOB.MEDIA_URL_TTL_SEC`): a job may wait in the classifier's queue before it downloads. A resubmit after a failed or lost job always carries freshly signed links.
 
 The URL only needs to live long enough for the classifier to **download** the
 bytes , not to finish analyzing them. Once downloaded, the URL can expire.
