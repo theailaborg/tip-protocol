@@ -510,6 +510,9 @@ async function createNetworkNode(options = {}) {
     /** Connected peer count (authorized only) */
     peerCount: () => _authorizedPeers.size,
 
+    /** Re-arm bootstrap retry chains that have gone idle. Returns how many were armed. */
+    rearmBootstrap: () => bootstrapReconnect.ensureRunning(),
+
     /** Connected authorized peer IDs (libp2p peerId) */
     peers: () => [..._authorizedPeers.keys()],
 

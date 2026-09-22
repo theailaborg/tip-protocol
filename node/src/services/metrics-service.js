@@ -299,6 +299,8 @@ function narwhalSection(s) {
     counter("tip_narwhal_batches_received_total", "Total batches received (own + peer)", nm.batches_received),
     counter("tip_narwhal_certs_received_total", "Total certificates received from peers", nm.certs_received),
     counter("tip_narwhal_certs_parked_total", "Certs parked on missing-parent waiter", nm.certs_parked),
+    counter("tip_narwhal_own_batch_uncertified_total", "Rounds where this node's own batch failed to certify, empty or not. A registered non-committee node carries no traffic, so this is the only visible signal that it cannot earn its way into the committee", nm.my_batches_uncertified),
+    counter("tip_narwhal_own_batch_orphaned_total", "Subset of the above where the uncertified batch carried transactions (delay, not loss: they are requeued)", nm.my_batches_orphaned),
     counter("tip_narwhal_certs_unblocked_total", "Parked certs unblocked when parents arrived", nm.certs_unblocked),
     counter("tip_narwhal_pending_certs_pruned_total", "Stale parked certs dropped by §2 GC on round advance", nm.pending_certs_pruned),
     counter("tip_narwhal_equivocation_refused_total", "§1 equivocation attempts refused (vote-digest mismatch)", nm.equivocation_refused),

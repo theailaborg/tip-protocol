@@ -152,6 +152,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // get quorum on its own batches (lagging, partitioned, or under-
     // weighted in committee).
     my_batches_orphaned: 0,
+
+    // Every round where our own batch failed to certify, empty or not.
+    // my_batches_orphaned deliberately ignores empty batches, which makes a
+    // registered non-committee node's only failure mode invisible: it carries
+    // no user traffic, so its batches are always empty, and failing to certify
+    // them is exactly what keeps it out of the committee.
+    my_batches_uncertified: 0,
   };
 
   // Wall-clock timestamp of the last successful round advance. Used by
@@ -435,6 +442,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // those certs don't include our own batch).
     if (_myBatch && !_myCertificateCreated) {
       const orphanedTxs = _myBatch.txs || [];
+      _metrics.my_batches_uncertified++;
       if (orphanedTxs.length > 0) {
         let requeued = 0;
         // Re-insert in REVERSE order so the first tx of the original
