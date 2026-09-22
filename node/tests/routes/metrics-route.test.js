@@ -66,6 +66,8 @@ function fakeStats(overrides = {}) {
         equivocation_refused: 0,
         fast_forwards: 1,
         retries: 5,
+        my_batches_uncertified: 37,
+        my_batches_orphaned: 4,
       },
     },
     bullshark: {
@@ -153,6 +155,18 @@ describe("GET /metrics — Prometheus exposition format", () => {
     expect(res.text).toMatch(/^tip_bullshark_anchors_committed_total\{node="tip:\/\/node\/self"\} 20$/m);
     expect(res.text).toMatch(/^tip_bullshark_txs_committed_total\{node="tip:\/\/node\/self"\} 150$/m);
     expect(res.text).toMatch(/^tip_narwhal_rounds_advanced_total\{node="tip:\/\/node\/self"\} 41$/m);
+  });
+
+  // A registered non-committee node carries no traffic, so its batches are
+  // always empty and my_batches_orphaned stays at zero however badly it is
+  // failing. The uncertified counter is the one that shows the failure.
+  test("own-batch failures are exposed separately for empty and tx-bearing batches", async () => {
+    const app = makeApp({
+      consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
+    });
+    const res = await request(app).get("/metrics");
+    expect(res.text).toMatch(/^tip_narwhal_own_batch_uncertified_total\{node="tip:\/\/node\/self"\} 37$/m);
+    expect(res.text).toMatch(/^tip_narwhal_own_batch_orphaned_total\{node="tip:\/\/node\/self"\} 4$/m);
   });
 
   test("gauge values reflect underlying stats()", async () => {
