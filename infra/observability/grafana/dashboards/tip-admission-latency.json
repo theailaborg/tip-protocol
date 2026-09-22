@@ -104,7 +104,7 @@
       },
       "options": {
         "colorMode": "background",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "center",
         "textMode": "value",
         "reduceOptions": {
@@ -118,66 +118,12 @@
       "gridPos": {
         "x": 0,
         "y": 1,
-        "w": 6,
-        "h": 5
+        "w": 12,
+        "h": 7
       }
     },
     {
       "id": 3,
-      "type": "stat",
-      "title": "Admission bar",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prom-tip"
-      },
-      "description": "Percentage of the best node's presence a member must reach for its presence to count toward admission.",
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max(tip_committee_participation_pct_required)",
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        }
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "textMode": "value",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      },
-      "gridPos": {
-        "x": 6,
-        "y": 1,
-        "w": 4,
-        "h": 5
-      }
-    },
-    {
-      "id": 4,
       "type": "timeseries",
       "title": "Presence against the bar, per member",
       "datasource": {
@@ -228,33 +174,33 @@
         }
       },
       "gridPos": {
-        "x": 10,
+        "x": 12,
         "y": 1,
-        "w": 14,
-        "h": 5
+        "w": 12,
+        "h": 7
       }
     },
     {
-      "id": 5,
+      "id": 4,
       "type": "row",
       "title": "Why: can the node get its own certificate sealed?",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 6,
+        "y": 8,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 6,
+      "id": 5,
       "type": "timeseries",
       "title": "Certificate seal rate",
       "datasource": {
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Fraction of rounds where the node sealed its own certificate. Committee members sit near the top. A candidate that cannot seal cannot appear in the anchored chain, and so earns no presence.",
+      "description": "Fraction of rounds where the node sealed its own certificate. Committee members sit near the top. A candidate that cannot seal never appears in the anchored chain, and so earns no presence.",
       "targets": [
         {
           "refId": "A",
@@ -294,13 +240,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 7,
+        "y": 9,
         "w": 12,
-        "h": 6
+        "h": 7
       }
     },
     {
-      "id": 7,
+      "id": 6,
       "type": "timeseries",
       "title": "Own batch failed to certify, per round",
       "datasource": {
@@ -346,32 +292,32 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 7,
+        "y": 9,
         "w": 12,
-        "h": 6
+        "h": 7
       }
     },
     {
-      "id": 8,
+      "id": 7,
       "type": "row",
       "title": "Latency: is the node close enough to finish a round trip in time?",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 13,
+        "y": 16,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 9,
+      "id": 8,
       "type": "timeseries",
       "title": "Certificate arrival delay, average per peer",
       "datasource": {
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Average milliseconds between a peer certificate's own timestamp and this node receiving it. Compare against the round time below: a delay approaching it means that peer's certificates land after the round they belong to has closed, so they cannot be used as parents.",
+      "description": "Average milliseconds between a peer certificate's own timestamp and this node receiving it. Compare against round time: a delay approaching it means that peer's certificates land after the round they belong to has closed, so they cannot be used as parents.",
       "targets": [
         {
           "refId": "A",
@@ -409,13 +355,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 14,
+        "y": 17,
         "w": 12,
-        "h": 6
+        "h": 7
       }
     },
     {
-      "id": 10,
+      "id": 9,
       "type": "timeseries",
       "title": "Peer round-trip time, average",
       "datasource": {
@@ -460,13 +406,13 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 14,
+        "y": 17,
         "w": 12,
-        "h": 6
+        "h": 7
       }
     },
     {
-      "id": 11,
+      "id": 10,
       "type": "timeseries",
       "title": "Round time",
       "datasource": {
@@ -511,20 +457,20 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 20,
+        "y": 24,
         "w": 12,
-        "h": 6
+        "h": 7
       }
     },
     {
-      "id": 12,
+      "id": 11,
       "type": "timeseries",
       "title": "Latency budget used",
       "datasource": {
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Three round trips as a fraction of the round time. Above 1 the node cannot complete the exchange inside a round even in theory.",
+      "description": "Three round trips as a fraction of the round time. Above 1 the node cannot complete the exchange inside a round even in theory, and no amount of tuning on its side will change that.",
       "targets": [
         {
           "refId": "A",
@@ -563,25 +509,25 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 20,
+        "y": 24,
         "w": 12,
-        "h": 6
+        "h": 7
       }
     },
     {
-      "id": 13,
+      "id": 12,
       "type": "row",
       "title": "Thread saturation: is the node itself the bottleneck?",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 31,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 14,
+      "id": 13,
       "type": "timeseries",
       "title": "Event loop utilization",
       "datasource": {
@@ -628,20 +574,20 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 27,
-        "w": 8,
-        "h": 6
+        "y": 32,
+        "w": 12,
+        "h": 7
       }
     },
     {
-      "id": 15,
+      "id": 14,
       "type": "timeseries",
       "title": "Event loop delay, average",
       "datasource": {
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Mean event-loop delay over the dashboard window, from cumulative counters. The windowed gauge alongside it cannot be averaged over a longer period.",
+      "description": "Mean event-loop delay over the dashboard window, from cumulative counters. The windowed gauge alongside cannot be averaged over a longer period.",
       "targets": [
         {
           "refId": "A",
@@ -678,14 +624,14 @@
         }
       },
       "gridPos": {
-        "x": 8,
-        "y": 27,
-        "w": 8,
-        "h": 6
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 7
       }
     },
     {
-      "id": 16,
+      "id": 15,
       "type": "timeseries",
       "title": "Event loop delay, worst spike",
       "datasource": {
@@ -729,10 +675,61 @@
         }
       },
       "gridPos": {
-        "x": 16,
-        "y": 27,
-        "w": 8,
-        "h": 6
+        "x": 0,
+        "y": 39,
+        "w": 12,
+        "h": 7
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Resident memory",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Process memory. Growth without a matching workload is the shape that preceded one partner node degrading until it was restarted.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_process_memory_rss_bytes",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 39,
+        "w": 12,
+        "h": 7
       }
     },
     {
@@ -742,7 +739,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 33,
+        "y": 46,
         "w": 24,
         "h": 1
       }
@@ -793,9 +790,9 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 34,
-        "w": 8,
-        "h": 6
+        "y": 47,
+        "w": 12,
+        "h": 7
       }
     },
     {
@@ -843,10 +840,10 @@
         }
       },
       "gridPos": {
-        "x": 8,
-        "y": 34,
-        "w": 8,
-        "h": 6
+        "x": 12,
+        "y": 47,
+        "w": 12,
+        "h": 7
       }
     },
     {
@@ -857,7 +854,7 @@
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Time since memory and disk were last verified equal. A value climbing into minutes is the signature of a degraded storage path.",
+      "description": "Time since memory and disk were last verified equal. A value climbing into minutes is the signature of a degraded storage path, which is what took one partner node down.",
       "targets": [
         {
           "refId": "A",
@@ -894,26 +891,77 @@
         }
       },
       "gridPos": {
-        "x": 16,
-        "y": 34,
-        "w": 8,
-        "h": 6
+        "x": 0,
+        "y": 54,
+        "w": 12,
+        "h": 7
       }
     },
     {
       "id": 21,
+      "type": "timeseries",
+      "title": "Time since last write settled",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "How long since anything reached disk at all. Distinct from the queue: a flat queue with a climbing settle age is a wedge, not load.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_db_last_write_settled_age_ms",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 54,
+        "w": 12,
+        "h": 7
+      }
+    },
+    {
+      "id": 22,
       "type": "row",
       "title": "Isolation and network churn",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 61,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 22,
+      "id": 23,
       "type": "stat",
       "title": "Isolation recoveries",
       "datasource": {
@@ -952,7 +1000,7 @@
       },
       "options": {
         "colorMode": "background",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "center",
         "textMode": "value",
         "reduceOptions": {
@@ -965,13 +1013,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 41,
-        "w": 6,
-        "h": 5
+        "y": 62,
+        "w": 12,
+        "h": 7
       }
     },
     {
-      "id": 23,
+      "id": 24,
       "type": "timeseries",
       "title": "Authorized peers",
       "datasource": {
@@ -1015,14 +1063,14 @@
         }
       },
       "gridPos": {
-        "x": 6,
-        "y": 41,
-        "w": 9,
-        "h": 5
+        "x": 12,
+        "y": 62,
+        "w": 12,
+        "h": 7
       }
     },
     {
-      "id": 24,
+      "id": 25,
       "type": "timeseries",
       "title": "Transport churn",
       "datasource": {
@@ -1076,10 +1124,61 @@
         }
       },
       "gridPos": {
-        "x": 15,
-        "y": 41,
-        "w": 9,
-        "h": 5
+        "x": 0,
+        "y": 69,
+        "w": 12,
+        "h": 7
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Heartbeat misses",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Consecutive missed heartbeats per peer. Depth matters more than count: a value climbing into the dozens is a sustained outage, not jitter.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_heartbeat_peer_consecutive_misses",
+          "legendFormat": "{{node}} to {{peer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 69,
+        "w": 12,
+        "h": 7
       }
     }
   ]
