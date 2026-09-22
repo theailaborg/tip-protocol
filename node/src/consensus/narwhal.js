@@ -159,7 +159,31 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // no user traffic, so its batches are always empty, and failing to certify
     // them is exactly what keeps it out of the committee.
     my_batches_uncertified: 0,
+
+    // Rounds where we did seal our own certificate. With rounds_advanced this
+    // gives the seal rate, the single number that says whether a registered
+    // node can earn its way into the committee.
+    own_certs_sealed: 0,
   };
+
+  // Per-peer certificate arrival delay: how long after a certificate's own BFT
+  // timestamp it reached us. Exported as sum + count so the average over any
+  // window is rate(sum)/rate(count). A delay approaching the round time means
+  // that peer's certificates land too late to be used as parents.
+  const _arrivalDelay = new Map();   // author_node_id -> { sumMs, count }
+
+  function _recordArrivalDelay(cert) {
+    const ts = Number(cert && cert.timestamp);
+    if (!Number.isFinite(ts) || ts <= 0) return;
+    const author = String((cert && cert.author_node_id) || "");
+    if (!author || author === nodeId) return;
+    const delta = nowMs() - ts;
+    if (delta < 0 || delta > 600_000) return;   // clock skew or a replayed cert
+    const e = _arrivalDelay.get(author) || { sumMs: 0, count: 0 };
+    e.sumMs += delta;
+    e.count += 1;
+    _arrivalDelay.set(author, e);
+  }
 
   // Wall-clock timestamp of the last successful round advance. Used by
   // the consensus-halt gate: if no rounds advance within the stuck-
@@ -907,6 +931,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
     _roundCertificates.set(nodeId, cert);
     _myCertificateCreated = true;
+    _metrics.own_certs_sealed++;
 
     // Broadcast on CERTIFICATES topic (enforce size limit)
     try {
@@ -1000,6 +1025,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
 
     _metrics.certs_received++;
+    _recordArrivalDelay(cert);
     _processVerifiedCertificate(cert);
   }
 
@@ -1464,6 +1490,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       catchUpTarget: _catchUpTarget,
       byzantineForkHalt: _byzantineForkHalt ? { ..._byzantineForkHalt } : null,
       metrics: { ..._metrics },
+      arrivalDelay: Object.fromEntries(
+        [..._arrivalDelay.entries()].map(([k, v]) => [k, { ...v }])
+      ),
     }),
   };
 }

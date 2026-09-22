@@ -108,6 +108,31 @@ function processErrorSection() {
   return out.length ? out.join("\n") : null;
 }
 
+/**
+ * Per-peer certificate arrival delay. Emitted as sum + count rather than a
+ * pre-computed average so a dashboard can take rate(sum)/rate(count) over any
+ * window. This is the number that says whether a peer is close enough to have
+ * its certificates used as parents: a delay approaching the round time means
+ * they arrive after the round they belong to has already closed.
+ */
+function certArrivalSection(stats) {
+  const byPeer = (stats && stats.narwhal && stats.narwhal.arrivalDelay) || {};
+  const peers = Object.keys(byPeer);
+  if (peers.length === 0) return null;
+  const out = [
+    "# HELP tip_cert_arrival_delay_ms_sum Total milliseconds between a peer certificate's own timestamp and this node receiving it. Divide by the _count series for the average.",
+    "# TYPE tip_cert_arrival_delay_ms_sum counter",
+    "# HELP tip_cert_arrival_delay_ms_count Peer certificates sampled for arrival delay.",
+    "# TYPE tip_cert_arrival_delay_ms_count counter",
+  ];
+  for (const peer of peers) {
+    const e = byPeer[peer] || {};
+    out.push(line("tip_cert_arrival_delay_ms_sum", Number(e.sumMs) || 0, { peer }));
+    out.push(line("tip_cert_arrival_delay_ms_count", Number(e.count) || 0, { peer }));
+  }
+  return out.join("\n");
+}
+
 function dagSection(dag) {
   let txCount = 0, certCount = 0, identityCount = 0, contentCount = 0;
   try { txCount = dag.count?.() ?? 0; } catch { /* ignore */ }
@@ -291,6 +316,7 @@ function narwhalSection(s) {
     counter("tip_narwhal_certs_received_total", "Total certificates received from peers", nm.certs_received),
     counter("tip_narwhal_certs_parked_total", "Certs parked on missing-parent waiter", nm.certs_parked),
     counter("tip_narwhal_own_batch_uncertified_total", "Rounds where this node's own batch failed to certify, empty or not. A registered non-committee node carries no traffic, so this is the only visible signal that it cannot earn its way into the committee", nm.my_batches_uncertified),
+    counter("tip_narwhal_own_certs_sealed_total", "Rounds where this node did seal its own certificate. Divided by rounds advanced this is the seal rate, which decides whether a registered node can earn committee admission", nm.own_certs_sealed),
     counter("tip_narwhal_own_batch_orphaned_total", "Subset of the above where the uncertified batch carried transactions (delay, not loss: they are requeued)", nm.my_batches_orphaned),
     counter("tip_narwhal_certs_unblocked_total", "Parked certs unblocked when parents arrived", nm.certs_unblocked),
     counter("tip_narwhal_pending_certs_pruned_total", "Stale parked certs dropped by §2 GC on round advance", nm.pending_certs_pruned),
@@ -410,11 +436,22 @@ function committeeSection(s, dag) {
       participationLines.push("# TYPE tip_committee_participation_credits gauge");
       participationLines.push("# HELP tip_committee_member 1 if the member is in the active committee at the current round, else 0 (registered but not yet admitted).");
       participationLines.push("# TYPE tip_committee_member gauge");
+      participationLines.push("# HELP tip_committee_participation_count Raw presence count this rotation (anchors the member appeared in). The absolute number; see the pct series for the figure admission is judged on.");
+      participationLines.push("# TYPE tip_committee_participation_count gauge");
+      participationLines.push("# HELP tip_committee_participation_pct_of_best Presence as a percentage of the best-performing node this rotation. Admission needs this at or above the bucket-presence threshold, so a member sitting below it will not be admitted however long it stays connected.");
+      participationLines.push("# TYPE tip_committee_participation_pct_of_best gauge");
+      const bestCount = tallies.reduce((m, t) => Math.max(m, Number(t.count) || 0), 0);
       for (const t of tallies) {
         const member = String(t.node_id || "");
+        const count = Number(t.count) || 0;
         participationLines.push(line("tip_committee_participation_credits", t.buckets || 0, { member }));
         participationLines.push(line("tip_committee_member", members.has(t.node_id) ? 1 : 0, { member }));
+        participationLines.push(line("tip_committee_participation_count", count, { member }));
+        participationLines.push(line("tip_committee_participation_pct_of_best", bestCount > 0 ? Math.round((count * 1000) / bestCount) / 10 : 0, { member }));
       }
+      participationLines.push("# HELP tip_committee_participation_pct_required Percentage of the best node a member must reach for its presence to count. Compare against tip_committee_participation_pct_of_best.");
+      participationLines.push("# TYPE tip_committee_participation_pct_required gauge");
+      participationLines.push(line("tip_committee_participation_pct_required", CONSENSUS.EPOCH_BUCKET_PRESENCE_PCT, {}));
     }
   } catch { /* ignore */ }
 
@@ -630,6 +667,8 @@ function createMetricsService({ dag, config, consensus, network }) {
       sections.push(mempoolSection(stats));
       sections.push(antiEntropySection(stats));
       sections.push(committeeSection(stats, dag));   // §4 + #34
+      const arrivalBlock = certArrivalSection(stats);
+      if (arrivalBlock) sections.push(arrivalBlock);
       const merkleBlock = merkleRootSection(stats);
       if (merkleBlock) sections.push(merkleBlock);
     }
