@@ -250,4 +250,27 @@ describe("createBootstrapReconnect", () => {
     expect(r.ensureRunning()).toBe(1);        // only A was idle
     r.stop();
   });
+  // A dial in progress has no pending timer. Without tracking it, the backstop
+  // sees "nothing scheduled" and fires a second parallel dial to the same peer.
+  test("ensureRunning() does not start a second dial while one is already in flight", async () => {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const A = "/ip4/1.1.1.1/tcp/4001/p2p/peer-A";
+    const node = fakeNode({ [A]: () => gate });
+    const r = createBootstrapReconnect({
+      node, bootstrapPeers: [A], authorizedPeers: new Map(), log: silentLog(), intervalMs: 5000,
+    });
+    r.start();
+    await delay(20);
+    expect(node._dialCalls.length).toBe(1);   // dial is in flight, not yet resolved
+
+    expect(r.ensureRunning()).toBe(0);        // must not treat in-flight as idle
+    await delay(20);
+    expect(node._dialCalls.length).toBe(1);
+
+    release();
+    await delay(20);
+    expect(r.ensureRunning()).toBe(1);        // once settled and idle, it re-arms
+    r.stop();
+  });
 });

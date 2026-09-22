@@ -484,7 +484,7 @@ function committeeSection(s, dag) {
       participationLines.push("# TYPE tip_committee_member gauge");
       participationLines.push("# HELP tip_committee_participation_count Raw presence count this rotation (anchors the member appeared in). The absolute number; see the pct series for the figure admission is judged on.");
       participationLines.push("# TYPE tip_committee_participation_count gauge");
-      participationLines.push("# HELP tip_committee_participation_pct_of_best Presence as a percentage of the best-performing node this rotation. Admission needs this at or above the bucket-presence threshold, so a member sitting below it will not be admitted however long it stays connected.");
+      participationLines.push("# HELP tip_committee_participation_pct_of_best Presence this rotation as a percentage of the best-performing node, summed across buckets. Admission is decided per bucket, so this is an indicator rather than the test itself: read tip_committee_participation_credits against _required for the actual verdict. A member far below the pct_required line will not be admitted however long it stays connected.");
       participationLines.push("# TYPE tip_committee_participation_pct_of_best gauge");
       const bestCount = tallies.reduce((m, t) => Math.max(m, Number(t.count) || 0), 0);
       for (const t of tallies) {

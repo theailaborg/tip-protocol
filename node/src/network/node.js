@@ -516,7 +516,7 @@ async function createNetworkNode(options = {}) {
 
     /** Re-arm bootstrap retry chains that have gone idle. Returns how many were armed. */
     rearmBootstrap: () => {
-      const armed = bootstrapReconnect.ensureRunning();
+      const armed = Number(bootstrapReconnect.ensureRunning()) || 0;
       _bootstrapRearms += armed;
       return armed;
     },

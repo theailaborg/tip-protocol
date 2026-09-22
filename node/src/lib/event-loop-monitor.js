@@ -12,7 +12,10 @@
  * A single perf_hooks histogram is snapshotted + reset every WINDOW_MS, so
  * sample() is non-destructive and safe for several readers at once (the
  * Prometheus scrape and a live tracer) without one stealing the other's
- * window.
+ * window. totals() does NOT share that guarantee: its utilization figure is
+ * measured since the previous call, so two readers would split the interval
+ * between them. Keep it to one caller. The cumulative fields it returns are
+ * unaffected.
  *
  * The windowed figures answer "is it stalled right now". They cannot answer
  * "what was the average over the last hour", because each window overwrites
