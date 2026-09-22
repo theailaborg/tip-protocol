@@ -1934,7 +1934,7 @@
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Per-node event-loop delay. max catches rare spikes; p99/mean catch chronic stalls (sync ML-DSA verify, big merkle rebuilds) that starve consensus.",
+      "description": "Per-node event-loop delay. max catches rare spikes; p99/mean catch chronic stalls (sync ML-DSA verify, big merkle rebuilds) that starve consensus.\n\nThe max/p99/mean series are a one second window and cannot be averaged over a longer period. The fourth series is the true mean across whatever range the dashboard is drawing, from cumulative counters.",
       "targets": [
         {
           "refId": "A",
@@ -1950,6 +1950,11 @@
           "refId": "C",
           "expr": "tip_process_event_loop_lag_mean_ms{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
           "legendFormat": "{{name}} mean"
+        },
+        {
+          "refId": "D",
+          "expr": "rate(tip_process_event_loop_lag_ms_sum{node=~\"$node\"}[$__rate_interval]) / clamp_min(rate(tip_process_event_loop_lag_ms_count{node=~\"$node\"}[$__rate_interval]), 0.001)",
+          "legendFormat": "{{node}} mean over window"
         }
       ],
       "fieldConfig": {
@@ -2426,6 +2431,59 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 50,
+      "type": "timeseries",
+      "title": "Thread saturation",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Fraction of wall clock the single consensus thread spent working rather than waiting. Sustained values near 1 mean the thread is saturated and will start missing network deadlines, which presents as a network fault but is not one.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_process_event_loop_utilization{node=~\"$node\"}",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 203,
+        "w": 12,
+        "h": 7
+      }
     }
   ],
   "links": [
