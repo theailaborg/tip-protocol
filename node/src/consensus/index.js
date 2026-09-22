@@ -678,7 +678,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         // the same committed round; the consensus-critical agreement signal.
         stateMerkleRoot: (() => { try { return dag.getLatestCommit?.()?.state_merkle_root || ""; } catch { return ""; } })(),
         antiEntropy: antiEntropy.stats(),
-        heartbeat: { peers: heartbeat.peerStates() },
+        heartbeat: { peers: heartbeat.peerStates(), rtt: (heartbeat.rttStats ? heartbeat.rttStats() : {}) },
         verdictTrigger: { pending: verdictTrigger.size() },
         // §4 + #34: chain-walk failure counter for /metrics. Empty
         // object on legacy snapshot-handler implementations that

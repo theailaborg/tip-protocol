@@ -95,12 +95,30 @@ function createHeartbeatManager({
 
   // ── Client side: ping one peer ───────────────────────────────────────────
 
+  // Per-peer round-trip samples. Kept as sum + count + last so a dashboard can
+  // take the average over any window and still see the current value.
+  const _rtt = new Map();   // node_id -> { sumMs, count, lastMs }
+
+  function _recordRtt(key, ms) {
+    if (!Number.isFinite(ms) || ms < 0 || ms > 60_000) return;
+    const e = _rtt.get(key) || { sumMs: 0, count: 0, lastMs: 0 };
+    e.sumMs += ms;
+    e.count += 1;
+    e.lastMs = ms;
+    _rtt.set(key, e);
+  }
+
+  function rttStats() {
+    return Object.fromEntries([..._rtt.entries()].map(([k, v]) => [k, { ...v }]));
+  }
+
   async function _pingPeer(peerId, tipNodeId) {
     const ping = encode("HeartbeatPing", {
       fromNodeId: getSelfNodeId ? (getSelfNodeId() || "") : "",
       ts: nowMs(),
     });
 
+    const sentAt = nowMs();
     let stream = null;
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -134,6 +152,11 @@ function createHeartbeatManager({
         );
         return;
       }
+
+      // Round-trip time to this peer. The only direct latency measurement the
+      // node makes, and the number that decides whether its certificates can
+      // reach the committee inside a round.
+      _recordRtt(tipNodeId || peerId, nowMs() - sentAt);
 
       // Successful pong — reset miss counter.
       const ps = _peerState.get(peerId) || { consecutiveMisses: 0 };
@@ -221,7 +244,7 @@ function createHeartbeatManager({
     return out;
   }
 
-  return { start, stop, registerHandler, peerStates };
+  return { start, stop, registerHandler, peerStates, rttStats };
 }
 
 module.exports = { createHeartbeatManager };
