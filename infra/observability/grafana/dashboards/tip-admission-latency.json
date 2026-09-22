@@ -1,0 +1,1086 @@
+{
+  "uid": "tip-admission",
+  "title": "TIP Node Admission and Latency",
+  "tags": [
+    "tip"
+  ],
+  "editable": true,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "apps",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "tip"
+      ],
+      "targetBlank": false,
+      "title": "TIP dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prom-tip"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "query": {
+          "query": "label_values(tip_narwhal_current_round, node)",
+          "refId": "vars"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Can each node earn its committee seat?",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Nodes below the admission bar",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Registered nodes whose presence is under the required percentage of the best node. These will not be admitted at the next rotation however long they stay connected.\n\nNormal: 0.\nAct if: above 0 for more than a rotation.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(tip_committee_participation_pct_of_best < on() group_left() max(tip_committee_participation_pct_required)) or vector(0)",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 6,
+        "h": 5
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Admission bar",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Percentage of the best node's presence a member must reach for its presence to count toward admission.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_committee_participation_pct_required)",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Presence against the bar, per member",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Each member's presence as a percentage of the best node this rotation. The flat line is the bar. A node sitting below it cannot be admitted, and the gap tells you how far off it is.\n\nThis is the single number that answers whether a partner node will ever join the committee.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_committee_participation_pct_of_best",
+          "legendFormat": "{{member}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max(tip_committee_participation_pct_required)",
+          "legendFormat": "required"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "max": 105
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 1,
+        "w": 14,
+        "h": 5
+      }
+    },
+    {
+      "id": 5,
+      "type": "row",
+      "title": "Why: can the node get its own certificate sealed?",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Certificate seal rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Fraction of rounds where the node sealed its own certificate. Committee members sit near the top. A candidate that cannot seal cannot appear in the anchored chain, and so earns no presence.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tip_narwhal_own_certs_sealed_total[5m]) / clamp_min(rate(tip_narwhal_rounds_advanced_total[5m]), 0.001)",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "max": 1
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 12,
+        "h": 6
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Own batch failed to certify, per round",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Rounds where the node's own batch never certified, as a fraction of rounds. Counted whether or not the batch carried transactions, which is the only way a candidate node's failure is visible at all.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tip_narwhal_own_batch_uncertified_total[5m]) / clamp_min(rate(tip_narwhal_rounds_advanced_total[5m]), 0.001)",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 7,
+        "w": 12,
+        "h": 6
+      }
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Latency: is the node close enough to finish a round trip in time?",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Certificate arrival delay, average per peer",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Average milliseconds between a peer certificate's own timestamp and this node receiving it. Compare against the round time below: a delay approaching it means that peer's certificates land after the round they belong to has closed, so they cannot be used as parents.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tip_cert_arrival_delay_ms_sum[5m]) / clamp_min(rate(tip_cert_arrival_delay_ms_count[5m]), 0.001)",
+          "legendFormat": "{{node}} to {{peer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 6
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Peer round-trip time, average",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Heartbeat round-trip time to each peer. The direct latency measurement. Three network legs are needed to seal a certificate, so roughly three times this figure has to fit inside one round.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tip_peer_rtt_ms_sum[5m]) / clamp_min(rate(tip_peer_rtt_ms_count[5m]), 0.001)",
+          "legendFormat": "{{node}} to {{peer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 6
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Round time",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Milliseconds per consensus round, derived from the round counter. This is the budget a node has to get its batch out, collect acknowledgements and return its certificate.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1000 / clamp_min(rate(tip_narwhal_rounds_advanced_total[5m]), 0.001)",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 6
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Latency budget used",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Three round trips as a fraction of the round time. Above 1 the node cannot complete the exchange inside a round even in theory.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(3 * (rate(tip_peer_rtt_ms_sum[5m]) / clamp_min(rate(tip_peer_rtt_ms_count[5m]), 0.001))) / clamp_min(1000 / clamp_min(rate(tip_narwhal_rounds_advanced_total[5m]), 0.001), 1)",
+          "legendFormat": "{{node}} to {{peer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 6
+      }
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Thread saturation: is the node itself the bottleneck?",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Event loop utilization",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Fraction of wall clock the single consensus thread spent working rather than waiting. Sustained values near 1 mean the thread is saturated and will start missing network deadlines, which looks like a network problem but is not.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_process_event_loop_utilization",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "max": 1
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 8,
+        "h": 6
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Event loop delay, average",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Mean event-loop delay over the dashboard window, from cumulative counters. The windowed gauge alongside it cannot be averaged over a longer period.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tip_process_event_loop_lag_ms_sum[5m]) / clamp_min(rate(tip_process_event_loop_lag_ms_count[5m]), 0.001)",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 27,
+        "w": 8,
+        "h": 6
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Event loop delay, worst spike",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Longest single stall in the last sampling window. A spike larger than the round time means whole rounds passed with the node unable to do anything at all.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_process_event_loop_lag_max_ms",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 27,
+        "w": 8,
+        "h": 6
+      }
+    },
+    {
+      "id": 17,
+      "type": "row",
+      "title": "Storage write path",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Pending writes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Writes queued in the persistence chain. A rising queue means memory is running ahead of disk.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_db_write_queue_depth",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 8,
+        "h": 6
+      }
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Oldest unsettled write",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Age of the oldest write that has not reached disk. Approaching the fail-stop window means the node is about to stop.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_db_oldest_pending_write_ms",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 34,
+        "w": 8,
+        "h": 6
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Parity probe age",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Time since memory and disk were last verified equal. A value climbing into minutes is the signature of a degraded storage path.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_db_parity_last_ok_age_ms",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 34,
+        "w": 8,
+        "h": 6
+      }
+    },
+    {
+      "id": 21,
+      "type": "row",
+      "title": "Isolation and network churn",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Isolation recoveries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Times a node lost every peer with no reconnect pending and had to be restarted by the backstop. Before that backstop existed this state was permanent.\n\nNormal: 0.\nAct if: rising, the node's connectivity is dropping completely.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_network_bootstrap_rearms_total) or vector(0)",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 41,
+        "w": 6,
+        "h": 5
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Authorized peers",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Peers each node currently holds an authenticated connection to. A drop to zero is isolation.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_network_peers_authorized",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 41,
+        "w": 9,
+        "h": 5
+      }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Transport churn",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Reconnects and rebuilds. Sustained churn means the link is unstable even when the peer count looks healthy.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tip_network_peer_disconnects_total[5m])",
+          "legendFormat": "{{node}} disconnects"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(tip_network_force_redials_total[5m])",
+          "legendFormat": "{{node}} redials"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(tip_network_rehandshakes_total[5m])",
+          "legendFormat": "{{node}} rehandshakes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 15,
+        "y": 41,
+        "w": 9,
+        "h": 5
+      }
+    }
+  ]
+}
