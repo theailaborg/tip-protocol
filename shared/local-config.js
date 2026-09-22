@@ -24,10 +24,6 @@ const LOCAL_CONFIG = Object.freeze({
   CONSENSUS_SUMMARY_INTERVAL_MS:       _num("TIP_CONSENSUS_SUMMARY_INTERVAL_MS",       60000),
   ANTI_ENTROPY_INTERVAL_MS:            _num("TIP_ANTI_ENTROPY_INTERVAL_MS",            4000),
   ANTI_ENTROPY_PEER_TIMEOUT_MS:        _num("TIP_ANTI_ENTROPY_PEER_TIMEOUT_MS",        2000),
-  // A cached peer status older than this is not evidence about that peer. The
-  // cache is never pruned, so an isolated node otherwise reads its own frozen
-  // round back from dead entries and skips the resync that would recover it.
-  PEER_STATUS_STALE_AFTER_MS:          _num("TIP_PEER_STATUS_STALE_AFTER_MS",          20000),
   SYNC_RETRY_BASE_MS:                  _num("TIP_SYNC_RETRY_BASE_MS",                  1000),
   SNAPSHOT_BUSY_RETRY_MS:              _num("TIP_SNAPSHOT_BUSY_RETRY_MS",              5000),
   ACK_STREAM_TIMEOUT_MS:               _num("TIP_ACK_STREAM_TIMEOUT_MS",               3000),
