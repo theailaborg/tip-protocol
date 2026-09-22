@@ -52,8 +52,9 @@ describe("createBootstrapReconnect", () => {
     });
     expect(typeof r.start).toBe("function");
     expect(typeof r.stop).toBe("function");
+    expect(typeof r.ensureRunning).toBe("function");
     // calling them must not throw
-    r.start(); r.stop(); r.onPeerDisconnect("anything");
+    r.start(); r.stop(); r.onPeerDisconnect("anything"); r.ensureRunning();
   });
 
   test("start() dials every bootstrap peer immediately", async () => {
@@ -191,5 +192,62 @@ describe("createBootstrapReconnect", () => {
     r.stop();
     await delay(100);   // wait long enough that any pending retry would have fired
     expect(node._dialCalls.length).toBe(1);   // no further dials after stop()
+  });
+
+  // A successful dial deliberately stops the chain and waits for
+  // peer:disconnect to restart it. If that event never fires the node sits
+  // isolated with no timers pending, which is what kept a partner node down
+  // for 9.7 hours. ensureRunning is the poll-driven backstop.
+  test("ensureRunning() re-arms a chain that stopped after a successful dial", async () => {
+    const node = fakeNode();
+    const r = createBootstrapReconnect({
+      node,
+      bootstrapPeers: ["/ip4/1.1.1.1/tcp/4001/p2p/peer-A"],
+      authorizedPeers: new Map(),
+      log: silentLog(),
+      intervalMs: 5000,
+    });
+    r.start();
+    await delay(20);
+    expect(node._dialCalls.length).toBe(1);   // dialled, chain now idle
+
+    // No disconnect event ever arrives. Without the backstop nothing redials.
+    const armed = r.ensureRunning();
+    expect(armed).toBe(1);
+    await delay(20);
+    expect(node._dialCalls.length).toBe(2);
+    r.stop();
+  });
+
+  test("ensureRunning() leaves an already-pending retry alone", async () => {
+    const node = fakeNode({ "/ip4/1.1.1.1/tcp/4001/p2p/peer-A": "fail" });
+    const r = createBootstrapReconnect({
+      node,
+      bootstrapPeers: ["/ip4/1.1.1.1/tcp/4001/p2p/peer-A"],
+      authorizedPeers: new Map(),
+      log: silentLog(),
+      intervalMs: 200,
+    });
+    r.start();
+    await delay(20);
+    expect(node._dialCalls.length).toBe(1);   // failed, retry pending
+
+    expect(r.ensureRunning()).toBe(0);        // nothing to arm
+    await delay(20);
+    expect(node._dialCalls.length).toBe(1);   // backstop did not force an extra dial
+    r.stop();
+  });
+
+  test("ensureRunning() arms only the peers that have no pending retry", async () => {
+    const A = "/ip4/1.1.1.1/tcp/4001/p2p/peer-A";
+    const B = "/ip4/2.2.2.2/tcp/4001/p2p/peer-B";
+    const node = fakeNode({ [B]: "fail" });   // A succeeds and goes idle, B keeps retrying
+    const r = createBootstrapReconnect({
+      node, bootstrapPeers: [A, B], authorizedPeers: new Map(), log: silentLog(), intervalMs: 500,
+    });
+    r.start();
+    await delay(30);
+    expect(r.ensureRunning()).toBe(1);        // only A was idle
+    r.stop();
   });
 });
