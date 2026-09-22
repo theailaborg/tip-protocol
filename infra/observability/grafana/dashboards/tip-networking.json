@@ -1618,6 +1618,57 @@
         "w": 12,
         "h": 11
       }
+    },
+    {
+      "id": 533,
+      "type": "timeseries",
+      "title": "Isolation recoveries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Bootstrap retry chains re-armed after a node was found with no peers and no reconnect pending. The reconnect chains are event driven, so a peer:disconnect that never fires used to leave a node isolated indefinitely.\n\nNormal: flat at 0.\nAct if: climbing, that node's connectivity is dropping out completely.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_network_bootstrap_rearms_total{node=~\"$node\"}",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 146,
+        "w": 12,
+        "h": 7
+      }
     }
   ],
   "links": [

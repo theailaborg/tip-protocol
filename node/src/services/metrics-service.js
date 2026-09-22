@@ -82,11 +82,20 @@ function processSection(config) {
  */
 function eventLoopSection() {
   const s = eventLoopMonitor.sample();
-  return [
+  const t = typeof eventLoopMonitor.totals === "function" ? eventLoopMonitor.totals() : null;
+  const out = [
     gauge("tip_process_event_loop_lag_max_ms", "Max event-loop delay over the last 1s window (ms)", s.max_ms),
     gauge("tip_process_event_loop_lag_p99_ms", "p99 event-loop delay over the last 1s window (ms)", s.p99_ms),
     gauge("tip_process_event_loop_lag_mean_ms", "Mean event-loop delay over the last 1s window (ms)", s.mean_ms),
-  ].join("\n");
+  ];
+  if (t) {
+    out.push(counter("tip_process_event_loop_lag_ms_sum", "Cumulative event-loop delay. The windowed gauges above cannot be averaged over a longer period; divide this by the _count series to get the mean over any window", t.delay_sum_ms));
+    out.push(counter("tip_process_event_loop_lag_ms_count", "Event-loop delay samples taken.", t.delay_count));
+    out.push(counter("tip_process_event_loop_active_ms_total", "Cumulative milliseconds the single consensus thread spent working rather than waiting.", t.active_ms));
+    out.push(counter("tip_process_event_loop_idle_ms_total", "Cumulative milliseconds the single consensus thread spent idle. With the active series this gives thread saturation over any window: rate(active)/(rate(active)+rate(idle)).", t.idle_ms));
+    out.push(gauge("tip_process_event_loop_utilization", "Fraction of wall clock the consensus thread spent working since the previous scrape (0 to 1). Sustained values near 1 mean the thread is saturated and will start missing network deadlines.", t.utilization));
+  }
+  return out.join("\n");
 }
 
 // Process-level error counters (process-error-handler). A family appears once
@@ -106,6 +115,58 @@ function processErrorSection() {
   family("tip_process_fatal_errors_total", "Errors flagged fatal-severity by driver code (e.g. store corruption); observe-only, does NOT halt the node.", m.fatal, "category");
   family("tip_safe_timer_threw_total", "safeTimer callback throws/rejections since start, by timer label.", m.timer, "label");
   return out.length ? out.join("\n") : null;
+}
+
+/**
+ * Per-peer certificate arrival delay. Emitted as sum + count rather than a
+ * pre-computed average so a dashboard can take rate(sum)/rate(count) over any
+ * window. This is the number that says whether a peer is close enough to have
+ * its certificates used as parents: a delay approaching the round time means
+ * they arrive after the round they belong to has already closed.
+ */
+/**
+ * Per-peer round-trip time, measured by the heartbeat ping/pong. Emitted as
+ * sum + count for a windowed average, plus the last sample. This is the only
+ * direct latency measurement the node makes, and the figure that decides
+ * whether its certificates can complete a round trip inside one round.
+ */
+function peerRttSection(stats) {
+  const byPeer = (stats && stats.heartbeat && stats.heartbeat.rtt) || {};
+  const peers = Object.keys(byPeer);
+  if (peers.length === 0) return null;
+  const out = [
+    "# HELP tip_peer_rtt_ms_sum Total heartbeat round-trip milliseconds to a peer. Divide by the _count series for the average.",
+    "# TYPE tip_peer_rtt_ms_sum counter",
+    "# HELP tip_peer_rtt_ms_count Heartbeat round trips sampled for this peer.",
+    "# TYPE tip_peer_rtt_ms_count counter",
+    "# HELP tip_peer_rtt_last_ms Most recent heartbeat round-trip time to this peer.",
+    "# TYPE tip_peer_rtt_last_ms gauge",
+  ];
+  for (const peer of peers) {
+    const e = byPeer[peer] || {};
+    out.push(line("tip_peer_rtt_ms_sum", Number(e.sumMs) || 0, { peer }));
+    out.push(line("tip_peer_rtt_ms_count", Number(e.count) || 0, { peer }));
+    out.push(line("tip_peer_rtt_last_ms", Number(e.lastMs) || 0, { peer }));
+  }
+  return out.join("\n");
+}
+
+function certArrivalSection(stats) {
+  const byPeer = (stats && stats.narwhal && stats.narwhal.arrivalDelay) || {};
+  const peers = Object.keys(byPeer);
+  if (peers.length === 0) return null;
+  const out = [
+    "# HELP tip_cert_arrival_delay_ms_sum Total milliseconds between a peer certificate's own timestamp and this node receiving it. Divide by the _count series for the average.",
+    "# TYPE tip_cert_arrival_delay_ms_sum counter",
+    "# HELP tip_cert_arrival_delay_ms_count Peer certificates sampled for arrival delay.",
+    "# TYPE tip_cert_arrival_delay_ms_count counter",
+  ];
+  for (const peer of peers) {
+    const e = byPeer[peer] || {};
+    out.push(line("tip_cert_arrival_delay_ms_sum", Number(e.sumMs) || 0, { peer }));
+    out.push(line("tip_cert_arrival_delay_ms_count", Number(e.count) || 0, { peer }));
+  }
+  return out.join("\n");
 }
 
 function dagSection(dag) {
@@ -176,6 +237,7 @@ function networkSection(network, dag) {
   out.push(counter("tip_network_rehandshakes_total", "Re-handshakes of connected-but-unauthorized peers", cm.rehandshakes));
   out.push(counter("tip_network_fast_reauths_total", "Reconnects authorized within the grace window without a full handshake", cm.fast_reauths));
   out.push(counter("tip_network_force_redials_total", "Transport rebuilds (force-close + re-dial) after sustained one-directional send failures to a peer", cm.force_redials));
+  out.push(counter("tip_network_bootstrap_rearms_total", "Bootstrap retry chains re-armed by the isolation backstop. Non-zero means this node lost every peer with no retry pending, which before the backstop left it isolated indefinitely", (typeof network.bootstrapRearms === "function" ? network.bootstrapRearms() : 0)));
 
   // Per-peer outbound delivery health: a peer whose send failures climb (or whose
   // last-ok age grows) while it stays connected is the silent one-directional
@@ -290,6 +352,9 @@ function narwhalSection(s) {
     counter("tip_narwhal_batches_received_total", "Total batches received (own + peer)", nm.batches_received),
     counter("tip_narwhal_certs_received_total", "Total certificates received from peers", nm.certs_received),
     counter("tip_narwhal_certs_parked_total", "Certs parked on missing-parent waiter", nm.certs_parked),
+    counter("tip_narwhal_own_batch_uncertified_total", "Rounds where this node's own batch failed to certify, empty or not. A registered non-committee node carries no traffic, so this is the only visible signal that it cannot earn its way into the committee", nm.my_batches_uncertified),
+    counter("tip_narwhal_own_certs_sealed_total", "Rounds where this node did seal its own certificate. Divided by rounds advanced this is the seal rate, which decides whether a registered node can earn committee admission", nm.own_certs_sealed),
+    counter("tip_narwhal_own_batch_orphaned_total", "Subset of the above where the uncertified batch carried transactions (delay, not loss: they are requeued)", nm.my_batches_orphaned),
     counter("tip_narwhal_certs_unblocked_total", "Parked certs unblocked when parents arrived", nm.certs_unblocked),
     counter("tip_narwhal_pending_certs_pruned_total", "Stale parked certs dropped by §2 GC on round advance", nm.pending_certs_pruned),
     counter("tip_narwhal_equivocation_refused_total", "§1 equivocation attempts refused (vote-digest mismatch)", nm.equivocation_refused),
@@ -408,11 +473,22 @@ function committeeSection(s, dag) {
       participationLines.push("# TYPE tip_committee_participation_credits gauge");
       participationLines.push("# HELP tip_committee_member 1 if the member is in the active committee at the current round, else 0 (registered but not yet admitted).");
       participationLines.push("# TYPE tip_committee_member gauge");
+      participationLines.push("# HELP tip_committee_participation_count Raw presence count this rotation (anchors the member appeared in). The absolute number; see the pct series for the figure admission is judged on.");
+      participationLines.push("# TYPE tip_committee_participation_count gauge");
+      participationLines.push("# HELP tip_committee_participation_pct_of_best Presence this rotation as a percentage of the best-performing node, summed across buckets. Admission is decided per bucket, so this is an indicator rather than the test itself: read tip_committee_participation_credits against _required for the actual verdict. A member far below the pct_required line will not be admitted however long it stays connected.");
+      participationLines.push("# TYPE tip_committee_participation_pct_of_best gauge");
+      const bestCount = tallies.reduce((m, t) => Math.max(m, Number(t.count) || 0), 0);
       for (const t of tallies) {
         const member = String(t.node_id || "");
+        const count = Number(t.count) || 0;
         participationLines.push(line("tip_committee_participation_credits", t.buckets || 0, { member }));
         participationLines.push(line("tip_committee_member", members.has(t.node_id) ? 1 : 0, { member }));
+        participationLines.push(line("tip_committee_participation_count", count, { member }));
+        participationLines.push(line("tip_committee_participation_pct_of_best", bestCount > 0 ? Math.round((count * 1000) / bestCount) / 10 : 0, { member }));
       }
+      participationLines.push("# HELP tip_committee_participation_pct_required Percentage of the best node a member must reach for its presence to count. Compare against tip_committee_participation_pct_of_best.");
+      participationLines.push("# TYPE tip_committee_participation_pct_required gauge");
+      participationLines.push(line("tip_committee_participation_pct_required", CONSENSUS.EPOCH_BUCKET_PRESENCE_PCT, {}));
     }
   } catch { /* ignore */ }
 
@@ -628,6 +704,10 @@ function createMetricsService({ dag, config, consensus, network }) {
       sections.push(mempoolSection(stats));
       sections.push(antiEntropySection(stats));
       sections.push(committeeSection(stats, dag));   // §4 + #34
+      const arrivalBlock = certArrivalSection(stats);
+      if (arrivalBlock) sections.push(arrivalBlock);
+      const rttBlock = peerRttSection(stats);
+      if (rttBlock) sections.push(rttBlock);
       const merkleBlock = merkleRootSection(stats);
       if (merkleBlock) sections.push(merkleBlock);
     }

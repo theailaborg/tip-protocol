@@ -41,10 +41,13 @@ function createBootstrapReconnect({ node, bootstrapPeers, authorizedPeers, log, 
   if (!Array.isArray(bootstrapPeers) || bootstrapPeers.length === 0) {
     // No bootstrap peers configured (e.g. founding node) — return no-op shim
     // so callers don't need null checks.
-    return { start: () => { }, stop: () => { }, onPeerDisconnect: () => { } };
+    return { start: () => { }, stop: () => { }, onPeerDisconnect: () => { }, ensureRunning: () => { } };
   }
 
   const _retries = new Map();   // multiaddr → pending Timeout
+  // A dial in progress has no pending timer, so without this the backstop
+  // below would see "nothing scheduled" and start a second parallel dial.
+  const _dialing = new Set();
 
   function _schedule(addr, delayMs) {
     const existing = _retries.get(addr);
@@ -52,56 +55,73 @@ function createBootstrapReconnect({ node, bootstrapPeers, authorizedPeers, log, 
 
     const timer = setTimeout(async () => {
       _retries.delete(addr);
-
-      // If the peer authorized via some other path (incoming dial,
-      // peer-discovery, peer-announce), the chain's job is done.
-      const expectedPeerId = peerIdFromAddr(addr);
-      if (expectedPeerId && authorizedPeers.has(expectedPeerId)) return;
-
+      _dialing.add(addr);
       try {
-        await node.dial(await toMultiaddr(addr));
-        log.info(`Bootstrap connected: ${addr}`);
-        // Success — don't reschedule. peer:disconnect will restart.
-      } catch (err) {
-        // INFO not DEBUG so operators can see the retry chain without
-        // flipping log level. Bootstrap-down is the most common
-        // operator-visible network failure; keeping it silent at DEBUG
-        // masks the exact problem we're trying to diagnose.
-        log.info(`Bootstrap dial failed for ${addr}: ${err.message} — retrying in ${intervalMs}ms`);
-        _schedule(addr, intervalMs);
+        // If the peer authorized via some other path (incoming dial,
+        // peer-discovery, peer-announce), the chain's job is done.
+        const expectedPeerId = peerIdFromAddr(addr);
+        if (expectedPeerId && authorizedPeers.has(expectedPeerId)) return;
+
+        try {
+          await node.dial(await toMultiaddr(addr));
+          log.info(`Bootstrap connected: ${addr}`);
+          // Success , don't reschedule. peer:disconnect will restart.
+        } catch (err) {
+          // INFO not DEBUG so operators can see the retry chain without
+          // flipping log level. Bootstrap-down is the most common
+          // operator-visible network failure; keeping it silent at DEBUG
+          // masks the exact problem we're trying to diagnose.
+          log.info(`Bootstrap dial failed for ${addr}: ${err.message} , retrying in ${intervalMs}ms`);
+          _schedule(addr, intervalMs);
+        }
+      } finally {
+        _dialing.delete(addr);
       }
     }, delayMs);
 
     _retries.set(addr, timer);
   }
 
-  return {
-    /** Kick off the first attempt for every bootstrap peer. */
-    start() {
-      for (const addr of bootstrapPeers) _schedule(addr, 0);
-    },
+  /** Kick off the first attempt for every bootstrap peer. */
+  function start() {
+    for (const addr of bootstrapPeers) _schedule(addr, 0);
+  }
 
-    /** Cancel every pending retry. Called from network.stop(). */
-    stop() {
-      for (const timer of _retries.values()) clearTimeout(timer);
-      _retries.clear();
-    },
+  /** Cancel every pending retry. Called from network.stop(). */
+  function stop() {
+    for (const timer of _retries.values()) clearTimeout(timer);
+    _retries.clear();
+  }
 
-    /**
-     * Re-arm the retry chain for a bootstrap peer that just dropped.
-     * Caller passes the libp2p peerId from the peer:disconnect event;
-     * we match it against our bootstrap list by parsing /p2p/<id>.
-     */
-    onPeerDisconnect(peerId) {
-      for (const addr of bootstrapPeers) {
-        if (peerIdFromAddr(addr) === peerId) {
-          log.debug(`Bootstrap peer ${peerId.slice(0, 12)} dropped — scheduling reconnect`);
-          _schedule(addr, intervalMs);
-          break;
-        }
+  /**
+   * Re-arm the retry chain for a bootstrap peer that just dropped.
+   * Caller passes the libp2p peerId from the peer:disconnect event;
+   * we match it against our bootstrap list by parsing /p2p/<id>.
+   */
+  function onPeerDisconnect(peerId) {
+    for (const addr of bootstrapPeers) {
+      if (peerIdFromAddr(addr) === peerId) {
+        log.debug(`Bootstrap peer ${peerId.slice(0, 12)} dropped , scheduling reconnect`);
+        _schedule(addr, intervalMs);
+        break;
       }
-    },
-  };
+    }
+  }
+
+  // Safety net for the event-driven chains. A peer:disconnect that never fires
+  // (half-open transport, authorized map cleared without an event) leaves the
+  // node isolated with no timers pending and nothing to restart them. Caller
+  // polls this when peer count is zero.
+  function ensureRunning() {
+    let armed = 0;
+    for (const addr of bootstrapPeers) {
+      if (!_retries.has(addr) && !_dialing.has(addr)) { _schedule(addr, 0); armed++; }
+    }
+    if (armed > 0) log.warn(`Bootstrap reconnect re-armed for ${armed}/${bootstrapPeers.length} peers after finding no pending retry`);
+    return armed;
+  }
+
+  return { start, stop, onPeerDisconnect, ensureRunning };
 }
 
 module.exports = { createBootstrapReconnect };
