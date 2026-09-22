@@ -49,11 +49,20 @@ const { CONSENSUS } = require("../../../shared/protocol-constants");
 
 function processSection(config) {
   const mem = process.memoryUsage();
+  // Version stays off the sampled series: it is a label value that changes on
+  // every release, which would fork the time series and show one node twice for
+  // the whole lookback window. It lives on tip_node_build_info instead.
   const idLabels = {
     node_id: config.nodeRegisteredId || config.nodeId || "unknown",
-    version: config.nodeVersion || "0.0.0",
   };
   return [
+    // Which build a node is actually running. The version label is the release
+    // when the image was built by the tag workflow, the package version otherwise.
+    gauge("tip_node_build_info", "Build identity of this node, value is always 1. Labels carry the release version and the commit it was built from.", 1, {
+      node_id: idLabels.node_id,
+      version: config.nodeVersion || "unknown",
+      commit: (process.env.TIP_BUILD_COMMIT || "unknown").slice(0, 12),
+    }),
     gauge("tip_process_uptime_seconds", "Seconds since this node process started", Math.floor(process.uptime()), idLabels),
     ...(() => {
       // Disk visibility (2026-07-04 incident: silent disk-full caused state

@@ -179,13 +179,18 @@ describe("GET /metrics — Prometheus exposition format", () => {
     expect(res.text).toMatch(/^tip_narwhal_mempool_size\{node="tip:\/\/node\/self"\} 7$/m);
   });
 
-  test("labels are properly formatted (node_id, version, node)", async () => {
+  test("labels are properly formatted (node_id + injected node), and the version is not one of them", async () => {
     const app = makeApp({
       consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
     });
     const res = await request(app).get("/metrics");
-    // Uptime has node_id + version + injected node label.
-    expect(res.text).toMatch(/^tip_process_uptime_seconds\{node_id="tip:\/\/node\/self",version="2\.0\.0",node="tip:\/\/node\/self"\} \d+$/m);
+    expect(res.text).toMatch(/^tip_process_uptime_seconds\{node_id="tip:\/\/node\/self",node="tip:\/\/node\/self"\} \d+$/m);
+    // A label whose value changes every release would fork the series and show
+    // one node twice for the whole lookback window; version lives on the info
+    // metric instead (2026-09-18, seen on the test cluster).
+    const uptime = res.text.split("\n").find(l => l.startsWith("tip_process_uptime_seconds{"));
+    expect(uptime).not.toMatch(/version=/);
+    expect(res.text).toMatch(/^tip_node_build_info\{node_id="tip:\/\/node\/self",version="[^"]+",commit="[^"]*",node="tip:\/\/node\/self"\} 1$/m);
   });
 
   test("consensus_divergence_total is ALWAYS present and zero when healthy", async () => {
