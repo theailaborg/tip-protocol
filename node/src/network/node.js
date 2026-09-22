@@ -260,6 +260,10 @@ async function createNetworkNode(options = {}) {
   await node.handle(ctx.handshakeProtocol, (args) => handleIncoming(args, ctx));
   log.info(`Registered protocol handler: ${ctx.handshakeProtocol}`);
 
+  // Counts chains re-armed by the isolation backstop. A non-zero value means
+  // this node lost every peer with no retry pending and had to be restarted.
+  let _bootstrapRearms = 0;
+
   // Bootstrap reconnect — event-driven retry chains. See ./bootstrap-reconnect.js.
   const bootstrapReconnect = createBootstrapReconnect({
     node, bootstrapPeers, authorizedPeers: _authorizedPeers, log,
@@ -511,7 +515,14 @@ async function createNetworkNode(options = {}) {
     peerCount: () => _authorizedPeers.size,
 
     /** Re-arm bootstrap retry chains that have gone idle. Returns how many were armed. */
-    rearmBootstrap: () => bootstrapReconnect.ensureRunning(),
+    rearmBootstrap: () => {
+      const armed = bootstrapReconnect.ensureRunning();
+      _bootstrapRearms += armed;
+      return armed;
+    },
+
+    /** Total bootstrap chains re-armed by the isolation backstop since start. */
+    bootstrapRearms: () => _bootstrapRearms,
 
     /** Connected authorized peer IDs (libp2p peerId) */
     peers: () => [..._authorizedPeers.keys()],

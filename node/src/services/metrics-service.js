@@ -91,11 +91,20 @@ function processSection(config) {
  */
 function eventLoopSection() {
   const s = eventLoopMonitor.sample();
-  return [
+  const t = typeof eventLoopMonitor.totals === "function" ? eventLoopMonitor.totals() : null;
+  const out = [
     gauge("tip_process_event_loop_lag_max_ms", "Max event-loop delay over the last 1s window (ms)", s.max_ms),
     gauge("tip_process_event_loop_lag_p99_ms", "p99 event-loop delay over the last 1s window (ms)", s.p99_ms),
     gauge("tip_process_event_loop_lag_mean_ms", "Mean event-loop delay over the last 1s window (ms)", s.mean_ms),
-  ].join("\n");
+  ];
+  if (t) {
+    out.push(counter("tip_process_event_loop_lag_ms_sum", "Cumulative event-loop delay. The windowed gauges above cannot be averaged over a longer period; divide this by the _count series to get the mean over any window", t.delay_sum_ms));
+    out.push(counter("tip_process_event_loop_lag_ms_count", "Event-loop delay samples taken.", t.delay_count));
+    out.push(counter("tip_process_event_loop_active_ms_total", "Cumulative milliseconds the single consensus thread spent working rather than waiting.", t.active_ms));
+    out.push(counter("tip_process_event_loop_idle_ms_total", "Cumulative milliseconds the single consensus thread spent idle. With the active series this gives thread saturation over any window: rate(active)/(rate(active)+rate(idle)).", t.idle_ms));
+    out.push(gauge("tip_process_event_loop_utilization", "Fraction of wall clock the consensus thread spent working since the previous scrape (0 to 1). Sustained values near 1 mean the thread is saturated and will start missing network deadlines.", t.utilization));
+  }
+  return out.join("\n");
 }
 
 // Process-level error counters (process-error-handler). A family appears once
@@ -124,6 +133,33 @@ function processErrorSection() {
  * its certificates used as parents: a delay approaching the round time means
  * they arrive after the round they belong to has already closed.
  */
+/**
+ * Per-peer round-trip time, measured by the heartbeat ping/pong. Emitted as
+ * sum + count for a windowed average, plus the last sample. This is the only
+ * direct latency measurement the node makes, and the figure that decides
+ * whether its certificates can complete a round trip inside one round.
+ */
+function peerRttSection(stats) {
+  const byPeer = (stats && stats.heartbeat && stats.heartbeat.rtt) || {};
+  const peers = Object.keys(byPeer);
+  if (peers.length === 0) return null;
+  const out = [
+    "# HELP tip_peer_rtt_ms_sum Total heartbeat round-trip milliseconds to a peer. Divide by the _count series for the average.",
+    "# TYPE tip_peer_rtt_ms_sum counter",
+    "# HELP tip_peer_rtt_ms_count Heartbeat round trips sampled for this peer.",
+    "# TYPE tip_peer_rtt_ms_count counter",
+    "# HELP tip_peer_rtt_last_ms Most recent heartbeat round-trip time to this peer.",
+    "# TYPE tip_peer_rtt_last_ms gauge",
+  ];
+  for (const peer of peers) {
+    const e = byPeer[peer] || {};
+    out.push(line("tip_peer_rtt_ms_sum", Number(e.sumMs) || 0, { peer }));
+    out.push(line("tip_peer_rtt_ms_count", Number(e.count) || 0, { peer }));
+    out.push(line("tip_peer_rtt_last_ms", Number(e.lastMs) || 0, { peer }));
+  }
+  return out.join("\n");
+}
+
 function certArrivalSection(stats) {
   const byPeer = (stats && stats.narwhal && stats.narwhal.arrivalDelay) || {};
   const peers = Object.keys(byPeer);
@@ -210,6 +246,7 @@ function networkSection(network, dag) {
   out.push(counter("tip_network_rehandshakes_total", "Re-handshakes of connected-but-unauthorized peers", cm.rehandshakes));
   out.push(counter("tip_network_fast_reauths_total", "Reconnects authorized within the grace window without a full handshake", cm.fast_reauths));
   out.push(counter("tip_network_force_redials_total", "Transport rebuilds (force-close + re-dial) after sustained one-directional send failures to a peer", cm.force_redials));
+  out.push(counter("tip_network_bootstrap_rearms_total", "Bootstrap retry chains re-armed by the isolation backstop. Non-zero means this node lost every peer with no retry pending, which before the backstop left it isolated indefinitely", (typeof network.bootstrapRearms === "function" ? network.bootstrapRearms() : 0)));
 
   // Per-peer outbound delivery health: a peer whose send failures climb (or whose
   // last-ok age grows) while it stays connected is the silent one-directional
@@ -678,6 +715,8 @@ function createMetricsService({ dag, config, consensus, network }) {
       sections.push(committeeSection(stats, dag));   // §4 + #34
       const arrivalBlock = certArrivalSection(stats);
       if (arrivalBlock) sections.push(arrivalBlock);
+      const rttBlock = peerRttSection(stats);
+      if (rttBlock) sections.push(rttBlock);
       const merkleBlock = merkleRootSection(stats);
       if (merkleBlock) sections.push(merkleBlock);
     }
