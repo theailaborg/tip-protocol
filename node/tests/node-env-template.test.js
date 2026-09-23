@@ -12,7 +12,7 @@
 
 const path = require("path");
 const fs = require("fs");
-const { renderEnvFromExample } = require(path.resolve(__dirname, "../../scripts/node-env-template"));
+const { renderEnvFromExample, productionEnvDefaults } = require(path.resolve(__dirname, "../../scripts/node-env-template"));
 
 const CREDENTIALS = [
   "TIP_CLASSIFIER_KEY",
@@ -78,5 +78,73 @@ describe("register-node.js does not inherit the operator's environment", () => {
     const src = fs.readFileSync(path.resolve(__dirname, "../../scripts/register-node.js"), "utf8");
     const read = [...src.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1]);
     expect([...new Set(read)].filter((k) => !ALLOWED.has(k))).toEqual([]);
+  });
+});
+
+// .env.example documents dev defaults. Every one of them is wrong on a live
+// node, and before this overlay existed they followed a partner into
+// production: a localhost classifier, '*' CORS, heuristic verdicts when the
+// classifier is down, and data/log paths under the GENERATING machine's folder.
+describe("productionEnvDefaults", () => {
+  const prod = productionEnvDefaults();
+
+  test("pins the values the mainnet fleet actually runs", () => {
+    expect(prod.NODE_ENV).toBe("production");
+    expect(prod.TIP_CLASSIFIER_URL).toBe("https://tipclassifier.theailab.org");
+    expect(prod.TIP_PRESCAN_CONCURRENCY).toBe("4");
+    expect(prod.TIP_RATE_LIMIT_MAX).toBe("1000");
+  });
+
+  // 1 serves heuristic verdicts when the classifier is unreachable; the fleet
+  // turned that off after the breaker handed them out under load.
+  test("classifier fallback is strict, never the example's permissive 1", () => {
+    expect(prod.TIP_CLASSIFIER_FALLBACK).toBe("0");
+  });
+
+  test("CORS carries the federation origins and never the dev wildcard", () => {
+    expect(prod.TIP_CORS_ORIGINS.split(",")).toEqual([
+      "https://theailab.org",
+      "https://www.theailab.org",
+      "https://vp.theailab.org",
+    ]);
+    expect(prod.TIP_CORS_ORIGINS).not.toContain("*");
+  });
+
+  // WORKDIR=/app with ./data and ./logs/node-1 mounted; a generator-local path
+  // does not exist inside the container.
+  test("paths are container-relative, not generator-local", () => {
+    expect(prod.TIP_DATA_DIR).toBe("./data");
+    expect(prod.TIP_DB_PATH).toBe("./data/tip.db");
+    expect(prod.TIP_LOG_DIR).toBe("/app/node/logs");
+    for (const v of Object.values(prod)) expect(String(v)).not.toContain("generated/");
+  });
+
+  test("the key file resolves into the mounted read-only dir", () => {
+    const withKey = productionEnvDefaults({ credentialsFileName: "tip-node-abc123.tip.json" });
+    expect(withKey.TIP_NODE_CREDENTIALS_FILE).toBe("genesis-data/backups/tip-node-abc123.tip.json");
+  });
+
+  test("omits the key path entirely when no file name is supplied", () => {
+    expect(prod).not.toHaveProperty("TIP_NODE_CREDENTIALS_FILE");
+  });
+
+  // Per-node values belong to the caller: baking any of them in would hand
+  // every partner the same bucket, database or identity.
+  test("carries no per-node value", () => {
+    for (const k of ["TIP_NODE_ID", "DB_NAME", "DB_PASSWORD", "TIP_PUBLIC_IP",
+      "TIP_MEDIA_S3_BUCKET", "TIP_CLASSIFIER_KEY", "TIP_METRICS_TOKEN"]) {
+      expect(prod).not.toHaveProperty(k);
+    }
+  });
+
+  test("renders through the template without tripping the credential backstop", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const out = renderEnvFromExample({ ...productionEnvDefaults({ credentialsFileName: "k.tip.json" }) });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+    expect(out).toMatch(/^TIP_CLASSIFIER_FALLBACK=0$/m);
+    expect(out).toMatch(/^TIP_RATE_LIMIT_MAX=1000$/m);
+    expect(out).toMatch(/^TIP_CORS_ORIGINS=https:\/\/theailab\.org,/m);
+    expect(out).not.toMatch(/^TIP_CORS_ORIGINS=\*$/m);
   });
 });
