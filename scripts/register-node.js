@@ -337,23 +337,23 @@ async function main() {
     result = { node_id: nodeId, name, registered_at: null, confirmation: "dry-run" };
     warn("--dry-run: skipping registration, rendering the env only");
   } else {
-  info("Registering node...");
-  try {
-    const postHeaders = forceHalted ? { "x-bootstrap-force": "1" } : {};
-    const response = await post(`${nodeUrl}/v1/node/register`, {
-      ...registrationFields,
-      council_signature: councilSignature,
-      ...(operatorSignature ? { operator_signature: operatorSignature } : {}),
-    }, postHeaders);
-    result = response.data || response;
-    ok(`Node registered: ${result.node_id}`);
-    label("Name", result.name);
-    label("Confirmation", result.confirmation || "registered");
-  } catch (err) {
-    fail(`Registration failed: ${err.message}`);
-    if (err.data) console.error("  ", JSON.stringify(err.data, null, 2));
-    process.exit(1);
-  }
+    info("Registering node...");
+    try {
+      const postHeaders = forceHalted ? { "x-bootstrap-force": "1" } : {};
+      const response = await post(`${nodeUrl}/v1/node/register`, {
+        ...registrationFields,
+        council_signature: councilSignature,
+        ...(operatorSignature ? { operator_signature: operatorSignature } : {}),
+      }, postHeaders);
+      result = response.data || response;
+      ok(`Node registered: ${result.node_id}`);
+      label("Name", result.name);
+      label("Confirmation", result.confirmation || "registered");
+    } catch (err) {
+      fail(`Registration failed: ${err.message}`);
+      if (err.data) console.error("  ", JSON.stringify(err.data, null, 2));
+      process.exit(1);
+    }
   }
 
   // 7. Resolve output directory now that we have a tip-id.
