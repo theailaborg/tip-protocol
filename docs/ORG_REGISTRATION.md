@@ -225,6 +225,16 @@ the browser and sends us only the public key, removes the delivery step entirely
 - **Leading zeros are part of the number.** `01234567` and `1234567` are different
   identities. Ask for the value "exactly as printed", and beware spreadsheets stripping
   zeros.
+- **Separators are ignored, characters are not.** Hyphens, spaces and dots are stripped
+  before the number is hashed, so a US EIN pasted the way the IRS prints it
+  (`32-0727201`) registers the same company as `320727201`. Paste the value as printed
+  and let the script normalise it. This is why a dropped leading zero still matters: the
+  script removes punctuation, never digits or letters.
+- **Nothing longer than 30 characters.** After separators are stripped the identifier
+  must fit in 30 characters, which is what the hash encodes. Longer values are refused
+  rather than truncated: two companies agreeing on the first 30 characters would
+  otherwise merge into a single permanent identity. Every listed scheme fits (an Indian
+  CIN is 21, an EIN 9); only the US state fallback can run over.
 - **Ask India entities whether they are a company or an LLP** before asking for a number.
 - **The inputs are permanent.** A one-character error yields a different hash, the proof
   still verifies, and the chain accepts it. The mistake is undetectable (the hash is
