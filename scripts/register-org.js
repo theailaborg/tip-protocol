@@ -64,6 +64,7 @@ const {
   generateTIPID,
 } = require("../shared/crypto");
 const { generateDedupProof } = require("../shared/zk");
+const { resolveIdScheme } = require("../shared/org-id-schemes");
 const registerIdentitySchema = require("../node/src/schemas/register-identity");
 const { loadVpBackup } = require("./genesis-backups");
 
@@ -133,56 +134,6 @@ Delivery: docs/REGISTRATION_AND_KEY_DISTRIBUTION.md section 5 , one AES-256 zip
 via scripts/make-secure-bundle.sh, password over a separate channel.
 `;
   fs.writeFileSync(path.join(partnerRoot, "README.md"), text);
-}
-
-// ─── Which identifier IS the company's identity, per jurisdiction ─────────────
-// The dedup hash is Poseidon(reg_no, incorporation_date, country). The circuit
-// cannot tell a company number from a tax number, so "one company = one
-// identity" only holds if every registration for a country derives reg_no the
-// same way. One Indian company legitimately holds a CIN, a PAN and several
-// GSTINs: each would mint a separate, permanent, un-reconcilable identity.
-//
-// So: exactly one accepted identifier per jurisdiction, and reject anything
-// that does not match its shape. A wrong value here cannot be detected later
-// (the hash is one-way) and cannot be corrected (the entry is committed).
-const ORG_ID_SCHEMES = Object.freeze({
-  GB: [{ key: "company", name: "company number (Companies House)", re: /^[A-Z0-9]{8}$/,
-         hint: "8 characters, keep leading zeros (e.g. 01234567). Not the VAT or UTR number" }],
-  IN: [{ key: "company", name: "CIN", re: /^[A-Z0-9]{21}$/,
-         hint: "21 characters (e.g. U74999MH2020PTC123456)" },
-       { key: "llp", name: "LLPIN", re: /^[A-Z0-9]{7}$/,
-         hint: "7 characters; LLPs are never issued a CIN" }],
-  US: [{ key: "company", name: "EIN (federal)", re: /^\d{9}$/,
-         hint: "9 digits, IRS-issued. NOT a state entity number: state numbers repeat across states" },
-       { key: "state", name: "namespaced state number", re: /^US-[A-Z]{2}-[A-Z0-9]+$/,
-         hint: "only when no EIN exists, e.g. US-DE-1234567" }],
-  AU: [{ key: "company", name: "ACN", re: /^\d{9}$/, hint: "9 digits" }],
-  FR: [{ key: "company", name: "SIREN", re: /^\d{9}$/, hint: "9 digits" }],
-  JP: [{ key: "company", name: "Corporate Number", re: /^\d{13}$/, hint: "13 digits" }],
-  DE: [{ key: "company", name: "court-qualified HRB/HRA", re: /^DE-HR[AB]-\d+-[A-Z]{2,5}$/,
-         hint: "HRB alone is only unique per local court, e.g. DE-HRB-12345-MUC" }],
-});
-
-// Returns the matching scheme, or throws with what the jurisdiction expects.
-// An unlisted country stops the run rather than guessing: adding a row is a
-// deliberate act (confirm whether that country has ONE national registry).
-function resolveIdScheme(country, regNumber) {
-  const schemes = ORG_ID_SCHEMES[country];
-  if (!schemes) {
-    throw new Error(
-      `no registration-number scheme defined for ${country}.\n` +
-      `    Add it to ORG_ID_SCHEMES after confirming that country's single national\n` +
-      `    company registry. Do not substitute a tax or state identifier.`);
-  }
-  const normalized = String(regNumber).trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
-  const hit = schemes.find(s => s.re.test(normalized));
-  if (!hit) {
-    const opts = schemes.map(s => `      ${s.name}: ${s.hint}`).join("\n");
-    throw new Error(
-      `"${regNumber}" is not a valid registration number for ${country}.\n` +
-      `    ${country} accepts:\n${opts}`);
-  }
-  return { ...hit, normalized };
 }
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
@@ -343,7 +294,10 @@ async function main() {
     private_key: keypair.privateKey,
     // Recorded so the dedup inputs stay auditable: they cannot be recovered
     // from the hash, and re-deriving them wrongly would mint a second identity.
+    // The canonical value is what was hashed; the as-provided form is kept so a
+    // later audit can read it back against the certificate it was copied from.
     registration_number: scheme.normalized,
+    registration_number_as_provided: regNumber,
     registration_scheme: scheme.name,
     incorporated,
     dedup_hash: dedupHash,

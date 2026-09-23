@@ -96,6 +96,10 @@ data.bak/
 node-2.env
 node-3.env
 node-*.env
+# Any stray node env. Partner envs (ss.env, <partner>.env) carry a live
+# classifier key and metrics token; one `git add -A` would publish them.
+# .env.example and *.env.example do not match this pattern.
+*.env
 
 # ─── Logs ─────────────────────────────────────────────────────────────────────
 logs/
