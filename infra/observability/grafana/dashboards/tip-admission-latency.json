@@ -76,7 +76,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "count(tip_committee_participation_pct_of_best < on() group_left() max(tip_committee_participation_pct_required)) or vector(0)",
+          "expr": "count(max by (member) (tip_committee_participation_pct_of_best) < on() group_left() max(tip_committee_participation_pct_required)) or vector(0)",
           "legendFormat": ""
         }
       ],
@@ -134,7 +134,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "tip_committee_participation_pct_of_best",
+          "expr": "max by (member) (tip_committee_participation_pct_of_best)",
           "legendFormat": "{{member}}"
         },
         {
@@ -474,7 +474,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(3 * (rate(tip_peer_rtt_ms_sum[5m]) / clamp_min(rate(tip_peer_rtt_ms_count[5m]), 0.001))) / clamp_min(1000 / clamp_min(rate(tip_narwhal_rounds_advanced_total[5m]), 0.001), 1)",
+          "expr": "(3 * (rate(tip_peer_rtt_ms_sum[5m]) / clamp_min(rate(tip_peer_rtt_ms_count[5m]), 0.001))) / on(node) group_left() clamp_min(1000 / clamp_min(rate(tip_narwhal_rounds_advanced_total[5m]), 0.001), 1)",
           "legendFormat": "{{node}} to {{peer}}"
         }
       ],
