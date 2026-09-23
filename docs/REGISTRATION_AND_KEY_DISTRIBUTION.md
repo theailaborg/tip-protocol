@@ -17,7 +17,7 @@ mint partner private keys.
 
 ## 1. Prerequisites on the registration machine
 
-- [ ] Repo cloned at latest `main`, `npm install` run at the **repo root** (Node 22+;
+- [ ] Repo cloned at latest `main`, `npm install` run at the **repo root** (Node 24+;
       workspaces hoist every dependency there , installing inside `node/` is wrong)
 - [ ] The **mainnet founding VP key file** (`tip-vp-....tip.json`) present locally,
       readable only by you (`chmod 600`). Referred to below as `<VP_KEY_FILE>`
@@ -25,6 +25,10 @@ mint partner private keys.
 - [ ] `7zz` installed for the bundle step (`brew install sevenzip` / `apt install 7zip`)
 - [ ] The live mainnet `TIP_CLASSIFIER_KEY` and `TIP_METRICS_TOKEN` values available
       (from the production node configuration, not from any test environment)
+- [ ] The fleet's `TIP_REG_CREDIT_CAP_ACTIVATION_MS`, read off a node already in the
+      network (`grep TIP_REG_CREDIT_CAP_ACTIVATION_MS .env`). It is a consensus
+      gate: a node that disagrees with the fleet forks, and nothing exposes it
+      over HTTP, so it can only be matched, never discovered
 
 ## 2. Gates , all must be true before anything is registered
 
@@ -140,6 +144,10 @@ twice: the founding VP approves the node, and the **organization cosigns**,
 because naming an operator is a claim about a third party , the org's own key
 must agree to it.
 
+Dry-run it first. `--dry-run` renders the env and prints the derived values
+without registering anything, which is the only chance to read the payload
+before it is permanent:
+
 ```bash
 node scripts/register-node.js \
   --name "<Partner> Node" \
@@ -150,10 +158,14 @@ node scripts/register-node.js \
   --vp-file <mainnet VP .tip.json> \
   --production \
   --port 4000 \
+  --reg-credit-activation-ms <fleet value from section 1> \
   --api-endpoint "https://<their-node-domain>" \
   --public-url "https://<their-node-domain>" \
-  --public-ip <their-static-ip>
+  --public-ip <their-static-ip> \
+  --dry-run
 ```
+
+Then the real run: the same command with `--dry-run` removed.
 
 Flag by flag:
 
@@ -165,7 +177,9 @@ Flag by flag:
 | `--production` | `NODE_ENV=production` in the generated env; CORS must be filled by the partner, never `*` |
 | `--port` | the partner's node serves API on 4000 (p2p follows on 4001); the script default is 4100, which is for extra local nodes |
 | `--api-endpoint` | their domain; the node announces it **on-chain** at first boot after probing that the URL answers `/health` as itself |
-| `--public-url` / `--public-ip` | what the API surfaces / what peers dial back |
+| `--public-url` / `--public-ip` | what the API surfaces / what peers dial back. Omitted under `--production` they become `CHANGE_ME` placeholders rather than silently shipping `localhost` / `127.0.0.1` |
+| `--reg-credit-activation-ms` | the fleet's consensus gate from section 1. Omitted, the node falls back to a code constant that a fleet with a pinned activation is **not** running, and the mismatch forks it. The script warns when `--production` runs without it |
+| `--dry-run` | render and print, register nothing |
 
 The script generates the env **only** from `.env.example` plus these flags , it
 reads nothing from your shell, so nothing from the registration machine can leak
@@ -226,22 +240,65 @@ build. The `NODE-KEY__` / `ORG-IDENTITY__` prefixes exist so the partner cannot
 confuse the two: the node key lives on the node host; the org identity stays
 **off** the node host entirely.
 
+**Where each file has to end up.** The zip is flat; the node will not find the
+key where it lands. `node.env` sets
+
+```
+TIP_NODE_CREDENTIALS_FILE=genesis-data/backups/tip-node-<id>.tip.json
+```
+
+so the key must be moved there, renamed back (drop the `NODE-KEY__` prefix), and
+given to uid 1001, which is the container user. `docker-compose.yml` mounts that
+directory read-only at `/app/genesis-data/backups`, and `WORKDIR` is `/app`, so
+the relative path resolves onto the mount:
+
+```bash
+cd ~/tip-protocol
+cp <bundle>/NODE-KEY__tip-node-<id>.tip.json genesis-data/backups/tip-node-<id>.tip.json
+cp <bundle>/node.env .env                 # compose reads .env, not node.env
+mkdir -p data logs/node-1
+sudo chown -R 1001:1001 genesis-data/backups data logs
+sudo chmod 600 genesis-data/backups/tip-node-<id>.tip.json
+```
+
+A key left in the home directory, or owned by root, boots to a fail-stop: the
+node cannot read its own identity. The org identity is NOT copied to this host.
+
 ### 6.2 Hand-fill the secrets in `node.env`
 
-The generator leaves these empty on purpose , edit
+`--production` already writes the federation-wide values: classifier URL, CORS
+origins, strict classifier fallback, the mainnet rate limit and prescan
+concurrency, and container-relative data/log paths. `node-env-template.js`
+refuses to write credentials at all, so those stay hand work. Edit
 `generated/<partner>/node/<slug>.env` **before** building the zip (the bundler
-warns on empty values but does not fail). Fill in:
+warns on empty values but does not fail):
 
-- `TIP_CLASSIFIER_KEY` , the live production classifier key
+- `TIP_CLASSIFIER_KEY` , the live production classifier key. Prefer one minted
+  for this node rather than the shared key: a shared key cannot be revoked
+  without rotating every node at once
 - `TIP_METRICS_TOKEN` , the production metrics token (a 64-char random value; a
   token starting `certtest` is a test-network token and must never appear here)
 - `TIP_BOOTSTRAP_PEERS` , **verify, usually auto-filled**: the generator reads it
   from the `--node-url` target's `/health`. If the run warned it could not, fill
   it from `curl -s https://node2.theailab.org/health` → `data.p2p.bootstrap_addr`
+- `TIP_REG_CREDIT_CAP_ACTIVATION_MS` , must equal the fleet's value. Written for
+  you by `--reg-credit-activation-ms`; confirm it is present and matches
 
-Confirm `TIP_API_ENDPOINT` and `TIP_PUBLIC_URL` carry their domain,
-`DB_PASSWORD` and `TIP_CORS_ORIGINS` are `CHANGE_ME` placeholders, and nothing
-else carries a live value.
+Then confirm the placeholders are still placeholders and nothing carries a value
+it should not:
+
+```bash
+grep -E '^(TIP_PUBLIC_IP|TIP_PUBLIC_URL|DB_PASSWORD|TIP_CORS_ORIGINS|TIP_CLASSIFIER_FALLBACK|TIP_REG_CREDIT_CAP_ACTIVATION_MS)=' <slug>.env
+```
+
+`TIP_PUBLIC_IP`, `TIP_PUBLIC_URL` and `DB_PASSWORD` read `CHANGE_ME_*` unless you
+passed them explicitly; `TIP_CLASSIFIER_FALLBACK` must be `0`.
+
+**Media storage is not in the env.** Every mainnet node writes media to its own
+S3 bucket with SSE-KMS; the generated env ships `TIP_MEDIA_BACKEND=fs`, which
+writes media bytes to the node disk instead. Provision the bucket, KMS key and
+instance role per [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md) and set the four
+`TIP_MEDIA_S3_*` values before the node serves real traffic.
 
 ### 6.3 Build the encrypted zip
 
@@ -271,9 +328,16 @@ Email wording: `partner-onboarding-emails.html`, mainnet card.
 
 ## 7. Partner boots, we verify
 
-Partner side: `DEPLOYMENT.md`, section *Production Federation Deploy (0 to
-live)*. The two classic stumbles are in the email template: the container runs
-as uid 1001, and `logs/` must be chown'd before first boot.
+Partner side: `DEPLOYMENT.md`, section *[Joining an Existing Federation (partner
+node)](./DEPLOYMENT.md#joining-an-existing-federation-partner-node)*. Not
+*Production Federation Deploy*, which is a cold start for a new chain and tells
+them to seed. The three classic stumbles: the container runs as uid 1001,
+`logs/` must be chown'd before first boot, and the node key has to be moved into
+`genesis-data/backups/` where `TIP_NODE_CREDENTIALS_FILE` points.
+
+**They must never run `scripts/seed.js`.** It mints a fresh genesis, and a node
+whose `genesis_hash` differs cannot handshake with anyone. It presents as zero
+peers and a permanent `syncing`, not as an error.
 
 Our side , four checks, in this order. Each proves something different:
 
