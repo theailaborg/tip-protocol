@@ -148,3 +148,29 @@ describe("productionEnvDefaults", () => {
     expect(out).not.toMatch(/^TIP_CORS_ORIGINS=\*$/m);
   });
 });
+
+// A relative TIP_LOG_DIR resolves against the container's WORKDIR (/app), not
+// against the bind-mount, so `./logs/node-1` silently writes to /app/logs/node-1
+// and the logs never leave the container. A partner lost a week of shipping to
+// this. Pin the production value against what compose actually mounts.
+describe("TIP_LOG_DIR matches the docker-compose mount", () => {
+  const compose = fs.readFileSync(path.resolve(__dirname, "../../docker-compose.yml"), "utf8");
+
+  test("production writes to the path compose bind-mounts", () => {
+    const mount = compose.match(/^\s*-\s*\.\/logs\/[^:]+:(\S+)\s*$/m);
+    expect(mount).not.toBeNull();
+    expect(productionEnvDefaults().TIP_LOG_DIR).toBe(mount[1]);
+  });
+
+  test("production value is absolute, never relative", () => {
+    expect(productionEnvDefaults().TIP_LOG_DIR.startsWith("/")).toBe(true);
+  });
+
+  // Unset is correct for both Docker and native: the logger falls back to
+  // <repo>/node/logs, which is the same path compose mounts.
+  test(".env.example ships TIP_LOG_DIR commented out, not set to a relative path", () => {
+    const ex = fs.readFileSync(path.resolve(__dirname, "../../.env.example"), "utf8");
+    expect(ex).not.toMatch(/^TIP_LOG_DIR=\.\//m);
+    expect(ex).toMatch(/^#\s*TIP_LOG_DIR=/m);
+  });
+});
