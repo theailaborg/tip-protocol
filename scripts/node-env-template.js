@@ -80,12 +80,17 @@ function renderEnvFromExample(overrides, opts = {}) {
 const FEDERATION_CORS_ORIGINS = "https://theailab.org,https://www.theailab.org,https://vp.theailab.org";
 const FEDERATION_CLASSIFIER_URL = "https://tipclassifier.theailab.org";
 
-// docker-compose mounts ./data at /app/data and ./logs/node-1 at /app/node/logs
-// with WORKDIR=/app, and the key file read-only at genesis-data/backups.
+// docker-compose mounts ./data at /app/data with WORKDIR=/app, and the key file
+// read-only at genesis-data/backups.
+//
+// TIP_LOG_DIR is deliberately absent. Every compose file mounts its per-node host
+// directory at the SAME container path, /app/node/logs, so separation happens on
+// the host side. Unset, the logger resolves to <repo>/node/logs, which IS that
+// path in a container and is also correct natively. Setting it to a relative
+// value resolves against /app instead and silently writes to an unmounted dir.
 const PRODUCTION_PATHS = Object.freeze({
   TIP_DATA_DIR: "./data",
   TIP_DB_PATH: "./data/tip.db",
-  TIP_LOG_DIR: "/app/node/logs",
   CREDENTIALS_DIR: "genesis-data/backups",
 });
 
@@ -107,7 +112,6 @@ function productionEnvDefaults({ credentialsFileName } = {}) {
     TIP_RATE_LIMIT_MAX: "1000",
     TIP_DATA_DIR: PRODUCTION_PATHS.TIP_DATA_DIR,
     TIP_DB_PATH: PRODUCTION_PATHS.TIP_DB_PATH,
-    TIP_LOG_DIR: PRODUCTION_PATHS.TIP_LOG_DIR,
     ...(credentialsFileName
       ? { TIP_NODE_CREDENTIALS_FILE: `${PRODUCTION_PATHS.CREDENTIALS_DIR}/${credentialsFileName}` }
       : {}),

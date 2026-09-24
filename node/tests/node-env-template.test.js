@@ -110,12 +110,11 @@ describe("productionEnvDefaults", () => {
     expect(prod.TIP_CORS_ORIGINS).not.toContain("*");
   });
 
-  // WORKDIR=/app with ./data and ./logs/node-1 mounted; a generator-local path
-  // does not exist inside the container.
+  // WORKDIR=/app with ./data mounted; a generator-local path does not exist
+  // inside the container. TIP_LOG_DIR is covered separately: it must stay unset.
   test("paths are container-relative, not generator-local", () => {
     expect(prod.TIP_DATA_DIR).toBe("./data");
     expect(prod.TIP_DB_PATH).toBe("./data/tip.db");
-    expect(prod.TIP_LOG_DIR).toBe("/app/node/logs");
     for (const v of Object.values(prod)) expect(String(v)).not.toContain("generated/");
   });
 
@@ -153,24 +152,40 @@ describe("productionEnvDefaults", () => {
 // against the bind-mount, so `./logs/node-1` silently writes to /app/logs/node-1
 // and the logs never leave the container. A partner lost a week of shipping to
 // this. Pin the production value against what compose actually mounts.
-describe("TIP_LOG_DIR matches the docker-compose mount", () => {
-  const compose = fs.readFileSync(path.resolve(__dirname, "../../docker-compose.yml"), "utf8");
+describe("TIP_LOG_DIR is never written into a generated env", () => {
+  // Every compose file mounts its per-node host directory at the SAME container
+  // path, so separation is a host-side concern. Unset, the logger resolves to
+  // <repo>/node/logs, which is that path inside a container and correct natively.
+  // A relative value resolves against WORKDIR /app instead and writes to an
+  // unmounted directory: a partner lost a week of log shipping to exactly this.
+  const composes = ["../../docker-compose.yml", "../../docker-compose.local.yml"]
+    .map((f) => fs.readFileSync(path.resolve(__dirname, f), "utf8"));
 
-  test("production writes to the path compose bind-mounts", () => {
-    const mount = compose.match(/^\s*-\s*\.\/logs\/[^:]+:(\S+)\s*$/m);
-    expect(mount).not.toBeNull();
-    expect(productionEnvDefaults().TIP_LOG_DIR).toBe(mount[1]);
+  test("every compose mounts logs at one container path", () => {
+    const targets = new Set();
+    for (const c of composes) {
+      for (const m of c.matchAll(/^\s*-\s*\.\/[^:\s]*logs[^:\s]*:(\S+)\s*$/gm)) targets.add(m[1]);
+    }
+    expect([...targets]).toEqual(["/app/node/logs"]);
   });
 
-  test("production value is absolute, never relative", () => {
-    expect(productionEnvDefaults().TIP_LOG_DIR.startsWith("/")).toBe(true);
+  test("the production overlay does not set it", () => {
+    expect(productionEnvDefaults()).not.toHaveProperty("TIP_LOG_DIR");
   });
 
-  // Unset is correct for both Docker and native: the logger falls back to
-  // <repo>/node/logs, which is the same path compose mounts.
-  test(".env.example ships TIP_LOG_DIR commented out, not set to a relative path", () => {
+  test(".env.example ships it commented out, not as a relative path", () => {
     const ex = fs.readFileSync(path.resolve(__dirname, "../../.env.example"), "utf8");
     expect(ex).not.toMatch(/^TIP_LOG_DIR=\.\//m);
     expect(ex).toMatch(/^#\s*TIP_LOG_DIR=/m);
+  });
+
+  test("a rendered env leaves it unset", () => {
+    const out = renderEnvFromExample({ ...productionEnvDefaults({ credentialsFileName: "k.tip.json" }) });
+    expect(out).not.toMatch(/^TIP_LOG_DIR=.+$/m);
+  });
+
+  test("register-node.js emits no TIP_LOG_DIR override", () => {
+    const src = fs.readFileSync(path.resolve(__dirname, "../../scripts/register-node.js"), "utf8");
+    expect(src).not.toMatch(/TIP_LOG_DIR\s*:/);
   });
 });
