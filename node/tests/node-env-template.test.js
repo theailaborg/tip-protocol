@@ -184,8 +184,9 @@ describe("TIP_LOG_DIR is never written into a generated env", () => {
     expect(out).not.toMatch(/^TIP_LOG_DIR=.+$/m);
   });
 
-  test("register-node.js emits no TIP_LOG_DIR override", () => {
-    const src = fs.readFileSync(path.resolve(__dirname, "../../scripts/register-node.js"), "utf8");
+  // Both generators, not just one: seed.js writes the founding cluster's envs.
+  test.each(["register-node.js", "seed.js"])("%s emits no TIP_LOG_DIR override", (f) => {
+    const src = fs.readFileSync(path.resolve(__dirname, "../../scripts", f), "utf8");
     expect(src).not.toMatch(/TIP_LOG_DIR\s*:/);
   });
 });
