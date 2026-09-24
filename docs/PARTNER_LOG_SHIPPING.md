@@ -94,9 +94,16 @@ directory:
 - ../../../logs/node-1:/tip-logs:ro
 ```
 
-That path must match what your node writes. It is the host directory your node's
-compose file mounts at `/app/node/logs`, which follows `TIP_LOG_DIR` in your
-`.env`. If your node uses a different name, change `node-1` to match.
+That path must match what your node writes. It is the host side of the mount
+your node's compose file makes at `/app/node/logs`. If your node uses a
+different directory name, change `node-1` to match.
+
+**Check `TIP_LOG_DIR` in your `.env` is not set.** Left unset, the node writes
+to `/app/node/logs`, which is the mounted path. If it is set to a relative path
+such as `./logs/node-1`, that resolves against the container's working
+directory `/app`, giving `/app/logs/node-1`, which is **not** mounted. Your logs
+then stay inside the container, disappear when it is recreated, and never reach
+us. Comment the line out and restart the node.
 
 Then start it:
 

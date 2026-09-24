@@ -110,12 +110,11 @@ describe("productionEnvDefaults", () => {
     expect(prod.TIP_CORS_ORIGINS).not.toContain("*");
   });
 
-  // WORKDIR=/app with ./data and ./logs/node-1 mounted; a generator-local path
-  // does not exist inside the container.
+  // WORKDIR=/app with ./data mounted; a generator-local path does not exist
+  // inside the container. TIP_LOG_DIR is covered separately: it must stay unset.
   test("paths are container-relative, not generator-local", () => {
     expect(prod.TIP_DATA_DIR).toBe("./data");
     expect(prod.TIP_DB_PATH).toBe("./data/tip.db");
-    expect(prod.TIP_LOG_DIR).toBe("/app/node/logs");
     for (const v of Object.values(prod)) expect(String(v)).not.toContain("generated/");
   });
 
@@ -146,5 +145,48 @@ describe("productionEnvDefaults", () => {
     expect(out).toMatch(/^TIP_RATE_LIMIT_MAX=1000$/m);
     expect(out).toMatch(/^TIP_CORS_ORIGINS=https:\/\/theailab\.org,/m);
     expect(out).not.toMatch(/^TIP_CORS_ORIGINS=\*$/m);
+  });
+});
+
+// A relative TIP_LOG_DIR resolves against the container's WORKDIR (/app), not
+// against the bind-mount, so `./logs/node-1` silently writes to /app/logs/node-1
+// and the logs never leave the container. A partner lost a week of shipping to
+// this. Pin the production value against what compose actually mounts.
+describe("TIP_LOG_DIR is never written into a generated env", () => {
+  // Every compose file mounts its per-node host directory at the SAME container
+  // path, so separation is a host-side concern. Unset, the logger resolves to
+  // <repo>/node/logs, which is that path inside a container and correct natively.
+  // A relative value resolves against WORKDIR /app instead and writes to an
+  // unmounted directory: a partner lost a week of log shipping to exactly this.
+  const composes = ["../../docker-compose.yml", "../../docker-compose.local.yml"]
+    .map((f) => fs.readFileSync(path.resolve(__dirname, f), "utf8"));
+
+  test("every compose mounts logs at one container path", () => {
+    const targets = new Set();
+    for (const c of composes) {
+      for (const m of c.matchAll(/^\s*-\s*\.\/[^:\s]*logs[^:\s]*:(\S+)\s*$/gm)) targets.add(m[1]);
+    }
+    expect([...targets]).toEqual(["/app/node/logs"]);
+  });
+
+  test("the production overlay does not set it", () => {
+    expect(productionEnvDefaults()).not.toHaveProperty("TIP_LOG_DIR");
+  });
+
+  test(".env.example ships it commented out, not as a relative path", () => {
+    const ex = fs.readFileSync(path.resolve(__dirname, "../../.env.example"), "utf8");
+    expect(ex).not.toMatch(/^TIP_LOG_DIR=\.\//m);
+    expect(ex).toMatch(/^#\s*TIP_LOG_DIR=/m);
+  });
+
+  test("a rendered env leaves it unset", () => {
+    const out = renderEnvFromExample({ ...productionEnvDefaults({ credentialsFileName: "k.tip.json" }) });
+    expect(out).not.toMatch(/^TIP_LOG_DIR=.+$/m);
+  });
+
+  // Both generators, not just one: seed.js writes the founding cluster's envs.
+  test.each(["register-node.js", "seed.js"])("%s emits no TIP_LOG_DIR override", (f) => {
+    const src = fs.readFileSync(path.resolve(__dirname, "../../scripts", f), "utf8");
+    expect(src).not.toMatch(/TIP_LOG_DIR\s*:/);
   });
 });

@@ -221,8 +221,9 @@ DB_USER=tip
 DB_PASSWORD=<db-password>
 ```
 
-The delivered `.env` already sets `TIP_DATA_DIR`, `TIP_DB_PATH`, and
-`TIP_LOG_DIR` to per-node paths. Leave those as delivered.
+The delivered `.env` already sets `TIP_DATA_DIR` and `TIP_DB_PATH` to
+container paths. Leave those as delivered, and leave `TIP_LOG_DIR` unset: the
+node then writes to `/app/node/logs`, which is the directory compose mounts.
 
 **Step 4.** Open the firewall:
 - `PORT` (REST API)
@@ -361,9 +362,10 @@ generated_nodes/<slug>-<short-id>/
 
 The generated `.env` mirrors `.env.example` exactly (same sections, same
 defaults) with the node's values overlaid: identity, ports, bootstrap
-multiaddr, `TIP_NODE_CREDENTIALS_FILE`, per-node `TIP_DATA_DIR` /
-`TIP_LOG_DIR`, and the DB settings carried from the machine that ran the
-script (postgres by default).
+multiaddr, `TIP_NODE_CREDENTIALS_FILE`, per-node `TIP_DATA_DIR`, and the DB
+settings carried from the machine that ran the script (postgres by default).
+`TIP_LOG_DIR` is deliberately left unset, so the node writes to the directory
+every compose file mounts.
 
 **Start a generated node:**
 
@@ -407,7 +409,8 @@ live in `scripts/README.md`.
 | `No bootstrap peers configured — discovery via mDNS only` | `TIP_BOOTSTRAP_PEERS` is empty. Founding nodes leave this empty intentionally; everyone else needs the founding node's `bootstrap_addr` here. |
 | `joinState` stuck at `syncing` or `catching_up` | Bootstrap peer unreachable, or it is itself behind — check firewall, DNS, and the upstream peer's `/health`. |
 | `DB connection error` (Postgres / MariaDB / Oracle) | For Docker, set `DB_HOST` to the **service name** (`postgres`, `mariadb`, `oracle`) not `localhost`. For native runs on the host, `localhost` is correct. |
-| Multiple generated nodes sharing one `node/logs/` | `TIP_LOG_DIR` not set in the node's `.env`. Re-generate with the latest `register-node.js` (logs default to `./logs/<slug>-<short-id>`). |
+| Logs never reach the host or Loki | `TIP_LOG_DIR` is set to a **relative** path. Under Docker that resolves against `WORKDIR=/app`, so `./logs/node-1` becomes `/app/logs/node-1`, which is not the mount. Comment the line out and restart; unset resolves to `/app/node/logs`, which is. |
+| Multiple nodes sharing one `node/logs/` | Only possible running several nodes **natively** on one host; under Docker each container has its own. Give each native node an **absolute** `TIP_LOG_DIR`. |
 
 ---
 
@@ -419,7 +422,7 @@ live in `scripts/README.md`.
 | `TIP_NODE_CREDENTIALS_FILE=genesis-data/backups/<id>.tip.json` | `TIP_NODE_CREDENTIALS_FILE=generated_nodes/<slug>/<id>.tip.json` |
 | `TIP_BOOTSTRAP_PEERS` empty (node1) or node1's multiaddr | `TIP_BOOTSTRAP_PEERS=<a healthy node's bootstrap_addr>` |
 | `PORT=4000`, `TIP_P2P_PORT=4001` | `PORT=<assigned>`, `TIP_P2P_PORT=<assigned>` |
-| `TIP_DATA_DIR=./data`, `TIP_LOG_DIR` per node | per-node `./generated_nodes/<slug>/data` + `./logs/<slug>` |
+| `TIP_DATA_DIR=./data`, `TIP_LOG_DIR` unset | per-node `./generated_nodes/<slug>/data`; `TIP_LOG_DIR` unset (host mount separates them) |
 | Operator-set: `TIP_PUBLIC_IP`, `TIP_PUBLIC_URL`, `TIP_CORS_ORIGINS`, `DB_DRIVER` + DB credentials | Same |
 
 ---
