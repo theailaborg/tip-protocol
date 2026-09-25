@@ -1386,10 +1386,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_joinState !== "catching_up" || _catchingUpEnteredAt === 0) return;
     const elapsed = nowMs() - _catchingUpEnteredAt;
     if (elapsed <= STUCK_CATCHING_UP_MS) return;
-    // The tail is complete; only the promotion assertion (a sync-status poll
-    // that matches roots) is pending. On a congested link those polls time
-    // out for a while. Reverting here threw away a finished install and
-    // started another multi-minute snapshot: the slow-link join loop.
+    // Tail complete, only the promotion poll pending; reverting here restarted
+    // a multi-minute snapshot on slow links.
     if (dag.getLatestRound() >= _catchUpTarget) {
       if (!_tailCompleteLogged) {
         log.info(`Watchdog: cert tail reached target ${_catchUpTarget} after ${Math.floor(elapsed / 1000)}s; holding catching_up until a peer confirms the state root`);

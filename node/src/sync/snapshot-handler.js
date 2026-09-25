@@ -128,6 +128,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   let _activeServes = 0;
   const _activeServeStreams = new Map();  // remotePeer → live serve stream (stale-serve replacement)
   const _certPins = new Map();            // remotePeer → { fromRound, since }: certs this joiner still needs
+  const _draining = new Map();            // remotePeer → until ms: "sent", tail still in flight to the joiner
   let _lastInstallSource = null;          // libp2p peer the last successful install came from
   const MAX_CONCURRENT_SERVES = 1;
 
@@ -388,6 +389,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // sender). The two #49 full-history roots are stream-computed while
     // emitting rows and shipped in SnapshotEnd — single pass over each table.
     let _servedBytes = 0;
+    const _serveStartedAt = nowMs();
     let stateRowsSent = 0;
     let txRowsSent = 0;
     let commitRowsSent = 0;
@@ -411,9 +413,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // that gap and triggered deferred-commit/forced-partial-commit divergence.
     const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
-    // The joiner's catch-up starts right after this tail, however long the
-    // download takes; GC must keep that range for it (see certRetentionFloor).
-    _certPins.set(remotePeer, { fromRound: certToRound + 1, since: nowMs() });
+    _certPins.set(remotePeer, { fromRound: certToRound + 1, since: nowMs() });   // GC keeps the joiner's catch-up range
     _activeServes++;
     _activeServeStreams.set(remotePeer, stream);
     // Serve-side stall guard (mirrors the client's): an abandoned stream leaves
@@ -570,6 +570,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       if (_activeServeStreams.get(remotePeer) === stream) _activeServeStreams.delete(remotePeer);
     }
 
+    // "sent" is handed to the kernel; the tail still needs INFLIGHT_BOUND / rate to land.
+    const rate = _servedBytes / Math.max(1, nowMs() - _serveStartedAt);   // bytes per ms
+    const drainMs = Math.min(SNAPSHOT_SERVE.DRAIN_GRACE_MAX_MS,
+      Math.max(SNAPSHOT_SERVE.DRAIN_GRACE_MIN_MS, SNAPSHOT_SERVE.INFLIGHT_BOUND_BYTES / Math.max(rate, 1e-6)));
+    _draining.set(remotePeer, nowMs() + drainMs);
     _metrics.serves_completed = (_metrics.serves_completed || 0) + 1;
     _metrics.last_serve_bytes = _servedBytes;
     _metrics.last_serve_rows = stateRowsSent + txRowsSent + commitRowsSent
@@ -583,17 +588,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   }
 
   function isServingTo(peerId) {
-    return _activeServeStreams.has(peerId);
+    if (_activeServeStreams.has(peerId)) return true;
+    const until = _draining.get(peerId);
+    if (until === undefined) return false;
+    if (nowMs() < until) return true;
+    _draining.delete(peerId);
+    return false;
   }
 
   // ── Cert retention pins (sender side) ───────────────────────────────────
-  // A snapshot only covers up to its cert tail; the joiner needs everything
-  // after it once the install lands. GC_DEPTH (500 rounds, minutes) is shorter
-  // than a slow-link download, so without a pin the source has already pruned
-  // that range and answers snapshot_required: the joiner loops on snapshots
-  // forever. The pin lives exactly as long as the joiner's need: it moves up
-  // with each catch-up request and is dropped by a new snapshot request from
-  // the same peer (superseded) or by the leak-guard bound.
+  // A slow download outlasts GC_DEPTH; without the pin the source has pruned the
+  // joiner's catch-up range and answers snapshot_required, and the joiner loops.
   function _prunePins() {
     const cutoff = nowMs() - SNAPSHOT_SERVE.CERT_PIN_MAX_MS;
     for (const [peer, pin] of _certPins) if (pin.since < cutoff) _certPins.delete(peer);
@@ -609,6 +614,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
   /** The joiner asked for certs from `fromRound`: it holds everything below. */
   function advanceCertPin(peerId, fromRound) {
+    _draining.delete(peerId);
     const pin = _certPins.get(peerId);
     if (!pin) return;
     if (fromRound > pin.fromRound) pin.fromRound = fromRound;
@@ -1651,9 +1657,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
      *  Lets anti-entropy avoid interrupting an in-flight install (which would
      *  leave partial state and fail the state-root verify). */
     isInstalling: () => _snapInstallInProgress,
-    // The sender's heartbeat pings cross the same saturated path as the stream it
-    // is serving, so they time out too. Evicting the joiner mid-serve on a "dead
-    // peer" verdict is the same mistake as the client-side abort, from the other end.
+    // The sender's pings share the saturated path; evicting mid-serve kills the transfer.
     isServingTo,
     certRetentionFloor,
     advanceCertPin,

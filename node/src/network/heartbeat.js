@@ -32,6 +32,7 @@
 "use strict";
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
+const { HEARTBEAT_INBOUND_SILENCE_MS } = require("../../../shared/constants");
 const { nowMs } = require("../../../shared/time");
 const { encode, decode } = require("./proto");
 const { getLogger } = require("../logger");
@@ -49,14 +50,8 @@ const log = getLogger("tip.heartbeat");
  * @param {Object}   [options.log]               Override logger
  * @returns {{ start, stop, registerHandler, peerStates, rttStats, forgive }}
  *
- * A miss means our probe did not complete in HEARTBEAT_TIMEOUT_MS, which on a
- * congested path (a snapshot in flight, gossip above the link rate) is queueing,
- * not death. The peer's own pings reaching us are direct evidence it is alive,
- * so the suspect verdict needs both: our probes failing AND its pings absent
- * for the whole span of the misses that form the verdict. That span, not a
- * constant, is the window: under congestion both sides' probes slow down
- * together (a stream open that times out stretches every tick), and a fixed
- * window shorter than the peer's stretched cadence evicted a live joiner.
+ * A miss on a congested path is queueing, not death: the verdict needs our
+ * probes failing AND the peer's own pings absent (see _aliveInbound).
  */
 function createHeartbeatManager({
   network,
@@ -110,13 +105,12 @@ function createHeartbeatManager({
     _log.debug(`heartbeat: ping from ${peerId.slice(0, 12)}`);
   }
 
-  // The peer pinged us since the first of the SUSPECT_MISSES misses now under
-  // judgement: reachable inbound, so the outbound misses are path congestion,
-  // not a dead peer. A peer that died mid-streak stops producing inbound and
-  // falls out of this window after the next SUSPECT_MISSES misses.
+  // Pinged us since this miss streak began, or within the silence bound (pings
+  // bunch behind a bloated ack path): congestion, not a dead peer.
   function _aliveInbound(ps) {
     if (!ps.lastInboundAt || !ps.missTimes || ps.missTimes.length === 0) return false;
-    return ps.lastInboundAt >= ps.missTimes[0];
+    const since = Math.min(ps.missTimes[0], nowMs() - HEARTBEAT_INBOUND_SILENCE_MS);
+    return ps.lastInboundAt >= since;
   }
 
   // ── Client side: ping one peer ───────────────────────────────────────────
@@ -147,10 +141,7 @@ function createHeartbeatManager({
     const sentAt = nowMs();
     let stream = null;
     let timedOut = false;
-    // The probe is bounded by OUR timer, whatever the stream open does: a
-    // black-holed peer makes dialProtocol hang until libp2p's own deadline, and
-    // the tick awaits every peer, so one such peer froze the whole heartbeat
-    // (no misses, no eviction: the very peer this probe exists to evict).
+    // Bounded by OUR timer: a hung open to a black-holed peer froze every tick.
     const abort = new AbortController();
     let expire;
     const deadline = new Promise((_, reject) => {
@@ -290,8 +281,7 @@ function createHeartbeatManager({
     _log.info("heartbeat stopped");
   }
 
-  // Misses accumulated while a bulk transfer starved this peer's pings are not
-  // evidence once the link is idle: eviction needs SUSPECT_MISSES fresh ones.
+  // Transfer-time misses are not evidence once the link is idle.
   function forgive(peerId) {
     const ps = _peerState.get(peerId);
     if (ps) { ps.consecutiveMisses = 0; ps.missTimes = []; }

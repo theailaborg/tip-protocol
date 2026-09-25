@@ -196,9 +196,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // Late-bound to bullshark.driveCommit (bullshark is created below): sync-
   // imported certs must drive commit, or a behind node holds them uncommitted.
   let _driveCommitAfterSync = null;
-  // The snapshot handler is built after sync + bullshark (it needs bullshark's
-  // committed round), but both consult it: sync-handler advances a joiner's
-  // cert pin on each catch-up request, bullshark's GC honours the pinned floor.
+  // Built after sync + bullshark, consulted by both (cert pins, GC floor).
   let snapshotHandlerForRetention = null;
   const syncHandler = createSyncHandler({
     dag, network, isAuthorizedPeer,
@@ -482,15 +480,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     isAuthorizedPeer,
     onPeerSuspect: (peerId, tipNodeId) => {
       const who = tipNodeId?.slice(-8) || peerId.slice(0, 12);
-      // A snapshot in flight saturates the path both ways, so pings time out on
-      // every node that shares it. The heartbeat already discounts a peer whose
-      // own pings still reach us; here we cover the two roles where even that
-      // evidence can lag: while we install (our probes are the ones starving)
-      // and while we serve THIS peer (its replies queue behind our stream).
-      // Evicting in either role kills the transfer. AE's cached join_state is
-      // deliberately not consulted: it is written only on a successful poll,
-      // and polls of a congested joiner fail, so it reported a wiped-and-
-      // rejoined peer as "ready" from before the wipe.
+      // A snapshot in flight starves pings both ways; evicting while we install or
+      // serve THIS peer kills the transfer. (AE's cached join_state is stale here.)
       const installing = snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling();
       const serving = snapshotHandler && typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId);
       if (installing || serving) {

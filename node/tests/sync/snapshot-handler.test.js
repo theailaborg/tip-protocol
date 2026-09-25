@@ -921,13 +921,38 @@ describe("§14 isServingTo: the sender knows which peer it is streaming to", () 
     const [, result] = await Promise.all([serve, request]);
     expect(result.round).toBe(2);
     expect(seenLive).toBe(true);
-    expect(sourceHandler.isServingTo("test-client")).toBe(false);
+    // "sent" is handed to the kernel: the tail is still draining to the joiner
+    expect(sourceHandler.isServingTo("test-client")).toBe(true);
     expect(sourceHandler.isServingTo("someone-else")).toBe(false);
+    // the joiner's catch-up request proves the download is over
+    sourceHandler.advanceCertPin("test-client", 3);
+    expect(sourceHandler.isServingTo("test-client")).toBe(false);
+  });
+
+  test("the drain grace expires on its own, bounded by DRAIN_GRACE_MAX_MS", async () => {
+    const { SNAPSHOT_SERVE } = require("../../../shared/constants");
+    const { nowMs } = require("../../../shared/time");
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+    expect(sourceHandler.isServingTo("test-client")).toBe(true);
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(nowMs() + SNAPSHOT_SERVE.DRAIN_GRACE_MAX_MS + 1);
+      expect(sourceHandler.isServingTo("test-client")).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
 describe("§14 cert retention pins: the sender keeps what its joiner will need", () => {
   const { SNAPSHOT_SERVE } = require("../../../shared/constants");
+  const { nowMs } = require("../../../shared/time");
 
   test("serving pins the round after the shipped cert tail; catch-up requests move it; release clears it", async () => {
     const fx = buildCommittedDag({ committeeSize: 1 });
@@ -965,12 +990,12 @@ describe("§14 cert retention pins: the sender keeps what its joiner will need",
       sourceHandler._handleIncomingSnapshot(server, "test-client"),
       destHandler.requestSnapshotFromPeer("test-server", {}),
     ]);
-    expect(sourceHandler.isServingTo("test-client")).toBe(false);
     expect(sourceHandler.certRetentionFloor()).toBeGreaterThan(0);
     jest.useFakeTimers();
     try {
-      jest.setSystemTime(Date.now() + SNAPSHOT_SERVE.CERT_PIN_MAX_MS + 1);
+      jest.setSystemTime(nowMs() + SNAPSHOT_SERVE.CERT_PIN_MAX_MS + 1);
       expect(sourceHandler.certRetentionFloor()).toBe(0);
+      expect(sourceHandler.isServingTo("test-client")).toBe(false);
     } finally {
       jest.useRealTimers();
     }

@@ -179,10 +179,7 @@ async function createNetworkNode(options = {}) {
     // a healthy committee connection (default floor is 5s; stalls can exceed it).
     connectionMonitor: {
       pingTimeout: { minTimeout: CONSENSUS.CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS },
-      // A snapshot download saturates a joiner's link and its pings queue behind
-      // the bulk stream; the monitor then aborted the connection mid-install,
-      // every time, on schedule. Liveness is the heartbeat's job (onPeerSuspect
-      // hangs up), and it knows to stand down while an install is in flight.
+      // Liveness belongs to the heartbeat; a snapshot mid-install starves pings.
       abortConnectionOnPingFailure: false,
     },
     services: {
