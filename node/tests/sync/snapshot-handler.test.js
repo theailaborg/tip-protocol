@@ -905,6 +905,7 @@ describe("§69 snapshot ships recent certs for joiner committee derivation", () 
 describe("§14 serve receipt: the sender's liveness verdicts stay suspended until the joiner acks", () => {
   const { NETWORK } = require("../../../shared/protocol-constants");
   const { SNAPSHOT_SERVE } = require("../../../shared/constants");
+  const { nowMs } = require("../../../shared/time");
   const ACK = NETWORK.SNAPSHOT_ACK_PROTOCOL;
 
   function makeAckedHandlers({ sourceDag, destDag }) {
@@ -976,12 +977,13 @@ describe("§14 serve receipt: the sender's liveness verdicts stay suspended unti
     const h = makeAckedHandlers({ sourceDag: fx.sourceDag, destDag: initDAG({ dbPath: ":memory:" }) });
     await serveOnce(h);
     expect(h.sourceHandler.isServingTo("test-client")).toBe(true);
-    const realNow = Date.now;
-    const spy = jest.spyOn(Date, "now").mockImplementation(() => realNow() + SNAPSHOT_SERVE.ACK_DEADLINE_MS + 1);
+    // isServingTo is synchronous; fake timers only move the clock it reads.
+    jest.useFakeTimers();
     try {
+      jest.setSystemTime(nowMs() + SNAPSHOT_SERVE.ACK_DEADLINE_MS + 1);
       expect(h.sourceHandler.isServingTo("test-client")).toBe(false);
     } finally {
-      spy.mockRestore();
+      jest.useRealTimers();
     }
   });
 });
