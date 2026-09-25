@@ -233,17 +233,14 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
   }
 
   try {
-    // ── Phase 1: snapshot fast-sync (non-fatal on failure) ────────────────
-    const snapRound = resumingCatchUp ? 0 : await tryFastSyncSnapshot(peerId, nodeId, { snapshotHandler, bullshark });
-
-    // ── Phase 2: cert catch-up from what we actually hold ─────────────────
-    // The snapshot's round is its last COMMIT; its certs run to the tail we
-    // installed, which is what the DAG reports. Asking from the commit round
-    // hit the peer's GC horizon and restarted the snapshot.
+    // ── Phase 1: cert pull from what we hold. One cheap request; a snapshot only
+    // when the peer no longer has our tail (snapshot_required below). A restart
+    // used to re-download 45MB although the peer still held the missing rounds.
     const dagTail = typeof dag.getLatestRound === "function" ? Number(dag.getLatestRound() || 0) : 0;
-    const fromRound = snapRound > 0 ? Math.max(snapRound + 1, dagTail + 1) : (resumingCatchUp ? dagTail + 1 : undefined);
+    const fromRound = dagTail > 0 ? dagTail + 1 : undefined;
     let result = await syncWithRetry(peerId, syncHandler, { fromRound });
-    let effectiveSnapRound = snapRound;
+    let snapRound = 0;
+    let effectiveSnapRound = 0;
 
     // #45: peer GC'd past our requested round → cert sync returned an
     // empty payload with snapshotRequired=true. Without this branch the
@@ -263,12 +260,16 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
       }
       log.warn(
         `Sync: peer ${peerId.slice(0, 12)} signals snapshot_required ` +
-        `(earliest=${result.earliestAvailableRound || "?"}); retrying snapshot fast-sync`
+        `(earliest=${result.earliestAvailableRound || "?"}); snapshot fast-sync`
       );
       const retrySnapRound = await tryFastSyncSnapshot(peerId, nodeId, { snapshotHandler, bullshark });
       if (retrySnapRound > 0) {
+        snapRound = retrySnapRound;
         effectiveSnapRound = retrySnapRound;
-        result = await syncWithRetry(peerId, syncHandler, { fromRound: retrySnapRound + 1 });
+        // The snapshot's round is its last COMMIT; its certs run to the tail we
+        // installed, which is what the DAG reports.
+        const tailAfterInstall = typeof dag.getLatestRound === "function" ? Number(dag.getLatestRound() || 0) : 0;
+        result = await syncWithRetry(peerId, syncHandler, { fromRound: Math.max(retrySnapRound + 1, tailAfterInstall + 1) });
         // If the retry ALSO comes back snapshot_required, the peer is
         // GC-ing faster than we can sync. Don't recurse; let
         // anti-entropy or another peer's onPeerAuthorized try later.

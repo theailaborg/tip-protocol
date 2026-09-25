@@ -293,13 +293,15 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     const timeoutMs = CONSENSUS.ANTI_ENTROPY_PEER_TIMEOUT_MS;
     let stream = null;
     let timedOut = false;
+    const abort = new AbortController();   // a hung open must not dangle past the deadline
     const timer = setTimeout(() => {
       timedOut = true;
+      abort.abort();
       try { if (stream) stream.close(); } catch { /* ignore */ }
     }, timeoutMs);
 
     try {
-      stream = await network.openStream(peerId, SYNC_STATUS_PROTOCOL);
+      stream = await network.openStream(peerId, SYNC_STATUS_PROTOCOL, { signal: abort.signal });
 
       // Send empty request.
       const request = encode("SyncStatusRequest", {});

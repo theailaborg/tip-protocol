@@ -230,6 +230,10 @@ function createHeartbeatManager({
           `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} ` +
           `suspect — ${ps.consecutiveMisses} consecutive misses`
         );
+        // A verdict is consumed: the next one needs a fresh streak, or a
+        // reconnected peer was evicted again on its first miss (hangup storm).
+        ps.consecutiveMisses = 0;
+        ps.missTimes = [];
         if (onPeerSuspect) onPeerSuspect(peerId, tipNodeId);
       }
     } finally {
@@ -243,6 +247,8 @@ function createHeartbeatManager({
   async function _runOnce() {
     if (!_running || !network) return;
     const peers = network.authorizedPeers ? Object.entries(network.authorizedPeers()) : [];
+    const live = new Set(peers.map(([id]) => id));
+    for (const id of _peerState.keys()) if (!live.has(id)) _peerState.delete(id);   // gone peers carry no streak into a reconnect
     if (peers.length === 0) return;
 
     // Stagger pings across the interval window to avoid a thundering-herd on

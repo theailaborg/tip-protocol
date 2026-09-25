@@ -714,7 +714,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         _metrics.install_in_progress_bytes = total;
         const rows = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
         _metrics.install_in_progress_rows = rows;
-        const pct = snapTotalRows > 0 ? Math.min(100, Math.floor((rows / snapTotalRows) * 100)) : 0;
+        // The header's row total undercounts (certs keep landing while it streams); 100 is reserved for done.
+        const pct = snapTotalRows > 0 ? Math.min(99, Math.floor((rows / snapTotalRows) * 100)) : 0;
         _metrics.install_in_progress_percent = pct;
         if (_installProgress) _installProgress.percent = pct;
         const mb = Math.floor(total / (25 * 1024 * 1024)) * 25;
