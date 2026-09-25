@@ -130,6 +130,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   const _certPins = new Map();            // remotePeer → { fromRound, since }: certs this joiner still needs
   const _draining = new Map();            // remotePeer → until ms: "sent", tail still in flight to the joiner
   let _lastInstallSource = null;          // libp2p peer the last successful install came from
+  let _installFlagSince = 0;              // when _snapInstallInProgress was last set or last saw progress
   const MAX_CONCURRENT_SERVES = 1;
 
   // Live install progress for operators to poll (surfaced via stats()). null
@@ -169,7 +170,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // Returns "cleared"|"none"|"installing"|"no_commit"|"inconsistent"; callers must
   // treat "inconsistent" as the resync-now signal, not just retry.
   async function resolveStaleInstallMarker() {
-    if (_snapInstallInProgress) return "installing";
+    if (_snapInstallInProgress) {
+      // A hung open never arms the stall timer; without this the flag wedged forever.
+      if (nowMs() - _installFlagSince > 2 * SNAPSHOT_DOWNLOAD.STALL_MS) {
+        log.warn(`Snapshot: install flag wedged for ${Math.round((nowMs() - _installFlagSince) / 1000)}s with no progress, resetting`);
+        resetInstallState();
+      } else {
+        return "installing";
+      }
+    }
     let marker = null;
     try { marker = typeof dag.getConsensusMeta === "function" ? dag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) : null; }
     catch { return "none"; }
@@ -649,6 +658,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       return null;
     }
     _snapInstallInProgress = true;
+    _installFlagSince = nowMs();
+    let markerArmed = false;   // in_progress written for this attempt
+    let anyRowLanded = false;  // at least one batch reached the DB
 
     log.info(`Snapshot: requesting from ${peerId.slice(0, 12)}... (min_round=${minRound})`);
 
@@ -700,6 +712,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         const thunks = batch; batch = [];
         dag.runInTransaction(() => { for (const w of thunks) w(); });
         await dag.flush();
+        anyRowLanded = true;
       };
       const enqueue = (w) => { batch.push(w); };
       const maybeFlush = async () => { if (batch.length >= SNAPSHOT_INSTALL_BATCH_ROWS) await flushBatch(); };
@@ -710,6 +723,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       let snapTotalRows = 0;   // from header.total_rows, set on the HEADER frame below
       const onProgress = (total) => {
         totalBytes = total;
+        _installFlagSince = nowMs();
         if (_installProgress) _installProgress.bytes = total;
         _metrics.install_in_progress_bytes = total;
         const rows = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
@@ -759,6 +773,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             _installProgress = { phase: "syncing", installed: 0, total: snapTotalRows, bytes: totalBytes, percent: 0 };
             dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, `in_progress:${Number(header.round)}`);
             await dag.flush();
+            markerArmed = true;
             _snapServing = true;
             // Route DB writes through per-table batchInsert with per-row
             // conflict semantics (Postgres only; no-op where unsupported).
@@ -1148,6 +1163,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // upserted prefix). Keep it: the marker + syncing gate keep it invisible
       // to consensus, entity_keys stay live so the retry can still authorize
       // peers, and the next install's upsert+prune reconciles it exactly.
+      // Before any row landed there is nothing mixed; the marker would only
+      // refuse ready on state that is exactly what it was (AZ, 147 refusals/10 min).
+      if (markerArmed && !anyRowLanded) {
+        try {
+          dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
+          if (typeof dag.flush === "function") await dag.flush();
+          log.warn(`Snapshot: aborted from ${peerId.slice(0, 12)} before any row landed, install marker cleared`);
+        } catch { /* the marker path resolves it on the next AE tick */ }
+      }
       _snapInstallInProgress = false;
       _snapServing = false;
       _installProgress = null;

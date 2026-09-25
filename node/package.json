@@ -1,6 +1,6 @@
 {
   "name": "@tip-protocol/node",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "TIP Protocol full node \u2014 federated DAG, REST API, trust scoring engine",
   "main": "src/index.js",
   "author": "Dinesh Mendhe <chairman@theailab.org>",

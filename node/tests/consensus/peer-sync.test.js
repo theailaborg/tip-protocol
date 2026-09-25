@@ -492,6 +492,21 @@ describe("shouldSyncFromPeer (asymmetric pre-flight)", () => {
     expect(result).toBe(false);
   });
 
+  // The ordered-round gap is frozen for a node in sync mode, so it alone ordered
+  // a node with byte-identical state into snapshots forever (AZ, 15 days).
+  test("same attested state root → false even when the peer is far ahead", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 900000, state_merkle_root: "ab83d1085764" });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const dag = { getLatestRound: () => 100, stateRoot: () => "ab83d1085764" };
+    expect(await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus, dag })).toBe(false);
+  });
+  test("different state root and far ahead → true", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 900000, state_merkle_root: "ab83d1085764" });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const dag = { getLatestRound: () => 100, stateRoot: () => "000000000000" };
+    expect(await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus, dag })).toBe(true);
+  });
+
   test("self behind peer → returns true, sync needed", async () => {
     const queryPeerStatus = async () => ({ committed_round: 200 });
     const bullshark = { lastCommittedRound: () => 100 };

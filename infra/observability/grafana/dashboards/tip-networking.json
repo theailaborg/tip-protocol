@@ -388,13 +388,14 @@
         "y": 9,
         "w": 24,
         "h": 1
-      }
+      },
+      "description": " 'drops observed' counts disconnects this node saw, not drops of this node; see 'Disconnects by peer' for who is dropping."
     },
     {
       "id": 508,
       "type": "table",
       "title": "Per-node connectivity",
-      "description": "Per-node mesh view: authorized vs connected peers, full-mesh flag, who each node is connected to, and churn counters.",
+      "description": "Per-node mesh view: authorized vs connected peers, full-mesh flag, who each node is connected to, and churn counters. 'drops observed' counts disconnects this node saw, not drops of this node; see 'Disconnects by peer' for who is dropping.",
       "gridPos": {
         "x": 0,
         "y": 10,
@@ -496,7 +497,7 @@
               "Value #Direct": "Connected peers",
               "Value #Mesh": "Full mesh",
               "peers": "Connected to",
-              "Value #Disconnects": "Disconnects",
+              "Value #Disconnects": "drops observed",
               "Value #Rehs": "Re-handshakes"
             }
           }
@@ -1668,6 +1669,59 @@
         "y": 146,
         "w": 12,
         "h": 7
+      }
+    },
+    {
+      "id": 534,
+      "type": "timeseries",
+      "title": "Disconnects by peer (who is dropping, /min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Disconnect events attributed to the peer that dropped, summed over every node that observed them. The flapping peer is the one with the line; the observers stay at 0.",
+      "targets": [
+        {
+          "datasource": null,
+          "refId": "A",
+          "expr": "sum by (peer) (rate(tip_network_peer_disconnects_by_peer_total[5m])) * 60",
+          "legendFormat": "{{peer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 153
       }
     }
   ],
