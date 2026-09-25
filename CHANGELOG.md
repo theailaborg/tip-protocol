@@ -11,6 +11,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+**Node 2.6.1: a reconnect never snapshots state it already holds**
+- The attested state root decides a reconnect sync: same root, no sync mode and
+  no snapshot; a different root pulls certificates and snapshots only when the
+  peers no longer hold the rounds to replay. An install aborted before any row
+  landed clears its own marker; a wedged install flag times out.
+- Disconnects are counted by the peer that dropped
+  (tip_network_peer_disconnects_by_peer_total) next to the per-observer total.
+
 **Node 2.6.0: a joiner behind a thin link installs, catches up and stays ready**
 - Liveness belongs to the heartbeat; libp2p no longer aborts a connection on its
   own ping failures, and verdicts stand down during any bulk sync (snapshot or
