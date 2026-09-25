@@ -128,6 +128,7 @@ async function createNetworkNode(options = {}) {
   // quick reconnect (see the peer:connect handler).
   const _recentlyAuthed = new Map();
   let _onPeerAuthorized = null;
+  let _transferGuard = null;   // (peerId) => true while a rebuild would kill a sync in flight
 
   // Cumulative connection-churn counters. Gauges (current peer count) alias
   // through sub-scrape flaps; these survive so rate() exposes the flap itself.
@@ -382,6 +383,10 @@ async function createNetworkNode(options = {}) {
   // connection is half-dead (the re-handshake re-auths it but never rebuilds the
   // transport). Force-close it and re-dial a fresh one.
   async function _forceRedial(peerId) {
+    if (_transferGuard && _transferGuard(peerId)) {
+      log.warn(`channel-health: sends to ${peerId.slice(0, 12)} failing while a sync is in flight, not rebuilding`);
+      return;
+    }
     _netMetrics.force_redials++;
     log.warn(`channel-health: rebuilding transport to ${peerId.slice(0, 12)} after sustained outbound send failures`);
     try {
@@ -511,6 +516,7 @@ async function createNetworkNode(options = {}) {
 
     /** Register callback for when a peer completes TIP handshake */
     onPeerAuthorized(fn) { _onPeerAuthorized = fn; },
+    setTransferGuard(fn) { _transferGuard = fn; },
 
     /** Set GossipSub topic handlers (called after consensus init) */
     setTopicHandlers(h) { _topicHandlers = h; },

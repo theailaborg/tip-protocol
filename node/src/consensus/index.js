@@ -401,6 +401,12 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     },
   });
   snapshotHandlerForRetention = snapshotHandler;
+  // A joining node's inbound is saturated by sync traffic; rebuilding its transports kills that sync.
+  if (network && typeof network.setTransferGuard === "function") {
+    network.setTransferGuard((peerId) =>
+      (narwhal && typeof narwhal.joinState === "function" && narwhal.joinState() !== "ready")
+      || (typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId)));
+  }
 
   // Periodic heartbeat summary — emits one INFO line per interval with
   // deltas, stays silent during true idle. Per-round events are debug-level.

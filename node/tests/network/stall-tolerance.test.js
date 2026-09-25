@@ -81,5 +81,11 @@ describe("liveness has one owner", () => {
     // wiped-and-rejoined joiner as "ready" from before the wipe (test cluster,
     // 2026-09-25): it must not gate the verdict.
     expect(body).not.toMatch(/peerJoinState\(/);
+    // channel-health rebuilt a joiner's transports on send failures caused by its own
+    // saturated inbound; the guard must sit before the close
+    const redial = netSrc.slice(netSrc.indexOf("async function _forceRedial"), netSrc.indexOf("async function broadcastToAuthorized"));
+    expect(redial.indexOf("_transferGuard")).toBeGreaterThan(-1);
+    expect(redial.indexOf("_transferGuard")).toBeLessThan(redial.indexOf("c.close()"));
+    expect(consSrc).toMatch(/network\.setTransferGuard\(/);
   });
 });

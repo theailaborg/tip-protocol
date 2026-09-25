@@ -312,6 +312,21 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
       const maxResponseBytes = overrideMaxBytes != null ? overrideMaxBytes : CONSENSUS.SYNC_MAX_RESPONSE_BYTES;
       const totalTimeoutMs = overrideTimeoutMs != null ? overrideTimeoutMs : CONSENSUS.SYNC_TOTAL_TIMEOUT_MS;
 
+      // Stall timeout, re-armed per chunk: a thin link needs minutes for a
+      // long cert tail, only zero progress for totalTimeoutMs is a hang.
+      let timeoutHandle;
+      let rejectStall;
+      const timeoutPromise = new Promise((_resolve, reject) => { rejectStall = reject; });
+      timeoutPromise.catch(() => { /* observed via the race below */ });
+      const armStall = () => {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = setTimeout(() => {
+          try { stream.close(); } catch { /* ignore — forces the for-await below to end */ }
+          rejectStall(new Error(`sync stalled, no bytes for ${totalTimeoutMs}ms`));
+        }, totalTimeoutMs);
+      };
+      armStall();
+
       const readPromise = (async () => {
         const chunks = [];
         let total = 0;
@@ -322,17 +337,10 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
             throw new Error(`response exceeded max bytes: ${total} > ${maxResponseBytes}`);
           }
           chunks.push(c);
+          armStall();
         }
         return chunks;
       })();
-
-      let timeoutHandle;
-      const timeoutPromise = new Promise((_resolve, reject) => {
-        timeoutHandle = setTimeout(() => {
-          try { stream.close(); } catch { /* ignore — forces the for-await above to end */ }
-          reject(new Error(`sync timeout after ${totalTimeoutMs}ms`));
-        }, totalTimeoutMs);
-      });
 
       let chunks;
       try {

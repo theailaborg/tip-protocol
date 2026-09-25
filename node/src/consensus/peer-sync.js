@@ -221,20 +221,27 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
 
   if (!(await shouldSyncFromPeer(peerId, tipNodeId, deps))) return;
 
-  log.notice(`Peer authorized: ${tipNodeId} — bootstrapping from ${peerId.slice(0, 12)}...`);
-
-  // Enter sync mode — suppress all round production until sync + first peer batch
-  narwhal.enterSyncMode();
+  // An install already landed: only the cert tail is missing. Re-entering
+  // sync mode here threw a finished install away on every reconnect.
+  const resumingCatchUp = typeof narwhal.joinState === "function" && narwhal.joinState() === "catching_up";
+  if (resumingCatchUp) {
+    log.notice(`Peer authorized: ${tipNodeId} — install already landed, pulling the cert tail from ${peerId.slice(0, 12)}...`);
+  } else {
+    log.notice(`Peer authorized: ${tipNodeId} — bootstrapping from ${peerId.slice(0, 12)}...`);
+    // Enter sync mode — suppress all round production until sync + first peer batch
+    narwhal.enterSyncMode();
+  }
 
   try {
     // ── Phase 1: snapshot fast-sync (non-fatal on failure) ────────────────
-    const snapRound = await tryFastSyncSnapshot(peerId, nodeId, { snapshotHandler, bullshark });
+    const snapRound = resumingCatchUp ? 0 : await tryFastSyncSnapshot(peerId, nodeId, { snapshotHandler, bullshark });
 
-    // ── Phase 2: cert catch-up for the gap after the snapshot ─────────────
-    // fromRound = snapRound + 1 if we have a snapshot, else default (round 1
-    // for a fresh DAG, or latest+1 for a resuming node). syncFromPeer reads
-    // dag.getLatestRound() when fromRound is undefined.
-    const fromRound = snapRound > 0 ? snapRound + 1 : undefined;
+    // ── Phase 2: cert catch-up from what we actually hold ─────────────────
+    // The snapshot's round is its last COMMIT; its certs run to the tail we
+    // installed, which is what the DAG reports. Asking from the commit round
+    // hit the peer's GC horizon and restarted the snapshot.
+    const dagTail = typeof dag.getLatestRound === "function" ? Number(dag.getLatestRound() || 0) : 0;
+    const fromRound = snapRound > 0 ? Math.max(snapRound + 1, dagTail + 1) : (resumingCatchUp ? dagTail + 1 : undefined);
     let result = await syncWithRetry(peerId, syncHandler, { fromRound });
     let effectiveSnapRound = snapRound;
 
@@ -250,6 +257,10 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
     // Mirrors the consumer at anti-entropy.js — a single shared signal
     // for "give up on cert sync from this peer, fall back to snapshot."
     if (result.snapshotRequired) {
+      if (resumingCatchUp) {
+        log.warn(`Sync: peer ${peerId.slice(0, 12)} no longer holds our cert tail (earliest=${result.earliestAvailableRound || "?"}); staying catching_up, AE will use the snapshot source`);
+        return;
+      }
       log.warn(
         `Sync: peer ${peerId.slice(0, 12)} signals snapshot_required ` +
         `(earliest=${result.earliestAvailableRound || "?"}); retrying snapshot fast-sync`
