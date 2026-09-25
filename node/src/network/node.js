@@ -179,6 +179,11 @@ async function createNetworkNode(options = {}) {
     // a healthy committee connection (default floor is 5s; stalls can exceed it).
     connectionMonitor: {
       pingTimeout: { minTimeout: CONSENSUS.CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS },
+      // A snapshot download saturates a joiner's link and its pings queue behind
+      // the bulk stream; the monitor then aborted the connection mid-install,
+      // every time, on schedule. Liveness is the heartbeat's job (onPeerSuspect
+      // hangs up), and it knows to stand down while an install is in flight.
+      abortConnectionOnPingFailure: false,
     },
     services: {
       identify: identify(),
@@ -494,6 +499,11 @@ async function createNetworkNode(options = {}) {
   }
 
   // ── Public interface ───────────────────────────────────────────────────
+  /** Drop every connection to a peer. Idempotent: no connection, no-op. */
+  function hangUp(peerId) {
+    return node.hangUp(peerIdFromString(peerId)).catch(() => { });
+  }
+
   return {
     /** The underlying libp2p node */
     node,
@@ -523,6 +533,8 @@ async function createNetworkNode(options = {}) {
 
     /** Total bootstrap chains re-armed by the isolation backstop since start. */
     bootstrapRearms: () => _bootstrapRearms,
+
+    hangUp,
 
     /** Connected authorized peer IDs (libp2p peerId) */
     peers: () => [..._authorizedPeers.keys()],

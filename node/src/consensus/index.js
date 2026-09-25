@@ -474,10 +474,19 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getSelfNodeId: () => nodeId,
     isAuthorizedPeer,
     onPeerSuspect: (peerId, tipNodeId) => {
+      const who = tipNodeId?.slice(-8) || peerId.slice(0, 12);
+      // Our own outbound pings starve behind an inbound snapshot stream; that is
+      // the download working, not the peer dying. Evicting here re-created the
+      // libp2p abort that kept a joiner from ever completing an install.
+      if (snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling()) {
+        log.warn(`heartbeat: peer ${who} is suspect during snapshot install, not evicting`);
+        return;
+      }
       log.warn(
-        `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} is suspect ` +
-        `(${CONSENSUS.HEARTBEAT_SUSPECT_MISSES} consecutive misses), AE will reconcile`
+        `heartbeat: peer ${who} is suspect ` +
+        `(${CONSENSUS.HEARTBEAT_SUSPECT_MISSES} consecutive misses), hanging up; reconnect re-authorizes`
       );
+      if (network && typeof network.hangUp === "function") network.hangUp(peerId);
     },
   });
 
