@@ -486,8 +486,7 @@ describe("queryPeer (client)", () => {
     };
 
     // Override the peer-timeout to a short value so the test runs fast.
-    // We can't mutate the genesis constant, but we can test at default
-    // 2s — tolerable in the runner.
+    // Runs at the real default (10s, sized for bloated links), so the test gets its own budget.
     const ae = createAntiEntropy({
       network: fakeNetwork({ openStreamImpl: async () => hangingStream }),
       syncHandler: fakeSyncHandler(),
@@ -505,7 +504,7 @@ describe("queryPeer (client)", () => {
     expect(ae.stats().metrics.peer_rpc_failures).toBe(0);
     // Sanity: the timeout actually triggered (not an instant error).
     expect(elapsed).toBeGreaterThanOrEqual(500);
-  }, 5000);
+  }, 20_000);
 
   test("identity mismatch: peer claims wrong node_id → rejected, increments peer_identity_mismatch", async () => {
     const { encode } = require(path.join(SRC, "network", "proto"));
@@ -540,7 +539,7 @@ describe("queryPeer (client)", () => {
     const status = await ae.queryPeer("peer-libp2p-id");
     expect(status).toBeNull();
     expect(ae.stats().metrics.peer_identity_mismatch).toBe(1);
-  });
+  }, 20_000);
 
   test("identity match: peer claims correct node_id → accepted", async () => {
     const { encode } = require(path.join(SRC, "network", "proto"));

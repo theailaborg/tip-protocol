@@ -56,6 +56,14 @@ describe("liveness has one owner", () => {
     expect(block[0]).toMatch(/abortConnectionOnPingFailure:\s*false/);
   });
 
+  test("stream negotiation is bounded by our knob, not libp2p's 10s LAN default", () => {
+    expect(netSrc).toMatch(/inboundStreamProtocolNegotiationTimeout: CONSENSUS\.STREAM_NEGOTIATION_TIMEOUT_MS/);
+    expect(netSrc).toMatch(/outboundStreamProtocolNegotiationTimeout: CONSENSUS\.STREAM_NEGOTIATION_TIMEOUT_MS/);
+    const { CONSENSUS } = require(path.resolve(__dirname, "../../../shared/protocol-constants"));
+    expect(CONSENSUS.STREAM_NEGOTIATION_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000);
+    expect(CONSENSUS.ANTI_ENTROPY_PEER_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
+  });
+
   test("network exposes hangUp so consumers can evict", () => {
     expect(netSrc).toMatch(/function hangUp\(peerId\)/);
     expect(netSrc).toMatch(/^\s*hangUp,$/m);
