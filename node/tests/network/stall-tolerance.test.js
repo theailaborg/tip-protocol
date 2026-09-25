@@ -61,13 +61,17 @@ describe("liveness has one owner", () => {
     expect(netSrc).toMatch(/^\s*hangUp,$/m);
   });
 
-  test("suspect evicts via hangUp, and stands down while an install is in flight", () => {
+  test("suspect evicts via hangUp, and stands down while installing or serving that peer", () => {
     const handler = consSrc.match(/onPeerSuspect:\s*\([\s\S]*?\n\s{4}\},/);
     expect(handler).not.toBeNull();
     const body = handler[0];
     expect(body).toMatch(/isInstalling\(\)/);
+    // the SENDER's pings queue behind the stream it is pushing; it must not evict
+    // the joiner it is serving (found on the test cluster: sender hung up mid-serve)
+    expect(body).toMatch(/isServingTo\(peerId\)/);
     expect(body).toMatch(/network\.hangUp\(peerId\)/);
-    // the install check must gate the eviction, not follow it
+    // both checks must gate the eviction, not follow it
     expect(body.indexOf("isInstalling()")).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
+    expect(body.indexOf("isServingTo(peerId)")).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
   });
 });

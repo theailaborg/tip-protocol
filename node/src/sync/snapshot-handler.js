@@ -1608,6 +1608,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
      *  Lets anti-entropy avoid interrupting an in-flight install (which would
      *  leave partial state and fail the state-root verify). */
     isInstalling: () => _snapInstallInProgress,
+    // The sender's heartbeat pings cross the same saturated path as the stream it
+    // is serving, so they time out too. Evicting the joiner mid-serve on a "dead
+    // peer" verdict is the same mistake as the client-side abort, from the other end.
+    isServingTo: (peerId) => _activeServeStreams.has(peerId),
     SNAPSHOT_PROTOCOL,
     /** Cumulative counters for /metrics. */
     stats: () => ({ metrics: { ..._metrics }, install: _installProgress }),

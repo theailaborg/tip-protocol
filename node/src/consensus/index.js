@@ -475,11 +475,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     isAuthorizedPeer,
     onPeerSuspect: (peerId, tipNodeId) => {
       const who = tipNodeId?.slice(-8) || peerId.slice(0, 12);
-      // Our own outbound pings starve behind an inbound snapshot stream; that is
-      // the download working, not the peer dying. Evicting here re-created the
-      // libp2p abort that kept a joiner from ever completing an install.
-      if (snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling()) {
-        log.warn(`heartbeat: peer ${who} is suspect during snapshot install, not evicting`);
+      // A snapshot in flight saturates the path in both directions: the joiner's
+      // outbound pings starve behind the inbound stream, and the sender's pings to
+      // that joiner queue behind the stream it is pushing. Either side evicting on
+      // that verdict kills the transfer, so stand down while installing, or while
+      // serving THIS peer. That is the download working, not the peer dying.
+      const installing = snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling();
+      const serving = snapshotHandler && typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId);
+      if (installing || serving) {
+        log.warn(`heartbeat: peer ${who} is suspect during snapshot ${installing ? "install" : "serve"}, not evicting`);
         return;
       }
       log.warn(
