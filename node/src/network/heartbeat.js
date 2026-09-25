@@ -52,7 +52,11 @@ const log = getLogger("tip.heartbeat");
  * A miss means our probe did not complete in HEARTBEAT_TIMEOUT_MS, which on a
  * congested path (a snapshot in flight, gossip above the link rate) is queueing,
  * not death. The peer's own pings reaching us are direct evidence it is alive,
- * so the suspect verdict needs both: our probes failing AND its pings absent.
+ * so the suspect verdict needs both: our probes failing AND its pings absent
+ * for the whole span of the misses that form the verdict. That span, not a
+ * constant, is the window: under congestion both sides' probes slow down
+ * together (a stream open that times out stretches every tick), and a fixed
+ * window shorter than the peer's stretched cadence evicted a live joiner.
  */
 function createHeartbeatManager({
   network,
@@ -103,13 +107,16 @@ function createHeartbeatManager({
     const ps = _peerState.get(peerId) || { consecutiveMisses: 0 };
     ps.lastInboundAt = nowMs();
     _peerState.set(peerId, ps);
+    _log.debug(`heartbeat: ping from ${peerId.slice(0, 12)}`);
   }
 
-  // The peer pinged us within the window our own misses span: reachable
-  // inbound, so the outbound misses are path congestion, not a dead peer.
+  // The peer pinged us since the first of the SUSPECT_MISSES misses now under
+  // judgement: reachable inbound, so the outbound misses are path congestion,
+  // not a dead peer. A peer that died mid-streak stops producing inbound and
+  // falls out of this window after the next SUSPECT_MISSES misses.
   function _aliveInbound(ps) {
-    if (!ps.lastInboundAt) return false;
-    return nowMs() - ps.lastInboundAt <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES * CONSENSUS.HEARTBEAT_INTERVAL_MS;
+    if (!ps.lastInboundAt || !ps.missTimes || ps.missTimes.length === 0) return false;
+    return ps.lastInboundAt >= ps.missTimes[0];
   }
 
   // ── Client side: ping one peer ───────────────────────────────────────────
@@ -181,6 +188,7 @@ function createHeartbeatManager({
       const ps = _peerState.get(peerId) || { consecutiveMisses: 0 };
       const wasConsecutiveMisses = ps.consecutiveMisses;
       ps.consecutiveMisses = 0;
+      ps.missTimes = [];
       ps.lastSeenAt = nowMs();
       _peerState.set(peerId, ps);
 
@@ -192,6 +200,7 @@ function createHeartbeatManager({
 
       const ps = _peerState.get(peerId) || { consecutiveMisses: 0 };
       ps.consecutiveMisses = (ps.consecutiveMisses || 0) + 1;
+      ps.missTimes = [...(ps.missTimes || []), nowMs()].slice(-CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
       _peerState.set(peerId, ps);
 
       _log.debug(
@@ -202,7 +211,7 @@ function createHeartbeatManager({
         if (_aliveInbound(ps)) {
           _log.info(
             `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} unreachable outbound ` +
-            `(${ps.consecutiveMisses} misses) but its pings still arrive, last ${Math.round((nowMs() - ps.lastInboundAt) / 1000)}s ago: congested, not suspect`
+            `(${ps.consecutiveMisses} misses) but it pinged us ${Math.round((nowMs() - ps.lastInboundAt) / 1000)}s ago, after the misses began: congested, not suspect`
           );
           return;
         }
@@ -265,7 +274,7 @@ function createHeartbeatManager({
   // evidence once the link is idle: eviction needs SUSPECT_MISSES fresh ones.
   function forgive(peerId) {
     const ps = _peerState.get(peerId);
-    if (ps) ps.consecutiveMisses = 0;
+    if (ps) { ps.consecutiveMisses = 0; ps.missTimes = []; }
   }
 
   function peerStates() {

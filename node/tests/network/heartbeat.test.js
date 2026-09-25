@@ -242,8 +242,10 @@ describe("heartbeat client side", () => {
       expect(suspects).not.toContain("peer-id-1");
       // peer-id-2 never pinged us: same misses, real verdict
       expect(suspects).toContain("peer-id-2");
-      // once its pings stop for the whole window, the verdict is real again
-      await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_SUSPECT_MISSES * CONSENSUS.HEARTBEAT_INTERVAL_MS + CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      // once its pings stop for a whole streak of SUSPECT_MISSES misses, the verdict is real again
+      for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
+        await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      }
       expect(suspects).toContain("peer-id-1");
     } finally {
       hb.stop();
