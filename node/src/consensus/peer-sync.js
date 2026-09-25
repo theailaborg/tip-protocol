@@ -202,6 +202,16 @@ async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatu
       log.info(`Peer ${tipNodeId}: self counter unhydrated (0) with non-empty DAG , skipping bootstrap sync, AE will decide`);
       return false;
     }
+    // Same attested state root: whatever the ordered-round gap says, the state is
+    // already here. A gap means "fetch certs" (AE does that), never "fetch state".
+    // A node in sync mode cannot advance its ordered round, so the gap alone
+    // ordered the same node into snapshots forever (AZ, 15 days).
+    const selfRoot = dag && typeof dag.stateRoot === "function" ? String(dag.stateRoot() || "") : "";
+    const peerRoot = String(peerStatus.state_merkle_root || "");
+    if (selfRoot && peerRoot && selfRoot === peerRoot) {
+      log.info(`Peer ${tipNodeId} state root matches ours (${selfRoot.slice(0, 12)}), skipping heavy sync, AE pulls any cert gap`);
+      return false;
+    }
     // A small lag heals via gossip + the light AE cert-pull; only a gap beyond the
     // tolerance warrants the heavy enterSyncMode (avoids self-suppression on jitter).
     if (peerCommitted - selfCommitted <= CONSENSUS.SYNC_FROM_PEER_TOLERANCE_ROUNDS) {

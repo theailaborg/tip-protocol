@@ -9,6 +9,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+**Node 2.6.0: a joiner behind a thin link installs, catches up and stays ready**
+- Liveness belongs to the heartbeat; libp2p no longer aborts a connection on its
+  own ping failures, and verdicts stand down during any bulk sync (snapshot or
+  cert tail) on both ends. A peer whose pings still reach us is congested, not dead.
+- The snapshot source pins the cert tail its joiner will need; the join flow
+  pulls certs before snapshotting and promotes within the sync tolerance.
+- Node-local cert retention floor (TIP_CERT_RETENTION_MIN_ROUNDS, 4500 rounds)
+  on top of genesis gc_depth; stream negotiation and status probes sized for
+  real links (TIP_STREAM_NEGOTIATION_TIMEOUT_MS, TIP_ANTI_ENTROPY_PEER_TIMEOUT_MS).
+- Partner link requirement documented: 25 Mbit/s symmetric sustained minimum,
+  50 recommended.
+
 ### Added
 
 **VP Category D: Educational Institutions**

@@ -1002,3 +1002,49 @@ describe("§14 cert retention pins: the sender keeps what its joiner will need",
   });
 });
 
+describe("§14 install marker hygiene (a wedged joiner must not refuse ready on nothing)", () => {
+  const { SNAPSHOT_INSTALL_MARKER_KEY, SNAPSHOT_DOWNLOAD } = require("../../../shared/constants");
+  const { nowMs } = require("../../../shared/time");
+
+  test("an abort before any row landed clears the in_progress marker", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    const originalServerSink = server.sink;
+    server.sink = async (src) => {
+      await originalServerSink((async function* () {
+        let sent = false;
+        for await (const frame of src) { if (!sent) { sent = true; yield frame; } }
+      })());
+    };
+    await expect(Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ])).rejects.toThrow(/missing SnapshotEnd terminator/i);
+    expect(String(destDag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) || "")).toBe("");
+    expect(await destHandler.resolveStaleInstallMarker()).toBe("none");
+  });
+
+  test("an install flag with no progress for 2x the stall timeout is reset by resolveStaleInstallMarker", async () => {
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const destHandler = createSnapshotHandler({
+      dag: destDag,
+      network: { node: {}, openStream: () => new Promise(() => {}) },   // the open never returns
+      isAuthorizedPeer: () => true,
+    });
+    const pending = destHandler.requestSnapshotFromPeer("dark-peer", {});
+    pending.catch(() => {});
+    await new Promise((r) => setImmediate(r));
+    expect(destHandler.isInstalling()).toBe(true);
+    expect(await destHandler.resolveStaleInstallMarker()).toBe("installing");
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(nowMs() + 2 * SNAPSHOT_DOWNLOAD.STALL_MS + 1);
+      expect(await destHandler.resolveStaleInstallMarker()).not.toBe("installing");
+      expect(destHandler.isInstalling()).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
