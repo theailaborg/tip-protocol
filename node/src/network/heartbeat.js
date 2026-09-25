@@ -48,6 +48,11 @@ const log = getLogger("tip.heartbeat");
  * @param {Function} [options.onPeerSuspect]     (libp2pPeerId, tipNodeId) => void — called after SUSPECT_MISSES misses
  * @param {Object}   [options.log]               Override logger
  * @returns {{ start, stop, registerHandler, peerStates, rttStats, forgive }}
+ *
+ * A miss means our probe did not complete in HEARTBEAT_TIMEOUT_MS, which on a
+ * congested path (a snapshot in flight, gossip above the link rate) is queueing,
+ * not death. The peer's own pings reaching us are direct evidence it is alive,
+ * so the suspect verdict needs both: our probes failing AND its pings absent.
  */
 function createHeartbeatManager({
   network,
@@ -76,6 +81,7 @@ function createHeartbeatManager({
         try { await stream.close(); } catch { /* ignore */ }
         return;
       }
+      if (peerId) _markInbound(peerId);
       try {
         // Drain the ping (we don't need its payload to reply)
         for await (const _chunk of stream.source) { break; }
@@ -91,6 +97,19 @@ function createHeartbeatManager({
         try { await stream.close(); } catch { /* ignore */ }
       }
     });
+  }
+
+  function _markInbound(peerId) {
+    const ps = _peerState.get(peerId) || { consecutiveMisses: 0 };
+    ps.lastInboundAt = nowMs();
+    _peerState.set(peerId, ps);
+  }
+
+  // The peer pinged us within the window our own misses span: reachable
+  // inbound, so the outbound misses are path congestion, not a dead peer.
+  function _aliveInbound(ps) {
+    if (!ps.lastInboundAt) return false;
+    return nowMs() - ps.lastInboundAt <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES * CONSENSUS.HEARTBEAT_INTERVAL_MS;
   }
 
   // ── Client side: ping one peer ───────────────────────────────────────────
@@ -180,6 +199,13 @@ function createHeartbeatManager({
       );
 
       if (ps.consecutiveMisses >= CONSENSUS.HEARTBEAT_SUSPECT_MISSES) {
+        if (_aliveInbound(ps)) {
+          _log.info(
+            `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} unreachable outbound ` +
+            `(${ps.consecutiveMisses} misses) but its pings still arrive, last ${Math.round((nowMs() - ps.lastInboundAt) / 1000)}s ago: congested, not suspect`
+          );
+          return;
+        }
         _log.warn(
           `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} ` +
           `suspect — ${ps.consecutiveMisses} consecutive misses`

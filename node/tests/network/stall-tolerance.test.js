@@ -77,5 +77,10 @@ describe("liveness has one owner", () => {
     // otherwise evict on the very next tick after it ends (seen on the test cluster)
     expect(body).toMatch(/heartbeat\.forgive\(peerId\)/);
     expect(body.indexOf("heartbeat.forgive(peerId)")).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
+    // a third peer, neither serving nor installing, evicted the joiner on the test
+    // cluster: its gossip queued behind the stream. A peer that is not in consensus
+    // (syncing / catching_up per its last sync-status) is never worth evicting.
+    expect(body).toMatch(/antiEntropy\.peerJoinState\(tipNodeId\)/);
+    expect(body.indexOf("peerJoinState(tipNodeId)")).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
   });
 });

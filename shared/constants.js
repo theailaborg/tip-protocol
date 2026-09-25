@@ -109,14 +109,6 @@ const SNAPSHOT_REQUEST = Object.freeze({
   MAX_MS: 5000,
 });
 
-// Sender side. "Sent" means handed to the socket; on a thin link the tail keeps
-// draining for minutes and the joiner's receipt rides back on its own stream.
-// Liveness verdicts on that joiner stay suspended until the receipt or this
-// bound, after which a joiner that vanished mid-drain is evictable again.
-const SNAPSHOT_SERVE = Object.freeze({
-  ACK_DEADLINE_MS: 10 * 60_000,
-});
-
 // #132: 1-byte kind tag as each frame's first body byte routes frames as they
 // stream. Doubles as a format discriminator (a raw-protobuf frame starts 0x08),
 // so a version-mixed pair fails cleanly; a mismatch cannot fork the chain.
@@ -1078,7 +1070,6 @@ module.exports = {
   CLASSIFIER_CLIENT,
   SNAPSHOT_DOWNLOAD,
   SNAPSHOT_REQUEST,
-  SNAPSHOT_SERVE,
   SNAPSHOT_FRAME_KIND,
   SNAPSHOT_INSTALL_MARKER_KEY,
   SNAPSHOT_INSTALL_BATCH_ROWS,
