@@ -196,10 +196,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // Late-bound to bullshark.driveCommit (bullshark is created below): sync-
   // imported certs must drive commit, or a behind node holds them uncommitted.
   let _driveCommitAfterSync = null;
+  // The snapshot handler is built after sync + bullshark (it needs bullshark's
+  // committed round), but both consult it: sync-handler advances a joiner's
+  // cert pin on each catch-up request, bullshark's GC honours the pinned floor.
+  let snapshotHandlerForRetention = null;
   const syncHandler = createSyncHandler({
     dag, network, isAuthorizedPeer,
     onCertsImported: (round) => { if (_driveCommitAfterSync) _driveCommitAfterSync(round); },
     preVerifyTxs: (txs) => _preVerifyIncomingTxs(txs),
+    onCertSyncRequest: (peerId, fromRound) => { if (snapshotHandlerForRetention) snapshotHandlerForRetention.advanceCertPin(peerId, fromRound); },
   });
 
   // ── Create snapshot handler (§14 state-snapshot fast-sync) ─────────────────
@@ -219,6 +224,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     // Keep the cert-DAG merkle GC-aligned: re-source the sync-handler tree when
     // bullshark prunes old certs, so all nodes' roots reflect the same live set.
     onCertsPruned: () => { try { syncHandler.onCertsPruned(); } catch { /* ignore */ } },
+    certRetentionFloor: () => (snapshotHandlerForRetention ? snapshotHandlerForRetention.certRetentionFloor() : 0),
     onMissingCertsTimeout: (voteRound, missingCount) => {
       if (antiEntropyForResync && typeof antiEntropyForResync.triggerSnapshotResync === "function") {
         // Stagger resync by node_id so all nodes don't simultaneously enter
@@ -396,6 +402,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       }
     },
   });
+  snapshotHandlerForRetention = snapshotHandler;
 
   // Periodic heartbeat summary — emits one INFO line per interval with
   // deltas, stays silent during true idle. Per-round events are debug-level.

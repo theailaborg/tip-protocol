@@ -61,7 +61,7 @@ const log = getLogger("tip.bullshark");
  *                                              dag.getNode(nodeId)?.public_key.
  * @returns {Object} Bullshark instance
  */
-function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout, onCertsPruned }) {
+function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout, onCertsPruned, certRetentionFloor = null }) {
   // Track which certificates have already been ordered (by hash)
   const _orderedCertHashes = new Set();
 
@@ -809,6 +809,8 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    * (GC_INTERVAL_COMMITS default 10), so ~20-60s between prune calls
    * depending on commit rate.
    */
+  let _lastLoggedPinFloor = 0;
+
   function _maybeRunCertGC() {
     const interval = CONSENSUS.GC_INTERVAL_COMMITS;
     if (!interval || interval <= 0) return;
@@ -817,8 +819,20 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     const gcDepth = CONSENSUS.GC_DEPTH;
     if (!gcDepth || gcDepth <= 0) return;
 
-    const cutoff = _lastCommittedRound - gcDepth;
+    let cutoff = _lastCommittedRound - gcDepth;
     if (cutoff <= 0) return;
+    // A joiner mid-download still needs every cert after its snapshot's tail;
+    // the snapshot handler pins that range until the joiner's catch-up passes it.
+    const floor = typeof certRetentionFloor === "function" ? Number(certRetentionFloor() || 0) : 0;
+    if (floor > 0 && floor < cutoff) {
+      if (floor !== _lastLoggedPinFloor) {
+        log.info(`Cert GC: retention held at round ${floor} for a joiner still catching up (window would be ${cutoff})`);
+        _lastLoggedPinFloor = floor;
+      }
+      cutoff = floor;
+    } else if (_lastLoggedPinFloor !== 0) {
+      _lastLoggedPinFloor = 0;
+    }
 
     try {
       if (typeof dag.pruneCertificatesBefore !== "function") return;

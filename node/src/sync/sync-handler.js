@@ -50,7 +50,7 @@ const SYNC_PROTOCOL = "/tip/sync/1.0.0";
  * @param {Object} options.network     libp2p network node
  * @param {Function} options.isAuthorizedPeer  (peerId) => boolean
  */
-function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCertsImported = null, preVerifyTxs = null }) {
+function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCertsImported = null, preVerifyTxs = null, onCertSyncRequest = null }) {
   // Build Merkle tree from existing certificates
   let _merkle = _buildMerkleFromDAG();
 
@@ -157,6 +157,10 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
 
     const fromRound = request.fromRound || 1;
     const latestRound = dag.getLatestRound();
+    // A joiner we served a snapshot to now holds everything below fromRound.
+    if (typeof onCertSyncRequest === "function") {
+      try { onCertSyncRequest(remotePeer, fromRound); } catch { /* bookkeeping only */ }
+    }
 
     log.info(`Sync: peer requested from round ${fromRound} (we have ${latestRound})`);
 

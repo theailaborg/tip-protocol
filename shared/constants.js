@@ -109,6 +109,15 @@ const SNAPSHOT_REQUEST = Object.freeze({
   MAX_MS: 5000,
 });
 
+// Sender side. A joiner needs every cert after the snapshot's cert tail once
+// its install lands, however long the download took, so the sender pins that
+// range from GC for the joiner and releases it as the joiner's catch-up
+// requests advance. The bound below is a leak guard for a joiner that vanished
+// mid-transfer, never the working limit: at ~10KB per round it is ~180MB.
+const SNAPSHOT_SERVE = Object.freeze({
+  CERT_PIN_MAX_MS: 2 * 60 * 60_000,
+});
+
 // #132: 1-byte kind tag as each frame's first body byte routes frames as they
 // stream. Doubles as a format discriminator (a raw-protobuf frame starts 0x08),
 // so a version-mixed pair fails cleanly; a mismatch cannot fork the chain.
@@ -1070,6 +1079,7 @@ module.exports = {
   CLASSIFIER_CLIENT,
   SNAPSHOT_DOWNLOAD,
   SNAPSHOT_REQUEST,
+  SNAPSHOT_SERVE,
   SNAPSHOT_FRAME_KIND,
   SNAPSHOT_INSTALL_MARKER_KEY,
   SNAPSHOT_INSTALL_BATCH_ROWS,

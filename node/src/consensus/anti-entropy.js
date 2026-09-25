@@ -487,6 +487,20 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // it and leave Bullshark waiting for parent certs it never receives.
       const certFillFromRound = (installed.peer_committed_round || targetRound) + 1;
       if (targetRound > 0 && syncHandler && typeof syncHandler.syncFromPeer === "function") {
+        // The source first: it pinned every cert after the tail it shipped, so
+        // it is the one peer guaranteed to still hold the gap after a long
+        // download. Other peers may already have GC'd it and answer
+        // snapshot_required, which used to restart the whole snapshot.
+        try {
+          const fill = await syncHandler.syncFromPeer(peerId, { fromRound: certFillFromRound });
+          if (fill?.snapshotRequired) {
+            _log.warn(`anti-entropy: post-snapshot cert-fill: source ${peerId.slice(0, 12)} no longer holds rounds ${certFillFromRound}+ (earliest=${fill.earliestAvailableRound || "?"})`);
+          } else if (fill?.imported > 0) {
+            _log.info(`anti-entropy: post-snapshot cert-fill from source ${peerId.slice(0, 12)}: ${fill.imported} certs (rounds ${fill.fromRound}-${fill.toRound})`);
+          }
+        } catch (e) {
+          _log.warn(`anti-entropy: post-snapshot cert-fill from source ${peerId.slice(0, 12)} failed: ${e.message}`);
+        }
         let allPeerIds = [];
         try {
           if (network && typeof network.authorizedPeers === "function") {
