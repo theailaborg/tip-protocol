@@ -2088,3 +2088,37 @@ describe("post-snapshot cert-fill asks the snapshot source first", () => {
   });
 });
 
+// On a live chain a joiner behind a thin link is always the last pull's worth of
+// rounds behind at poll time and never met the exact-equality promotion
+// (test cluster, 2026-09-25: catching_up for 15 minutes at the live edge).
+describe("catching_up promotes within the sync tolerance", () => {
+  const mk = (gap, { root = "aabbcc", target = 100, peerJoin = "ready" } = {}) => {
+    const narwhal = fakeNarwhal({ joinState: "catching_up", catchUpTarget: target });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 500 }),
+      log: silentLog(),
+    });
+    return { narwhal, run: () => ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 500 + gap, state_merkle_root: root, join_state: peerJoin }), selfState({ committed_round: 500 })) };
+  };
+  test("a few rounds behind with the same root and the target passed: promoted, gap still pulled", async () => {
+    const { narwhal, run } = mk(8);
+    await run();
+    expect(narwhal._calls.markCaughtUp).toEqual([500]);
+    expect(narwhal.joinState()).toBe("ready");
+  });
+  test("beyond the tolerance: not promoted", async () => {
+    const { narwhal, run } = mk(CONSENSUS.SYNC_FROM_PEER_TOLERANCE_ROUNDS + 1);
+    await run();
+    expect(narwhal._calls.markCaughtUp).toEqual([]);
+  });
+  test("different root, target not reached, or peer not ready: not promoted", async () => {
+    for (const opts of [{ root: "ffffff" }, { target: 600 }, { peerJoin: "catching_up" }]) {
+      const { narwhal, run } = mk(8, opts);
+      await run();
+      expect(narwhal._calls.markCaughtUp).toEqual([]);
+    }
+  });
+});
+

@@ -1167,6 +1167,23 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         return "behind";
       }
 
+      // A joiner on a thin link is always the last pull's worth of rounds behind
+      // at poll time, so it never hits the exact-equality promotion below. With
+      // the tail past its target and the same state root, a gap inside the sync
+      // tolerance is caught up: promote, and let live gossip close the rest.
+      if (
+        _joinStBehind === "catching_up"
+        && typeof narwhal.markCaughtUp === "function"
+        && String(peerStatus.join_state || "ready") === "ready"
+        && selfRoot && peerRoot && selfRoot === peerRoot
+        && peerCommitted - selfCommitted <= CONSENSUS.SYNC_FROM_PEER_TOLERANCE_ROUNDS
+        && selfCommitted >= (typeof narwhal.catchUpTarget === "function" ? narwhal.catchUpTarget() : 0)
+        && !_peerWithHigherAttestedHead(selfState)
+      ) {
+        _log.info(`anti-entropy: catch-up within tolerance (${peerCommitted - selfCommitted} rounds behind ${peerStatus.node_id || peerId.slice(0, 12)}, same root), promoting to ready`);
+        narwhal.markCaughtUp(selfCommitted);
+      }
+
       // We're behind. Pull the gap via existing sync protocol. fromRound
       // starts at our next-uncommitted round so we only fetch the delta.
       _log.info(`anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} by ${peerCommitted - selfCommitted} rounds — pulling gap`);
