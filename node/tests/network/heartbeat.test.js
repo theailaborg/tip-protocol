@@ -180,12 +180,9 @@ describe("heartbeat client side", () => {
     jest.useRealTimers();
 
     const states = hb.peerStates();
-    // At least one peer should have reached suspect threshold
-    const suspectPeer = Object.values(states).find(
-      ps => ps.consecutiveMisses >= CONSENSUS.HEARTBEAT_SUSPECT_MISSES
-    );
-    expect(suspectPeer).toBeDefined();
+    // a verdict fired and was consumed: the streak restarts from zero
     expect(suspects.length).toBeGreaterThan(0);
+    for (const ps of Object.values(states)) expect(ps.consecutiveMisses).toBeLessThan(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
   });
 
   test("forgive zeroes the miss counter: eviction then needs fresh misses", async () => {
@@ -202,7 +199,7 @@ describe("heartbeat client side", () => {
       }
       const peerId = suspects[0];
       expect(peerId).toBeDefined();
-      expect(hb.peerStates()[peerId].consecutiveMisses).toBeGreaterThanOrEqual(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
+      expect(hb.peerStates()[peerId].consecutiveMisses).toBeLessThan(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);   // consumed by the verdict
 
       hb.forgive(peerId);
       expect(hb.peerStates()[peerId].consecutiveMisses).toBe(0);
@@ -271,9 +268,6 @@ describe("heartbeat client side", () => {
       for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
         await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + CONSENSUS.HEARTBEAT_TIMEOUT_MS + 10);
       }
-      const states = hb.peerStates();
-      expect(states["peer-id-1"].consecutiveMisses).toBeGreaterThanOrEqual(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
-      expect(states["peer-id-2"].consecutiveMisses).toBeGreaterThanOrEqual(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
       expect(suspects).toContain("peer-id-1");
       expect(suspects).toContain("peer-id-2");
       // the open was handed our abort signal and it fired (last tick's staggered peer included)

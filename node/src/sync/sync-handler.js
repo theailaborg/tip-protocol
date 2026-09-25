@@ -300,7 +300,15 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
 
     let stream;
     try {
-      stream = await network.openStream(peerId, SYNC_PROTOCOL);
+      // Bounded like the read: a hung open on a congested link must not dangle.
+      const openTimeoutMs = overrideTimeoutMs != null ? overrideTimeoutMs : CONSENSUS.SYNC_TOTAL_TIMEOUT_MS;
+      const openAbort = new AbortController();
+      const openTimer = setTimeout(() => openAbort.abort(), openTimeoutMs);
+      try {
+        stream = await network.openStream(peerId, SYNC_PROTOCOL, { signal: openAbort.signal });
+      } finally {
+        clearTimeout(openTimer);
+      }
     } catch (err) {
       throw new Error(`Sync: failed to open stream to ${peerId.slice(0, 12)}: ${err.message}`);
     }
