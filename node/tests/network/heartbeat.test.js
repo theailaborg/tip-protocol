@@ -39,9 +39,9 @@ function mkNetwork({ openStreamFn = null } = {}) {
   const authorizedMap = { "peer-id-1": "tip://node/peer1", "peer-id-2": "tip://node/peer2" };
   return {
     handle: async (proto, fn) => { handlers[proto] = fn; },
-    openStream: async (peerId, proto) => {
+    openStream: async (peerId, proto, opts) => {
       if (!openStreamFn) throw new Error("no openStream configured");
-      return openStreamFn(peerId, proto);
+      return openStreamFn(peerId, proto, opts);
     },
     authorizedPeers: () => ({ ...authorizedMap }),
     handlers,
@@ -247,6 +247,37 @@ describe("heartbeat client side", () => {
         await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
       }
       expect(suspects).toContain("peer-id-1");
+    } finally {
+      hb.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  // A black-holed peer makes the stream open hang until libp2p's own deadline;
+  // the tick awaits every peer, so that froze the whole heartbeat (test cluster,
+  // 2026-09-25: one miss in 75s, no eviction). The probe is bounded by our timer.
+  test("a hung stream open is a miss at HEARTBEAT_TIMEOUT_MS and never stalls the tick", async () => {
+    const suspects = [];
+    const signals = [];
+    const { hb } = mkHeartbeat({
+      openStreamFn: (peerId, proto, opts) => { signals.push(opts && opts.signal); return new Promise(() => {}); },
+      onPeerSuspect: (peerId) => suspects.push(peerId),
+    });
+    jest.useFakeTimers();
+    try {
+      hb.start();
+      for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
+        await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + CONSENSUS.HEARTBEAT_TIMEOUT_MS + 10);
+      }
+      const states = hb.peerStates();
+      expect(states["peer-id-1"].consecutiveMisses).toBeGreaterThanOrEqual(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
+      expect(states["peer-id-2"].consecutiveMisses).toBeGreaterThanOrEqual(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
+      expect(suspects).toContain("peer-id-1");
+      expect(suspects).toContain("peer-id-2");
+      // the open was handed our abort signal and it fired (last tick's staggered peer included)
+      await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_TIMEOUT_MS);
+      expect(signals.length).toBeGreaterThan(0);
+      expect(signals.every((s) => s && s.aborted)).toBe(true);
     } finally {
       hb.stop();
       jest.useRealTimers();

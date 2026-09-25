@@ -599,8 +599,8 @@ async function createNetworkNode(options = {}) {
      * @param {string} protocol e.g. "/tip/sync/1.0.0"
      * @returns {Promise<Stream>}
      */
-    async openStream(peerId, protocol) {
-      return node.dialProtocol(peerIdFromString(peerId), protocol);
+    async openStream(peerId, protocol, opts) {
+      return node.dialProtocol(peerIdFromString(peerId), protocol, opts);
     },
 
     broadcastToAuthorized,
