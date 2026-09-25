@@ -220,3 +220,35 @@ describe("bullshark _maybeRunCertGC (commit-path trigger)", () => {
     }
   });
 });
+
+// A joiner mid-download needs every cert after its snapshot's tail; the
+// snapshot handler pins that range and GC must not cut below it.
+describe("bullshark _maybeRunCertGC honours certRetentionFloor", () => {
+  test("cutoff is lowered to the pinned floor, and restored when the pin goes", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    registerNode(dag);
+    let floor = 0;
+    const bullshark = createBullshark({
+      dag,
+      getNodeIds: () => [NODE_ID],
+      onOrderedTxs: () => { },
+      certRetentionFloor: () => floor,
+    });
+    const interval = CONSENSUS.GC_INTERVAL_COMMITS;
+    const gcDepth = CONSENSUS.GC_DEPTH;
+    const expectedCutoff = interval * 2;
+    for (let r = 1; r < expectedCutoff + 5; r++) dag.saveCertificate(makeCert(r));
+
+    floor = expectedCutoff - 6;   // a joiner still needs rounds from here on
+    bullshark.markOrderedUpTo(gcDepth);
+    driveCommits(bullshark, dag, interval);
+    expect(bullshark.stats().metrics.gc_runs).toBe(1);
+    expect(dag.getEarliestCertRound()).toBe(expectedCutoff - 6);
+
+    floor = 0;                    // pin released: the normal window applies on the next run
+    driveCommits(bullshark, dag, interval);
+    expect(bullshark.stats().metrics.gc_runs).toBe(2);
+    expect(dag.getEarliestCertRound()).toBeGreaterThanOrEqual(expectedCutoff);
+  });
+});
+

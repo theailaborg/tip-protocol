@@ -1368,8 +1368,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     return true;
   }
 
+  let _tailCompleteLogged = false;
+
   function _startWatchdog() {
     if (_watchdogTimer) return;
+    _tailCompleteLogged = false;
     const tick = Math.max(500, Math.floor(CONSENSUS.ROUND_TIMEOUT_MS / 2));
     _watchdogTimer = safeSetInterval(_watchdogCheck, tick, "narwhal.watchdog");
   }
@@ -1383,6 +1386,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_joinState !== "catching_up" || _catchingUpEnteredAt === 0) return;
     const elapsed = nowMs() - _catchingUpEnteredAt;
     if (elapsed <= STUCK_CATCHING_UP_MS) return;
+    // The tail is complete; only the promotion assertion (a sync-status poll
+    // that matches roots) is pending. On a congested link those polls time
+    // out for a while. Reverting here threw away a finished install and
+    // started another multi-minute snapshot: the slow-link join loop.
+    if (dag.getLatestRound() >= _catchUpTarget) {
+      if (!_tailCompleteLogged) {
+        log.info(`Watchdog: cert tail reached target ${_catchUpTarget} after ${Math.floor(elapsed / 1000)}s; holding catching_up until a peer confirms the state root`);
+        _tailCompleteLogged = true;
+      }
+      return;
+    }
     log.warn(`Watchdog: catching_up stalled ${Math.floor(elapsed / 1000)}s (target=${_catchUpTarget}, dag=${dag.getLatestRound()}) — reverting to syncing for fresh snapshot`);
     _joinState = "syncing";
     _catchingUpEnteredAt = 0;

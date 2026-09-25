@@ -2059,3 +2059,33 @@ describe("frontier reconciliation (sub_quorum escape)", () => {
     expect(frontier).toHaveLength(1);
   });
 });
+
+// After a long download the source is the one peer that still holds the
+// certs after the snapshot's tail (it pinned them); asking only the others
+// got snapshot_required and restarted the whole snapshot (test cluster, 2026-09-25).
+describe("post-snapshot cert-fill asks the snapshot source first", () => {
+  test("the source is synced from certFillFromRound before the other peers", async () => {
+    const calls = [];
+    const sync = fakeSyncHandler({
+      syncImpl: async (peerId, opts) => {
+        calls.push([peerId, opts.fromRound]);
+        if (calls.length === 1) return { imported: 0, fromRound: 6, toRound: 6, peerLatestRound: 5000, snapshotRequired: true, earliestAvailableRound: 4500 };
+        return { imported: 3, fromRound: opts.fromRound, toRound: opts.fromRound + 2, peerLatestRound: 5010 };
+      },
+    });
+    const snap = fakeSnapshotHandler({ snapImpl: async () => ({ round: 5000, peer_committed_round: 5004, consensus_index: 42, rows_installed: 100, state_merkle_root: "deadbeef" }) });
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { "peer-id": "tip://node/peer", "other-1": "tip://node/other1" } }),
+      syncHandler: sync, snapshotHandler: snap, narwhal: fakeNarwhal(),
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 5 }),
+      log: silentLog(),
+    });
+    const result = await ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 5000 }), selfState({ committed_round: 5 }));
+    expect(result).toBe("snapshot_installed");
+    expect(calls[0]).toEqual(["peer-id", 6]);        // the gap pull that hit the GC horizon
+    expect(calls[1]).toEqual(["peer-id", 5005]);     // cert-fill from the SOURCE first
+    expect(calls.slice(2).map(([p]) => p)).toEqual(["other-1"]);
+  });
+});
+
