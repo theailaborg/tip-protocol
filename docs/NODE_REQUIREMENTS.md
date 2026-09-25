@@ -17,6 +17,7 @@ traffic.
 | Disk | 20 GB gp3 | 8 GB volumes caused four disk-full incidents in two days of testing. Baseline (OS + images + WAL) is ~4.5 GB; chain data grows ~25 KB per registration. |
 | Runtime | Node.js 24+ | Native ML-DSA verify via OpenSSL 3.5 (0.25 ms/verify). Node 22 works but verifies through the JS fallback at ~5 ms, dropping the sustained ceiling from ~40 to ~30 reg/s. |
 | Software | Docker + Compose, postgres 16 | The shipped compose stack. |
+| Network | 25 Mbit/s download and upload, sustained; queueing delay under 1 s | Live consensus gossip alone is ~2 Mbit/s inbound per node on a 3-member federation (measured 2026-09-25: a batch and a certificate from every member per round, ~2.5 rounds/s, 3.3 KB ML-DSA signatures, each received from several peers) and it grows with the member count. A rejoin downloads a ~45 MB snapshot plus the certificate tail; at 25 Mbit/s that is seconds, at 1 Mbit/s the node installs but can never catch up. A link that buffers seconds of traffic stalls transfers even when its raw rate is fine, so a dedicated line beats a shared office connection. |
 | Media storage | S3 bucket + KMS key (prod) | `TIP_MEDIA_BACKEND=s3` with `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`, `TIP_MEDIA_S3_KMS_KEY_ID` and scoped IAM credentials. Media bytes live off-node (presigned upload/download), so media volume does not count against node disk. Dev/test can use `TIP_MEDIA_BACKEND=fs`, which DOES consume node disk. On S3-backed nodes the single-request `POST /v1/media/upload` answers `410`, so uploads never spool to node disk; per-mime caps default to 15 GiB video / 1 GiB audio / 1 GiB image (`TIP_MAX_*_BYTES`). |
 
 Capacity at minimum spec: ~15 reg/s with flat latencies (submit p95 under
@@ -32,6 +33,7 @@ Headroom for growth and no operational babysitting.
 | CPU | 4 vCPU, non-burstable (m7i/c7i class) | Burstable (t3) CPU credits decay under sustained load. Four dedicated cores roughly double the ceiling and leave room for `TIP_CRYPTO_POOL_SIZE=2`. |
 | RAM | 8 GB | Pushes the in-memory-mirror ceiling past ~1M txs. |
 | Disk | 50 GB gp3 | ~2M registrations of chain growth plus images, WAL, logs, and snapshot serving without thought. |
+| Network | 50 Mbit/s or more, symmetric, dedicated | Headroom for federation growth: the per-node cost grows roughly with the square of the member count until certificate compaction lands, so this figure will be revised as members join. |
 | Monitoring | separate small instance | Prometheus + Loki + Grafana per `infra/observability/prod/README.md`; keep the disk-free panel wired, it fires before postgres starts failing writes. |
 
 ## Two properties operators must understand
