@@ -207,6 +207,44 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     expect(computeStateMerkleRoot(destDag)).toBe(fx.stateRoot);
   });
 
+  // A reconnect after the install landed used to re-enter sync mode (catching_up
+  // → syncing) and ask from the snapshot's COMMIT round, below the peer's GC
+  // horizon: a restart of the whole snapshot (test cluster, 2026-09-25).
+  test("catching_up node on re-authorize: no sync mode, no snapshot, cert pull from the tail it holds", async () => {
+    const narwhal = stubNarwhal();
+    narwhal.markSnapshotInstalled(100, 150);
+    expect(narwhal.joinState()).toBe("catching_up");
+    const syncHandler = stubSyncHandler();
+    const snapCalls = [];
+    const snapshotHandler = { requestSnapshotFromPeer: async (p, o) => { snapCalls.push([p, o]); return null; } };
+    const bullshark = { markOrderedUpTo: () => { }, lastCommittedRound: () => 100 };
+    await onPeerAuthorized("peer-again", "TIP_NODE_A", {
+      queryPeerStatus: async () => ({ committed_round: 999999 }),
+      syncHandler, snapshotHandler, commitHandler: { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) },
+      dag: { getLatestRound: () => 640 }, narwhal, bullshark, nodeId: "OUR_NODE",
+    });
+    expect(narwhal.events).not.toContain("enter");
+    expect(snapCalls).toHaveLength(0);
+    expect(syncHandler.calls).toHaveLength(1);
+    expect(syncHandler.calls[0].opts.fromRound).toBe(641);
+    expect(narwhal.joinState()).toBe("catching_up");
+  });
+
+  test("phase-2 watermark is the installed cert tail, not the snapshot's commit round", async () => {
+    const narwhal = stubNarwhal();
+    const syncHandler = stubSyncHandler();
+    const snapshotHandler = {
+      requestSnapshotFromPeer: async () => { narwhal.markSnapshotInstalled(100, 640); return { round: 100, peer_committed_round: 640, rows_installed: 1 }; },
+    };
+    const bullshark = { markOrderedUpTo: () => { }, lastCommittedRound: () => 50 };
+    await onPeerAuthorized("peer-x", "TIP_NODE_A", {
+      queryPeerStatus: async () => ({ committed_round: 999999 }),
+      syncHandler, snapshotHandler, commitHandler: { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) },
+      dag: { getLatestRound: () => 640 }, narwhal, bullshark, nodeId: "OUR_NODE",
+    });
+    expect(syncHandler.calls[0].opts.fromRound).toBe(641);
+  });
+
   test("#45: cert-sync returns snapshotRequired → bootstrap retries snapshot, then re-syncs from new anchor", async () => {
     // Live-observed gap: peer's cert GC horizon is past the joiner's
     // requested round → sync-handler returns { imported: 0,
