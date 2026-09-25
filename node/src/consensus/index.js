@@ -484,6 +484,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       const serving = snapshotHandler && typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId);
       if (installing || serving) {
         log.warn(`heartbeat: peer ${who} is suspect during snapshot ${installing ? "install" : "serve"}, not evicting`);
+        heartbeat.forgive(peerId);
         return;
       }
       log.warn(

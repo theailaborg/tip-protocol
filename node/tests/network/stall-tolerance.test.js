@@ -73,5 +73,9 @@ describe("liveness has one owner", () => {
     // both checks must gate the eviction, not follow it
     expect(body.indexOf("isInstalling()")).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
     expect(body.indexOf("isServingTo(peerId)")).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
+    // standing down must also forgive: misses counted during the transfer would
+    // otherwise evict on the very next tick after it ends (seen on the test cluster)
+    expect(body).toMatch(/heartbeat\.forgive\(peerId\)/);
+    expect(body.indexOf("heartbeat.forgive(peerId)")).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
   });
 });

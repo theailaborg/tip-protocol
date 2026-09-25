@@ -188,6 +188,37 @@ describe("heartbeat client side", () => {
     expect(suspects.length).toBeGreaterThan(0);
   });
 
+  test("forgive zeroes the miss counter: eviction then needs fresh misses", async () => {
+    const suspects = [];
+    const { hb } = mkHeartbeat({
+      openStreamFn: () => { throw new Error("connection refused"); },
+      onPeerSuspect: (peerId) => suspects.push(peerId),
+    });
+    jest.useFakeTimers();
+    try {
+      hb.start();
+      for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
+        await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      }
+      const peerId = suspects[0];
+      expect(peerId).toBeDefined();
+      expect(hb.peerStates()[peerId].consecutiveMisses).toBeGreaterThanOrEqual(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
+
+      hb.forgive(peerId);
+      expect(hb.peerStates()[peerId].consecutiveMisses).toBe(0);
+      expect(() => hb.forgive("never-seen-peer")).not.toThrow();
+
+      // One more miss is not a verdict any more: the transfer-time misses are gone.
+      const verdictsBefore = suspects.filter((p) => p === peerId).length;
+      await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      expect(hb.peerStates()[peerId].consecutiveMisses).toBeLessThan(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
+      expect(suspects.filter((p) => p === peerId).length).toBe(verdictsBefore);
+    } finally {
+      hb.stop();
+      jest.useRealTimers();
+    }
+  });
+
   test("recovery after misses resets consecutiveMisses to 0", async () => {
     let callCount = 0;
 

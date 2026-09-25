@@ -47,7 +47,7 @@ const log = getLogger("tip.heartbeat");
  * @param {Function} [options.isAuthorizedPeer]  (libp2pPeerId) => bool
  * @param {Function} [options.onPeerSuspect]     (libp2pPeerId, tipNodeId) => void — called after SUSPECT_MISSES misses
  * @param {Object}   [options.log]               Override logger
- * @returns {{ start, stop, registerHandler, peerStates }}
+ * @returns {{ start, stop, registerHandler, peerStates, rttStats, forgive }}
  */
 function createHeartbeatManager({
   network,
@@ -235,6 +235,13 @@ function createHeartbeatManager({
     _log.info("heartbeat stopped");
   }
 
+  // Misses accumulated while a bulk transfer starved this peer's pings are not
+  // evidence once the link is idle: eviction needs SUSPECT_MISSES fresh ones.
+  function forgive(peerId) {
+    const ps = _peerState.get(peerId);
+    if (ps) ps.consecutiveMisses = 0;
+  }
+
   function peerStates() {
     const authorized = (network && network.authorizedPeers && network.authorizedPeers()) || {};
     const out = {};
@@ -244,7 +251,7 @@ function createHeartbeatManager({
     return out;
   }
 
-  return { start, stop, registerHandler, peerStates, rttStats };
+  return { start, stop, registerHandler, peerStates, rttStats, forgive };
 }
 
 module.exports = { createHeartbeatManager };

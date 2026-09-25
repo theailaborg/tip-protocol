@@ -2018,6 +2018,10 @@ class KnexAdapter {
       }
       rows.length = 0;
     }
+    // Bulk rows bypass the _ff chain, so nothing else advances this clock during
+    // an install; left stale, the first ordinary write afterwards reads as a
+    // multi-minute stall and the watchdog fail-stops a healthy node.
+    this._ffLastSettledMs = nowMs();
   }
 
   beginBulkInstall() { this._bulkInstall = new Map(); }
