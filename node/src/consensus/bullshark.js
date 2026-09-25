@@ -821,8 +821,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
     let cutoff = _lastCommittedRound - gcDepth;
     if (cutoff <= 0) return;
-    // A joiner mid-download still needs every cert after its snapshot's tail;
-    // the snapshot handler pins that range until the joiner's catch-up passes it.
+    // A joiner mid-download still needs every cert after its snapshot's tail.
     const floor = typeof certRetentionFloor === "function" ? Number(certRetentionFloor() || 0) : 0;
     if (floor > 0 && floor < cutoff) {
       if (floor !== _lastLoggedPinFloor) {

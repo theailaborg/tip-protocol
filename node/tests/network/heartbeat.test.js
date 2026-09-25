@@ -242,7 +242,9 @@ describe("heartbeat client side", () => {
       expect(suspects).not.toContain("peer-id-1");
       // peer-id-2 never pinged us: same misses, real verdict
       expect(suspects).toContain("peer-id-2");
-      // once its pings stop for a whole streak of SUSPECT_MISSES misses, the verdict is real again
+      // once its pings stop for the silence bound AND a whole streak, the verdict is real again
+      const { HEARTBEAT_INBOUND_SILENCE_MS } = require("../../../shared/constants");
+      await jest.advanceTimersByTimeAsync(HEARTBEAT_INBOUND_SILENCE_MS);
       for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
         await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
       }
@@ -278,6 +280,32 @@ describe("heartbeat client side", () => {
       await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_TIMEOUT_MS);
       expect(signals.length).toBeGreaterThan(0);
       expect(signals.every((s) => s && s.aborted)).toBe(true);
+    } finally {
+      hb.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  // A live peer behind a bloated link pings us in bunches; a ping older than the
+  // current streak but inside HEARTBEAT_INBOUND_SILENCE_MS is still evidence.
+  test("an inbound ping within the silence bound but before the streak still blocks the verdict", async () => {
+    const { HEARTBEAT_INBOUND_SILENCE_MS } = require("../../../shared/constants");
+    const suspects = [];
+    const { hb, net } = mkHeartbeat({
+      openStreamFn: () => { throw new Error("connection refused"); },
+      onPeerSuspect: (peerId) => suspects.push(peerId),
+    });
+    await hb.registerHandler();
+    jest.useFakeTimers();
+    try {
+      await callHandler(net);   // one ping from peer-id-1, then silence
+      hb.start();
+      const streak = CONSENSUS.HEARTBEAT_SUSPECT_MISSES + 1;
+      for (let i = 0; i < streak; i++) await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      expect(suspects).not.toContain("peer-id-1");     // ping predates the streak, inside the bound
+      expect(suspects).toContain("peer-id-2");         // never heard from
+      await jest.advanceTimersByTimeAsync(HEARTBEAT_INBOUND_SILENCE_MS);
+      expect(suspects).toContain("peer-id-1");         // silent past the bound: real verdict
     } finally {
       hb.stop();
       jest.useRealTimers();
