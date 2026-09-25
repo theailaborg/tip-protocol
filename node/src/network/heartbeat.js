@@ -147,19 +147,39 @@ function createHeartbeatManager({
     const sentAt = nowMs();
     let stream = null;
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { if (stream) stream.close(); } catch { /* ignore */ }
-    }, CONSENSUS.HEARTBEAT_TIMEOUT_MS);
+    // The probe is bounded by OUR timer, whatever the stream open does: a
+    // black-holed peer makes dialProtocol hang until libp2p's own deadline, and
+    // the tick awaits every peer, so one such peer froze the whole heartbeat
+    // (no misses, no eviction: the very peer this probe exists to evict).
+    const abort = new AbortController();
+    let expire;
+    const deadline = new Promise((_, reject) => {
+      expire = setTimeout(() => {
+        timedOut = true;
+        abort.abort();
+        try { if (stream) stream.close(); } catch { /* ignore */ }
+        reject(new Error("timeout"));
+      }, CONSENSUS.HEARTBEAT_TIMEOUT_MS);
+    });
+    deadline.catch(() => { /* observed via the race below */ });
+    const timer = expire;
 
-    try {
-      stream = await network.openStream(peerId, NETWORK.HEARTBEAT_PROTOCOL);
+    const probe = (async () => {
+      const opened = network.openStream(peerId, NETWORK.HEARTBEAT_PROTOCOL, { signal: abort.signal });
+      // If the open outlives the deadline, close whatever it eventually yields.
+      opened.then((s) => { if (timedOut) { try { s.close(); } catch { /* ignore */ } } }, () => { });
+      stream = await opened;
       await stream.sink([ping]);
-
       const chunks = [];
       for await (const chunk of stream.source) {
         chunks.push(chunk.subarray ? chunk.subarray() : chunk);
       }
+      return chunks;
+    })();
+    probe.catch(() => { /* observed via the race below */ });
+
+    try {
+      const chunks = await Promise.race([probe, deadline]);
 
       if (timedOut || chunks.length === 0) {
         throw new Error(timedOut ? "timeout" : "empty response");
