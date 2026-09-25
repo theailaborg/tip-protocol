@@ -29,12 +29,15 @@ the identifier from the table in section 2 and use the matching wording, e.g.
 > 6. Domain the node will serve on (e.g. node.[partner].com). This gets
 >    published on-chain, so it must be the address you intend to keep
 > 7. Confirmation that inbound TCP 4000 and 4001 are open to the internet
-> 8. Ops contact (name + email) for node issues
+> 8. The node host's internet link: 25 Mbit/s download and upload sustained
+>    minimum, 50 recommended, ideally a dedicated line rather than the shared
+>    office connection
+> 9. Ops contact (name + email) for node issues
 >
 > Once these arrive we'll register your org and node, and send the credentials
 > bundle.
 
-Items 5-8 apply when the organization will also run a node; drop them for an
+Items 5-9 apply when the organization will also run a node; drop them for an
 identity-only registration. The rest of this document explains what each answer
 must look like before you act on it.
 
@@ -65,6 +68,7 @@ Ask in the same message, so registration is not blocked on a second round-trip:
 | static public IP of the node host | the node's advertised address in its env; how peers dial it |
 | domain the node will serve on | published **on-chain** as their API endpoint; must be the address they intend to keep |
 | confirmation TCP 4000 and 4001 are open to the internet | 4000 API, 4001 p2p; without 4001 they never fully join |
+| internet link of the node host | 25 Mbit/s symmetric sustained minimum, 50 recommended (`NODE_REQUIREMENTS.md`); slower links install but cannot keep up with gossip |
 | ops contact name + email | who we call when their node misbehaves |
 
 The mainnet node needs its **own host**: a partner already running a testnet node
