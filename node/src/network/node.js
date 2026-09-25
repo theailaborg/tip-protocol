@@ -178,6 +178,12 @@ async function createNetworkNode(options = {}) {
     peerDiscovery,
     // Raise libp2p's ping-timeout floor so a brief event-loop stall doesn't abort
     // a healthy committee connection (default floor is 5s; stalls can exceed it).
+    connectionManager: {
+      // A negotiation reply rides the peer's egress queue; right after a bulk
+      // transfer that is tens of seconds, and libp2p's 10s default failed every open.
+      inboundStreamProtocolNegotiationTimeout: CONSENSUS.STREAM_NEGOTIATION_TIMEOUT_MS,
+      outboundStreamProtocolNegotiationTimeout: CONSENSUS.STREAM_NEGOTIATION_TIMEOUT_MS,
+    },
     connectionMonitor: {
       pingTimeout: { minTimeout: CONSENSUS.CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS },
       // Liveness belongs to the heartbeat; a snapshot mid-install starves pings.
