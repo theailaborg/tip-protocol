@@ -365,10 +365,13 @@ async function createNetworkNode(options = {}) {
     }
   });
 
+  const _disconnectsByPeer = new Map();   // who dropped, not just that we observed a drop
   node.addEventListener("peer:disconnect", (event) => {
     const remotePeerId = event.detail.toString();
     _netMetrics.disconnects++;
     const tipNodeId = _authorizedPeers.get(remotePeerId);
+    const who = tipNodeId || `unauthorized:${remotePeerId.slice(0, 12)}`;
+    _disconnectsByPeer.set(who, (_disconnectsByPeer.get(who) || 0) + 1);
     // Remember the binding so a quick reconnect skips the re-handshake (see peer:connect).
     // We still de-authorize now so dialKnownPeers re-dials (it only dials unauthorized peers).
     if (tipNodeId) {
@@ -555,7 +558,7 @@ async function createNetworkNode(options = {}) {
     directPeers: () => directPeers.list(),
 
     /** Cumulative connection-churn counters (connects/disconnects/closes/re-auth/force-redials). */
-    metrics: () => ({ ..._netMetrics }),
+    metrics: () => ({ ..._netMetrics, disconnects_by_peer: Object.fromEntries(_disconnectsByPeer) }),
 
     /** Per-peer outbound delivery health (send ok/fail, consecutive fails, last-ok age). */
     channelHealth: () => _channelHealth.snapshot().map((c) => ({

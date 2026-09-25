@@ -263,13 +263,14 @@ The mesh and transport layer. Connectivity completeness, connect/disconnect flap
 | Disconnect flap (/min) | Fleet-wide peer disconnect rate. Sustained > 0 is the flap that reads as 'nodes randomly drop'. | `tip_network_peer_disconnects_total` |
 | Re-handshakes (/min) | Fleet-wide re-handshakes of connected-but-unauthorized peers (auth-window recovery). | `tip_network_rehandshakes_total` |
 | Auto-heals fired (/min) | Force-close + re-dial events that rebuild a half-dead connection. > 0 means the transport auto-heal fired (needs this branch deployed to emit). | `tip_network_force_redials_total` |
-| Per-node connectivity | Per-node mesh view: authorized vs connected peers, full-mesh flag, who each node is connected to, and churn counters. | `tip_node_registry_info, tip_network_peers_authorized` |
+| Per-node connectivity | Per-node mesh view: authorized vs connected peers, full-mesh flag, who each node is connected to, and churn counters ('drops observed' = disconnects this node saw, not drops of this node). | `tip_node_registry_info, tip_network_peers_authorized` |
 | Comms direction matrix (row can't reach column) | Consecutive heartbeat misses; rows = observing node, columns = peer. A row that is all-red while its own column stays green = that node can receive but not send (broken outbound di (more in-panel) | `tip_heartbeat_peer_consecutive_misses, tip_node_registry_info` |
 | Consecutive send failures per peer | Current consecutive outbound-send failures to a peer (resets on success or auto-heal). The first thing to climb when a node goes one-directionally deaf. | `tip_network_peer_send_consecutive_failures` |
 | Authorized peers per node | Connected + handshaked committee peers. | `tip_network_peers_authorized, tip_node_registry_info` |
 | Connectivity complete (1 = full mesh) | 1 when a node is connected to every active committee member. | `tip_network_connectivity_complete, tip_node_registry_info` |
 | Connects per node (/min) | libp2p peer:connect rate. Paired with disconnects, this is the flap that reads as 'node goes offline randomly'. | `tip_network_peer_connects_total, tip_node_registry_info` |
 | Disconnects per node (/min) | Rate of libp2p peer disconnects. | `tip_network_peer_disconnects_total, tip_node_registry_info` |
+| Disconnects by peer (who is dropping, /min) | Disconnect events attributed to the peer that dropped, summed over every observer; the flapping peer is the one with the line. | `tip_network_peer_disconnects_by_peer_total` |
 | Connection closes per node (/min) | libp2p connection:close rate (incl. pre-auth) - the rawest flap signal. | `tip_network_connection_closes_total, tip_node_registry_info` |
 | Fast re-auths per node (/min) | Reconnects restored within the 15s grace window (no full handshake). | `tip_network_fast_reauths_total, tip_node_registry_info` |
 | Re-handshakes per node (/min) | Re-handshakes of connected-but-unauthorized peers (recovery of a stale auth window). | `tip_network_rehandshakes_total, tip_node_registry_info` |

@@ -241,6 +241,13 @@ function networkSection(network, dag) {
   const cm = (net.metrics?.()) || {};
   out.push(counter("tip_network_peer_connects_total", "libp2p peer:connect events since process start", cm.connects));
   out.push(counter("tip_network_peer_disconnects_total", "libp2p peer:disconnect events since process start", cm.disconnects));
+  // The unlabelled total counts drops THIS node observed; the per-peer split says who dropped.
+  const byPeer = cm.disconnects_by_peer || {};
+  if (Object.keys(byPeer).length > 0) {
+    out.push("# HELP tip_network_peer_disconnects_by_peer_total libp2p peer:disconnect events since process start, by the peer that dropped");
+    out.push("# TYPE tip_network_peer_disconnects_by_peer_total counter");
+    for (const [peer, n] of Object.entries(byPeer)) out.push(line("tip_network_peer_disconnects_by_peer_total", Number(n) || 0, { peer }));
+  }
   out.push(counter("tip_network_connection_closes_total", "libp2p connection:close events (incl. pre-auth), the rawest flap signal", cm.conn_closes));
   out.push(counter("tip_network_handshakes_initiated_total", "Full ML-DSA handshakes this node initiated (no-op skips excluded)", cm.handshakes_initiated));
   out.push(counter("tip_network_rehandshakes_total", "Re-handshakes of connected-but-unauthorized peers", cm.rehandshakes));
