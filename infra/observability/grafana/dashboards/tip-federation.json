@@ -125,7 +125,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "count(up{job=\"tip-federation\"} == 1)"
+          "expr": "count(max_over_time(up{job=\"tip-federation\"}[1m]) == 1)"
         }
       ],
       "options": {
@@ -469,7 +469,7 @@
         },
         {
           "refId": "Online",
-          "expr": "(up{job=\"tip-federation\"} == 1) * on(instance) group_left(node) (group by (instance, node) (tip_process_uptime_seconds))",
+          "expr": "(max_over_time(up{job=\"tip-federation\"}[1m]) == 1) * on(instance) group_left(node) (group by (instance, node) (last_over_time(tip_process_uptime_seconds[1m])))",
           "format": "table",
           "instant": true
         },
