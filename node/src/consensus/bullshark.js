@@ -819,7 +819,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     const gcDepth = CONSENSUS.GC_DEPTH;
     if (!gcDepth || gcDepth <= 0) return;
 
-    let cutoff = _lastCommittedRound - gcDepth;
+    // Retention is the larger of the genesis depth and the node-local floor.
+    const retainRounds = Math.max(gcDepth, Number(CONSENSUS.CERT_RETENTION_MIN_ROUNDS || 0));
+    let cutoff = _lastCommittedRound - retainRounds;
     if (cutoff <= 0) return;
     // A joiner mid-download still needs every cert after its snapshot's tail.
     const floor = typeof certRetentionFloor === "function" ? Number(certRetentionFloor() || 0) : 0;
@@ -843,7 +845,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
         if (typeof onCertsPruned === "function") {
           try { onCertsPruned(); } catch (err) { log.warn(`onCertsPruned hook failed: ${err.message}`); }
         }
-        log.info(`Cert GC: pruned ${n} certs with round < ${cutoff} (retaining last ${gcDepth} rounds)`);
+        log.info(`Cert GC: pruned ${n} certs with round < ${cutoff} (retaining last ${retainRounds} rounds)`);
 
         // Reclaim freed SQLite pages back to the filesystem. Without this
         // the DB file keeps growing even with row count bounded — DELETE

@@ -2484,6 +2484,62 @@
         "w": 12,
         "h": 7
       }
+    },
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "Round time per node (s)",
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 77
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "datasource": null,
+          "refId": "A",
+          "expr": "(1 / rate(tip_narwhal_current_round{node=~\"$node\"}[2m])) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}}"
+        },
+        {
+          "datasource": null,
+          "refId": "B",
+          "expr": "1 / max(rate(tip_narwhal_current_round[2m]))",
+          "legendFormat": "fleet"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "decimals": 2,
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "description": "Seconds per consensus round as each node observes it (1 / rate of its current round over 2m). Healthy nodes agree within noise; a node that reads slower is lagging. 'fleet' is the fastest node's view. Cert retention is set in rounds (gc_depth, TIP_CERT_RETENTION_MIN_ROUNDS), so recoverable outage in minutes = rounds x this value."
     }
   ],
   "links": [
