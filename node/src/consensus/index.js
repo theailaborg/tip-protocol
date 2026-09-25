@@ -405,7 +405,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   if (network && typeof network.setTransferGuard === "function") {
     network.setTransferGuard((peerId) =>
       (narwhal && typeof narwhal.joinState === "function" && narwhal.joinState() !== "ready")
-      || (typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId)));
+      || (typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId))
+      || (typeof syncHandler.isServingTo === "function" && syncHandler.isServingTo(peerId)));
   }
 
   // Periodic heartbeat summary — emits one INFO line per interval with
@@ -486,12 +487,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     isAuthorizedPeer,
     onPeerSuspect: (peerId, tipNodeId) => {
       const who = tipNodeId?.slice(-8) || peerId.slice(0, 12);
-      // A snapshot in flight starves pings both ways; evicting while we install or
-      // serve THIS peer kills the transfer. (AE's cached join_state is stale here.)
-      const installing = snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling();
-      const serving = snapshotHandler && typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId);
-      if (installing || serving) {
-        log.warn(`heartbeat: peer ${who} is suspect ${installing ? "during our snapshot install" : "while we serve it a snapshot"}, not evicting`);
+      // A bulk sync (snapshot or cert tail) starves pings both ways; evicting while
+      // we are still joining, or while we stream to THIS peer, kills the transfer.
+      const joining = narwhal && typeof narwhal.joinState === "function" && narwhal.joinState() !== "ready";
+      const serving = (snapshotHandler && typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId))
+        || (syncHandler && typeof syncHandler.isServingTo === "function" && syncHandler.isServingTo(peerId));
+      if (joining || serving) {
+        log.warn(`heartbeat: peer ${who} is suspect ${joining ? `while we are ${narwhal.joinState()}` : "while we stream to it"}, not evicting`);
         heartbeat.forgive(peerId);
         return;
       }

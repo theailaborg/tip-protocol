@@ -25,6 +25,8 @@
 "use strict";
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
+const { SNAPSHOT_SERVE } = require("../../../shared/constants");
 const { createMerkleTree } = require("./merkle-tree");
 const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
 const { serializeCertificate, deserializeCertificate } = require("../consensus/certificate-codec");
@@ -133,6 +135,16 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
    * critical once the DAG gets large enough that the encoded aggregate
    * would approach or exceed 16 MB.
    */
+  const _serving = new Map();   // remotePeer → until ms: cert tail streaming, or its tail still draining
+
+  function isServingTo(peerId) {
+    const until = _serving.get(peerId);
+    if (until === undefined) return false;
+    if (nowMs() < until) return true;
+    _serving.delete(peerId);
+    return false;
+  }
+
   async function _handleIncomingSync(stream, remotePeer) {
     // Request is still a single unframed message — one-shot request path
     // matches snapshot-handler's convention.
@@ -195,6 +207,11 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
     // consumption on the sender is bounded by a single Certificate's
     // protobuf encoding (few KB), not by total cert count.
     let certsSent = 0;
+    // A long tail over a thin link is a bulk transfer like a snapshot: the
+    // joiner's pings queue behind it, so liveness verdicts on it stand down.
+    const startedAt = nowMs();
+    _serving.set(remotePeer, Number.MAX_SAFE_INTEGER);
+    try {
     await _sendFramedResponse(stream, remotePeer, {
       header: {
         fromRound, toRound: latestRound, latestRound,
@@ -221,6 +238,13 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
     });
 
     log.info(`Sync: sent ${certsSent} certificates (rounds ${fromRound}-${latestRound})`);
+    } finally {
+      // "sent" is handed to the kernel; keep standing down while the tail drains at this serve's rate.
+      const rate = (certsSent * 8192) / Math.max(1, nowMs() - startedAt);
+      const drainMs = Math.min(SNAPSHOT_SERVE.DRAIN_GRACE_MAX_MS,
+        Math.max(SNAPSHOT_SERVE.DRAIN_GRACE_MIN_MS, SNAPSHOT_SERVE.INFLIGHT_BOUND_BYTES / Math.max(rate, 1e-6)));
+      _serving.set(remotePeer, nowMs() + drainMs);
+    }
   }
 
   /**
@@ -470,6 +494,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
   // (single source of truth, shared with narwhal.js).
 
   return {
+    isServingTo,
     registerProtocol,
     syncFromPeer,
     onCertificateCommitted,

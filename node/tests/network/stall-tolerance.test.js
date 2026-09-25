@@ -65,13 +65,15 @@ describe("liveness has one owner", () => {
     const handler = consSrc.match(/onPeerSuspect:\s*\([\s\S]*?\n\s{4}\},/);
     expect(handler).not.toBeNull();
     const body = handler[0];
-    expect(body).toMatch(/isInstalling\(\)/);
+    expect(body).toMatch(/joinState\(\) !== "ready"/);   // syncing AND catching_up: both pull bulk data
     // the SENDER's pings queue behind the stream it is pushing; it must not evict
     // the joiner it is serving (found on the test cluster: sender hung up mid-serve)
     expect(body).toMatch(/isServingTo\(peerId\)/);
     expect(body).toMatch(/network\.hangUp\(peerId\)/);
     // both checks must gate the eviction, not follow it
-    expect(body.indexOf("isInstalling()")).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
+    expect(body.indexOf('joinState() !== "ready"')).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
+    // the cert tail is a bulk transfer too: the sender stands down while streaming it
+    expect(body).toMatch(/syncHandler\.isServingTo\(peerId\)/);
     expect(body.indexOf("isServingTo(peerId)")).toBeLessThan(body.indexOf("network.hangUp(peerId)"));
     // standing down must also forgive: misses counted during the transfer would
     // otherwise evict on the very next tick after it ends (seen on the test cluster)
