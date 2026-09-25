@@ -49,7 +49,8 @@
         "y": 0,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 1001,
@@ -106,7 +107,8 @@
           ]
         }
       },
-      "description": "**Registered nodes** - Total count of nodes registered in the DAG `nodes` table, regardless of their current online state.\n\n**Healthy**: matches the operator's expected federation size. Equals the sum of online + offline registered nodes (see Federation Status table below).\n\n**Trouble**: drift from expected count = unauthorized registration or missed deregistration."
+      "description": "**Registered nodes** - Total count of nodes registered in the DAG `nodes` table, regardless of their current online state.\n\n**Healthy**: matches the operator's expected federation size. Equals the sum of online + offline registered nodes (see Federation Status table below).\n\n**Trouble**: drift from expected count = unauthorized registration or missed deregistration.",
+      "panels": []
     },
     {
       "id": 1002,
@@ -164,7 +166,8 @@
           }
         }
       },
-      "description": "**Online (scrapeable)** - Count of nodes currently emitting metrics - `up{job=\"tip-federation\"} == 1`. Reflects whether Prometheus can reach each node's `/metrics` endpoint, NOT whether they're healthy at the consensus layer.\n\n**Healthy**: equals registered nodes (all online).\n\n**Trouble**: < registered means at least one node is unreachable. Cross-check with the Federation Status table to identify which."
+      "description": "**Online (scrapeable)** - Count of nodes currently emitting metrics - `up{job=\"tip-federation\"} == 1`. Reflects whether Prometheus can reach each node's `/metrics` endpoint, NOT whether they're healthy at the consensus layer.\n\n**Healthy**: equals registered nodes (all online).\n\n**Trouble**: < registered means at least one node is unreachable. Cross-check with the Federation Status table to identify which.",
+      "panels": []
     },
     {
       "id": 1003,
@@ -222,7 +225,8 @@
           }
         }
       },
-      "description": "**Active committee (max)** - Largest active-committee value reported across all online nodes. Should be identical across all nodes since the committee is deterministically derived from DAG state.\n\n**Healthy**: matches what each per-node tile shows below.\n\n**Trouble**: differs from the per-node \"Active committee size\" panel = nodes computing different committees from the same DAG \u2192 split-brain on quorum denominator. Investigate immediately."
+      "description": "**Active committee (max)** - Largest active-committee value reported across all online nodes. Should be identical across all nodes since the committee is deterministically derived from DAG state.\n\n**Healthy**: matches what each per-node tile shows below.\n\n**Trouble**: differs from the per-node \"Active committee size\" panel = nodes computing different committees from the same DAG \u2192 split-brain on quorum denominator. Investigate immediately.",
+      "panels": []
     },
     {
       "id": 1004,
@@ -272,7 +276,8 @@
           }
         }
       },
-      "description": "**Quorum threshold** - The 2f+1 majority needed for Bullshark to commit an anchor, derived from the active committee size. For N nodes: quorum = floor(2N/3) + 1.\n\n**Healthy**: stable value matching the active committee.\n\n**Trouble**: changes unexpectedly = committee membership shifted (could be legitimate auto-derivation from `recent_producers` or a node being silently dropped)."
+      "description": "**Quorum threshold** - The 2f+1 majority needed for Bullshark to commit an anchor, derived from the active committee size. For N nodes: quorum = floor(2N/3) + 1.\n\n**Healthy**: stable value matching the active committee.\n\n**Trouble**: changes unexpectedly = committee membership shifted (could be legitimate auto-derivation from `recent_producers` or a node being silently dropped).",
+      "panels": []
     },
     {
       "id": 1005,
@@ -328,7 +333,8 @@
             ]
           }
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 1006,
@@ -384,7 +390,8 @@
             ]
           }
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 1007,
@@ -443,7 +450,8 @@
           }
         }
       },
-      "description": "**Byzantine fork active** - 1 if ANY node is currently fork-halted (`tip_consensus_byzantine_fork_halted`). This is the present-tense emergency gauge: red means a fork is happening right now.\n\n**Healthy**: 0.\n\n**Trouble**: 1 means a node has halted on a state-root divergence it could not reconcile. Page immediately. Do NOT auto-resolve. Investigate which fork is correct, halt the wrong one.\n\nNote: transient divergences during catch-up/rejoin are auto-healed by resync and do NOT set this gauge - they only tick the lifetime `tip_consensus_divergence_total` counter (shown as a 15m rate on Consensus Health)."
+      "description": "**Byzantine fork active** - 1 if ANY node is currently fork-halted (`tip_consensus_byzantine_fork_halted`). This is the present-tense emergency gauge: red means a fork is happening right now.\n\n**Healthy**: 0.\n\n**Trouble**: 1 means a node has halted on a state-root divergence it could not reconcile. Page immediately. Do NOT auto-resolve. Investigate which fork is correct, halt the wrong one.\n\nNote: transient divergences during catch-up/rejoin are auto-healed by resync and do NOT set this gauge - they only tick the lifetime `tip_consensus_divergence_total` counter (shown as a 15m rate on Consensus Health).",
+      "panels": []
     },
     {
       "id": 1008,
@@ -1047,7 +1055,8 @@
         "footer": {
           "show": false
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 1009,
@@ -1113,7 +1122,8 @@
           "min": 0
         }
       },
-      "description": "**Peers connected** - Number of TIP-handshake-authorized peers this node currently sees.\n\n**Healthy**: equals committee_size - 1 (this node sees all other committee members). For a 2-node federation, healthy = 1. For 3-node, healthy = 2.\n\n**Yellow (1)**: partial mesh - at least one peer reachable but not all.\n\n**Red (0)**: node is isolated. Submissions to this node won't propagate. Check: peer-discovery (#38), DirectPeers (#37), libp2p connectivity, firewall."
+      "description": "**Peers connected** - Number of TIP-handshake-authorized peers this node currently sees.\n\n**Healthy**: equals committee_size - 1 (this node sees all other committee members). For a 2-node federation, healthy = 1. For 3-node, healthy = 2.\n\n**Yellow (1)**: partial mesh - at least one peer reachable but not all.\n\n**Red (0)**: node is isolated. Submissions to this node won't propagate. Check: peer-discovery (#38), DirectPeers (#37), libp2p connectivity, firewall.",
+      "panels": []
     },
     {
       "id": 1010,
@@ -1188,7 +1198,8 @@
           }
         }
       },
-      "description": "**Halt status** - 0 = consensus advancing normally; 1 = halted (no new commits for > 3\u00d7 round timeout, default ~6s).\n\n**Healthy**: 0 (OK) on all nodes.\n\n**Trouble**: any node showing 1 (HALTED) means quorum is lost. Recovery is operational - bring more committee nodes online so 2f+1 quorum returns. While halted, this node returns 503 on POST/PUT under /v1/ (consensus-gate middleware) so clients retry instead of silently piling into mempool."
+      "description": "**Halt status** - 0 = consensus advancing normally; 1 = halted (no new commits for > 3\u00d7 round timeout, default ~6s).\n\n**Healthy**: 0 (OK) on all nodes.\n\n**Trouble**: any node showing 1 (HALTED) means quorum is lost. Recovery is operational - bring more committee nodes online so 2f+1 quorum returns. While halted, this node returns 503 on POST/PUT under /v1/ (consensus-gate middleware) so clients retry instead of silently piling into mempool.",
+      "panels": []
     },
     {
       "id": 1011,
@@ -1228,7 +1239,8 @@
           "valueSize": 18
         }
       },
-      "description": "**Mempool depth** - Number of pending transactions waiting to be committed via Bullshark.\n\n**Healthy on idle network**: 0 (no pending submissions).\n\n**Healthy on active network**: briefly > 0, drains within ~2s as anchors commit.\n\n**Trouble**: continuously growing - txs are being submitted faster than they're being committed. Could indicate a halt, slow-network committee, or a DOS pattern."
+      "description": "**Mempool depth** - Number of pending transactions waiting to be committed via Bullshark.\n\n**Healthy on idle network**: 0 (no pending submissions).\n\n**Healthy on active network**: briefly > 0, drains within ~2s as anchors commit.\n\n**Trouble**: continuously growing - txs are being submitted faster than they're being committed. Could indicate a halt, slow-network committee, or a DOS pattern.",
+      "panels": []
     },
     {
       "id": 1012,
@@ -1292,7 +1304,8 @@
           }
         }
       },
-      "description": "**Active committee size** - Number of nodes in the currently-derived consensus committee on each node. Committee derives from `registered_active \u2229 producers_in_last_K_rounds`, so it auto-includes producing nodes and excludes silent ones.\n\n**Healthy**: identical across all nodes (every node computes the same committee deterministically from its DAG state). Equal to the count of currently-producing registered nodes.\n\n**Trouble**: drift between nodes means split-brain on quorum denominator - quorum calculations diverge, certs may not validate cross-node. A value of 0 means no quorum is possible (halt-gate will trip)."
+      "description": "**Active committee size** - Number of nodes in the currently-derived consensus committee on each node. Committee derives from `registered_active \u2229 producers_in_last_K_rounds`, so it auto-includes producing nodes and excludes silent ones.\n\n**Healthy**: identical across all nodes (every node computes the same committee deterministically from its DAG state). Equal to the count of currently-producing registered nodes.\n\n**Trouble**: drift between nodes means split-brain on quorum denominator - quorum calculations diverge, certs may not validate cross-node. A value of 0 means no quorum is possible (halt-gate will trip).",
+      "panels": []
     },
     {
       "id": 1013,
@@ -1332,7 +1345,8 @@
           "valueSize": 18
         }
       },
-      "description": "**Last committed round** - The highest round at which Bullshark has finalized an anchor commit. Tracked in-memory by Bullshark, ticks every successful anchor (~2s on healthy network).\n\n**Healthy**: continuously increasing on all nodes, with at most 1-2 round drift between nodes (Bullshark requires the next wave's votes before finalizing the previous wave's leader).\n\n**Trouble**: stuck for > 6s on any node = halt; large drift between nodes = sync issue."
+      "description": "**Last committed round** - The highest round at which Bullshark has finalized an anchor commit. Tracked in-memory by Bullshark, ticks every successful anchor (~2s on healthy network).\n\n**Healthy**: continuously increasing on all nodes, with at most 1-2 round drift between nodes (Bullshark requires the next wave's votes before finalizing the previous wave's leader).\n\n**Trouble**: stuck for > 6s on any node = halt; large drift between nodes = sync issue.",
+      "panels": []
     },
     {
       "id": 1014,
@@ -1380,7 +1394,8 @@
           },
           "unit": "dtdurations"
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 1015,
@@ -1428,7 +1443,8 @@
           },
           "unit": "decbytes"
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 1016,
@@ -1440,7 +1456,8 @@
         "y": 35,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 1017,
@@ -1502,7 +1519,8 @@
             ]
           }
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 1018,
@@ -1564,7 +1582,8 @@
             ]
           }
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 1019,
@@ -1576,7 +1595,8 @@
         "y": 42,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 1020,
@@ -1626,7 +1646,8 @@
           }
         }
       },
-      "description": "Total transactions committed to the DAG (fleet max)."
+      "description": "Total transactions committed to the DAG (fleet max).",
+      "panels": []
     },
     {
       "id": 1021,
@@ -1676,7 +1697,8 @@
           }
         }
       },
-      "description": "Certificates currently in the DAG, bounded by cert GC (fleet max)."
+      "description": "Certificates currently in the DAG, bounded by cert GC (fleet max).",
+      "panels": []
     },
     {
       "id": 1022,
@@ -1726,7 +1748,8 @@
           }
         }
       },
-      "description": "Nodes in the DAG registry, active + inactive (fleet max)."
+      "description": "Nodes in the DAG registry, active + inactive (fleet max).",
+      "panels": []
     },
     {
       "id": 1031,
@@ -1776,7 +1799,8 @@
           }
         }
       },
-      "description": "Total verified identities (TIP IDs) in canonical state, all statuses (fleet max)."
+      "description": "Total verified identities (TIP IDs) in canonical state, all statuses (fleet max).",
+      "panels": []
     },
     {
       "id": 1032,
@@ -1826,7 +1850,8 @@
           }
         }
       },
-      "description": "Total registered content items (CTIDs) in canonical state, all statuses (fleet max)."
+      "description": "Total registered content items (CTIDs) in canonical state, all statuses (fleet max).",
+      "panels": []
     },
     {
       "id": 1023,
@@ -1904,7 +1929,8 @@
           }
         },
         "overrides": []
-      }
+      },
+      "panels": []
     },
     {
       "id": 1030,
@@ -1965,7 +1991,8 @@
         "footer": {
           "show": false
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 1024,
@@ -2022,59 +2049,8 @@
         "y": 57,
         "w": 12,
         "h": 11
-      }
-    },
-    {
-      "id": 1025,
-      "type": "timeseries",
-      "title": "Producer-pause per node (rotation boundary)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prom-tip"
       },
-      "description": "Milliseconds each node has been producer-paused at a rotation boundary. Sustained > 0 is a stuck boundary.",
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "tip_consensus_producer_paused_ms{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
-          "legendFormat": "{{name}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ms",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never"
-          },
-          "color": {
-            "mode": "palette-classic"
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 57,
-        "w": 12,
-        "h": 11
-      }
+      "panels": []
     },
     {
       "id": 1026,
@@ -2086,7 +2062,8 @@
         "y": 68,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 1027,
@@ -2138,7 +2115,8 @@
         "y": 69,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 1028,
@@ -2184,7 +2162,8 @@
           ]
         }
       },
-      "description": "**Narwhal current round** - The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing.\n\n**Healthy**: linear monotonic growth on all nodes; convergent across the federation.\n\n**Trouble**: flat line on any node = production stalled (likely halt-gate); large drift between nodes = sync gap that anti-entropy should auto-recover (#28/#46)."
+      "description": "**Narwhal current round** - The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing.\n\n**Healthy**: linear monotonic growth on all nodes; convergent across the federation.\n\n**Trouble**: flat line on any node = production stalled (likely halt-gate); large drift between nodes = sync gap that anti-entropy should auto-recover (#28/#46).",
+      "panels": []
     },
     {
       "id": 1029,
@@ -2230,7 +2209,8 @@
           ]
         }
       },
-      "description": "**Txs committed (cumulative)** - Running total of transactions ordered through Bullshark since this process started.\n\n**Healthy**: stairs-monotonically-up, matching activity level. Resets on process restart (Prometheus runtime counter).\n\n**Trouble**: flat line during expected activity = consensus stalled or no submissions reaching the network."
+      "description": "**Txs committed (cumulative)** - Running total of transactions ordered through Bullshark since this process started.\n\n**Healthy**: stairs-monotonically-up, matching activity level. Resets on process restart (Prometheus runtime counter).\n\n**Trouble**: flat line during expected activity = consensus stalled or no submissions reaching the network.",
+      "panels": []
     }
   ],
   "links": [
