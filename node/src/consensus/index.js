@@ -476,17 +476,18 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     onPeerSuspect: (peerId, tipNodeId) => {
       const who = tipNodeId?.slice(-8) || peerId.slice(0, 12);
       // A snapshot in flight saturates the path both ways, so pings time out on
-      // every node that shares it: the joiner, the sender, and any third peer
-      // whose gossip queues behind the stream. Evicting on that verdict kills
-      // the transfer. Stand down while we install, while we serve THIS peer, or
-      // while the peer is not in consensus at all (syncing / catching_up per
-      // its last sync-status): eviction gains nothing there and costs the join.
+      // every node that shares it. The heartbeat already discounts a peer whose
+      // own pings still reach us; here we cover the two roles where even that
+      // evidence can lag: while we install (our probes are the ones starving)
+      // and while we serve THIS peer (its replies queue behind our stream).
+      // Evicting in either role kills the transfer. AE's cached join_state is
+      // deliberately not consulted: it is written only on a successful poll,
+      // and polls of a congested joiner fail, so it reported a wiped-and-
+      // rejoined peer as "ready" from before the wipe.
       const installing = snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling();
       const serving = snapshotHandler && typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId);
-      const peerJoin = antiEntropy && typeof antiEntropy.peerJoinState === "function" ? antiEntropy.peerJoinState(tipNodeId) : "ready";
-      if (installing || serving || peerJoin !== "ready") {
-        const why = installing ? "during our snapshot install" : serving ? "while we serve it a snapshot" : `while it is ${peerJoin}`;
-        log.warn(`heartbeat: peer ${who} is suspect ${why}, not evicting`);
+      if (installing || serving) {
+        log.warn(`heartbeat: peer ${who} is suspect ${installing ? "during our snapshot install" : "while we serve it a snapshot"}, not evicting`);
         heartbeat.forgive(peerId);
         return;
       }
