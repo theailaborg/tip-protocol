@@ -475,15 +475,18 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     isAuthorizedPeer,
     onPeerSuspect: (peerId, tipNodeId) => {
       const who = tipNodeId?.slice(-8) || peerId.slice(0, 12);
-      // A snapshot in flight saturates the path in both directions: the joiner's
-      // outbound pings starve behind the inbound stream, and the sender's pings to
-      // that joiner queue behind the stream it is pushing. Either side evicting on
-      // that verdict kills the transfer, so stand down while installing, or while
-      // serving THIS peer. That is the download working, not the peer dying.
+      // A snapshot in flight saturates the path both ways, so pings time out on
+      // every node that shares it: the joiner, the sender, and any third peer
+      // whose gossip queues behind the stream. Evicting on that verdict kills
+      // the transfer. Stand down while we install, while we serve THIS peer, or
+      // while the peer is not in consensus at all (syncing / catching_up per
+      // its last sync-status): eviction gains nothing there and costs the join.
       const installing = snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling();
       const serving = snapshotHandler && typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId);
-      if (installing || serving) {
-        log.warn(`heartbeat: peer ${who} is suspect during snapshot ${installing ? "install" : "serve"}, not evicting`);
+      const peerJoin = antiEntropy && typeof antiEntropy.peerJoinState === "function" ? antiEntropy.peerJoinState(tipNodeId) : "ready";
+      if (installing || serving || peerJoin !== "ready") {
+        const why = installing ? "during our snapshot install" : serving ? "while we serve it a snapshot" : `while it is ${peerJoin}`;
+        log.warn(`heartbeat: peer ${who} is suspect ${why}, not evicting`);
         heartbeat.forgive(peerId);
         return;
       }

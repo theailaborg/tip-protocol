@@ -219,6 +219,38 @@ describe("heartbeat client side", () => {
     }
   });
 
+  // Our probes fail on a congested path while the peer's own pings still reach
+  // us; that is queueing, not a dead peer, and must not become an eviction.
+  test("no suspect verdict while the peer's own pings keep arriving", async () => {
+    const suspects = [];
+    const { hb, net } = mkHeartbeat({
+      openStreamFn: () => { throw new Error("connection refused"); },
+      onPeerSuspect: (peerId) => suspects.push(peerId),
+    });
+    await hb.registerHandler();
+    await callHandler(net);   // an authenticated ping from peer-id-1 lands on our handler
+    expect(hb.peerStates()["peer-id-1"].lastInboundAt).toBeGreaterThan(0);
+
+    jest.useFakeTimers();
+    try {
+      hb.start();
+      for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
+        await callHandler(net);   // peer-id-1 keeps pinging us while our probes to it fail
+        await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      }
+      expect(hb.peerStates()["peer-id-1"].consecutiveMisses).toBeGreaterThanOrEqual(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
+      expect(suspects).not.toContain("peer-id-1");
+      // peer-id-2 never pinged us: same misses, real verdict
+      expect(suspects).toContain("peer-id-2");
+      // once its pings stop for the whole window, the verdict is real again
+      await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_SUSPECT_MISSES * CONSENSUS.HEARTBEAT_INTERVAL_MS + CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      expect(suspects).toContain("peer-id-1");
+    } finally {
+      hb.stop();
+      jest.useRealTimers();
+    }
+  });
+
   test("recovery after misses resets consecutiveMisses to 0", async () => {
     let callCount = 0;
 

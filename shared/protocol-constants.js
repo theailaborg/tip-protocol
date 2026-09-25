@@ -483,7 +483,6 @@ const NETWORK = {
   get SNAPSHOT_PROTOCOL() { return _n().snapshot_protocol; },
   get SNAPSHOT_LENGTH_PREFIX_BYTES() { return _n().snapshot_length_prefix_bytes; },
   get SNAPSHOT_MAX_FRAME_BYTES() { return _n().snapshot_max_frame_bytes; },
-  get SNAPSHOT_ACK_PROTOCOL() { return _n().snapshot_ack_protocol ?? "/tip/snapshot-ack/1.0.0"; },
   get SYNC_STATUS_PROTOCOL() { return _n().sync_status_protocol ?? "/tip/sync-status/1.0.0"; },
   get PEER_ANNOUNCE_PROTOCOL() { return _n().peer_announce_protocol ?? "/tip/peer-announce/1.0.0"; },
   get HEARTBEAT_PROTOCOL() { return _n().heartbeat_protocol ?? "/tip/heartbeat/1.0.0"; },

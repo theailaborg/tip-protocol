@@ -377,18 +377,6 @@ message SnapshotRequest {
 }
 
 /**
- * Joiner -> sender on its own stream once the joiner has read SnapshotEnd
- * (the request stream is already half-closed for writes). The sender's
- * "sent" only means handed to the socket; this receipt is what lets it
- * resume liveness verdicts on the joiner.
- */
-message SnapshotAck {
-  uint64 round = 1;
-  uint64 bytes_received = 2;
-  string requester_node_id = 3;
-}
-
-/**
  * First message in the response stream — everything the joiner needs to
  * verify the snapshot that follows. Mirrors the `commits` table row plus
  * the anchor cert's batch_hash (which the joiner needs to reconstruct
