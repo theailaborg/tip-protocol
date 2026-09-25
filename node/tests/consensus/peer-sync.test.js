@@ -172,7 +172,13 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
       sourceDag: fx.sourceDag, destDag, destNarwhal: narwhal,
     });
 
+    // A fresh joiner's cert pull hits the GC horizon first; the snapshot follows.
     const syncHandler = stubSyncHandler();
+    const plainSync = syncHandler.syncFromPeer;
+    syncHandler.syncFromPeer = async (peerId, opts) => {
+      if (syncHandler.calls.length === 0) { syncHandler.calls.push({ peerId, opts }); return { imported: 0, fromRound: 1, toRound: 1, peerLatestRound: 0, snapshotRequired: true, earliestAvailableRound: 2 }; }
+      return plainSync(peerId, opts);
+    };
     const markedRounds = [];
     const bullshark = { markOrderedUpTo: (r) => markedRounds.push(r) };
     const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
@@ -191,8 +197,8 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     // Snapshot installed → bullshark advanced.
     expect(markedRounds).toContain(2);
     // Cert sync called with fromRound = snap.round + 1 = 3.
-    expect(syncHandler.calls.length).toBe(1);
-    expect(syncHandler.calls[0].opts.fromRound).toBe(3);
+    expect(syncHandler.calls.length).toBe(2);
+    expect(syncHandler.calls[1].opts.fromRound).toBe(3);
     // Narwhal entered sync mode and the install path transitioned it to
     // catching_up. Promotion to ready is owned by anti-entropy's
     // markCaughtUp (driven by state-root agreement with peers), so we
@@ -205,6 +211,44 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     expect(narwhal.events.some(e => Array.isArray(e) && e[0] === "exit")).toBe(false);
     // Destination's state_merkle_root matches source's.
     expect(computeStateMerkleRoot(destDag)).toBe(fx.stateRoot);
+  });
+
+  // A reconnect after the install landed used to re-enter sync mode (catching_up
+  // → syncing) and ask from the snapshot's COMMIT round, below the peer's GC
+  // horizon: a restart of the whole snapshot (test cluster, 2026-09-25).
+  test("catching_up node on re-authorize: no sync mode, no snapshot, cert pull from the tail it holds", async () => {
+    const narwhal = stubNarwhal();
+    narwhal.markSnapshotInstalled(100, 150);
+    expect(narwhal.joinState()).toBe("catching_up");
+    const syncHandler = stubSyncHandler();
+    const snapCalls = [];
+    const snapshotHandler = { requestSnapshotFromPeer: async (p, o) => { snapCalls.push([p, o]); return null; } };
+    const bullshark = { markOrderedUpTo: () => { }, lastCommittedRound: () => 100 };
+    await onPeerAuthorized("peer-again", "TIP_NODE_A", {
+      queryPeerStatus: async () => ({ committed_round: 999999 }),
+      syncHandler, snapshotHandler, commitHandler: { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) },
+      dag: { getLatestRound: () => 640 }, narwhal, bullshark, nodeId: "OUR_NODE",
+    });
+    expect(narwhal.events).not.toContain("enter");
+    expect(snapCalls).toHaveLength(0);
+    expect(syncHandler.calls).toHaveLength(1);
+    expect(syncHandler.calls[0].opts.fromRound).toBe(641);
+    expect(narwhal.joinState()).toBe("catching_up");
+  });
+
+  test("phase-2 watermark is the installed cert tail, not the snapshot's commit round", async () => {
+    const narwhal = stubNarwhal();
+    const syncHandler = stubSyncHandler();
+    const snapshotHandler = {
+      requestSnapshotFromPeer: async () => { narwhal.markSnapshotInstalled(100, 640); return { round: 100, peer_committed_round: 640, rows_installed: 1 }; },
+    };
+    const bullshark = { markOrderedUpTo: () => { }, lastCommittedRound: () => 50 };
+    await onPeerAuthorized("peer-x", "TIP_NODE_A", {
+      queryPeerStatus: async () => ({ committed_round: 999999 }),
+      syncHandler, snapshotHandler, commitHandler: { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) },
+      dag: { getLatestRound: () => 640 }, narwhal, bullshark, nodeId: "OUR_NODE",
+    });
+    expect(syncHandler.calls[0].opts.fromRound).toBe(641);
   });
 
   test("#45: cert-sync returns snapshotRequired → bootstrap retries snapshot, then re-syncs from new anchor", async () => {
@@ -249,7 +293,7 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     const snapshotHandler = {
       requestSnapshotFromPeer: async (peerId, opts) => {
         snapshotCalls.push({ peerId, opts });
-        if (snapshotCalls.length === 1) return null;  // Phase 1 declined
+
         return {
           round: 45000,
           peer_committed_round: 45520,
@@ -291,7 +335,7 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     expect(syncCalls.length).toBe(2);
     expect(syncCalls[1].opts.fromRound).toBe(45001);
     // Two snapshot attempts: Phase 1 declined, fallback installed.
-    expect(snapshotCalls.length).toBe(2);
+    expect(snapshotCalls.length).toBe(1)   // cert pull first; one snapshot once the peer says snapshot_required;
     // Bullshark advanced from the fallback snapshot's
     // peer_committed_round, not just the anchor.
     expect(marked).toContain(45520);
@@ -358,7 +402,7 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     // on a successful snapshot retry, which didn't happen.
     expect(syncCalls.length).toBe(1);
     // Two snapshot attempts: Phase 1 + fallback. Both failed.
-    expect(snapshotCalls.length).toBe(2);
+    expect(snapshotCalls.length).toBe(1);
     // Narwhal entered sync mode but DID NOT exit — this is the safety
     // property the fix preserves. Pre-fix exitSyncMode would have been
     // called with peerLatestRound (45520) and an empty DAG.

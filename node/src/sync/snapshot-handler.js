@@ -44,10 +44,11 @@
 
 const { mldsaVerify, canonicalJson, shake256 } = require("../../../shared/crypto");
 const {
-  TX_TYPES, SNAPSHOT_DOWNLOAD, SNAPSHOT_REQUEST,
+  TX_TYPES, SNAPSHOT_DOWNLOAD, SNAPSHOT_REQUEST, SNAPSHOT_SERVE,
   SNAPSHOT_FRAME_KIND, SNAPSHOT_INSTALL_MARKER_KEY, SNAPSHOT_INSTALL_BATCH_ROWS,
 } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
 const { computeQuorum } = require("../consensus/certificate");
 const { computeStateMerkleRoot, computeStateMerkleRootPerTable, createStateRootBuilder } = require("../consensus/state-root");
 const { canonicalPk } = require("../dag");
@@ -126,6 +127,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // cause). Excess joiners are declined and pick another helper.
   let _activeServes = 0;
   const _activeServeStreams = new Map();  // remotePeer → live serve stream (stale-serve replacement)
+  const _certPins = new Map();            // remotePeer → { fromRound, since }: certs this joiner still needs
+  const _draining = new Map();            // remotePeer → until ms: "sent", tail still in flight to the joiner
+  let _lastInstallSource = null;          // libp2p peer the last successful install came from
   const MAX_CONCURRENT_SERVES = 1;
 
   // Live install progress for operators to poll (surfaced via stats()). null
@@ -385,6 +389,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // sender). The two #49 full-history roots are stream-computed while
     // emitting rows and shipped in SnapshotEnd — single pass over each table.
     let _servedBytes = 0;
+    const _serveStartedAt = nowMs();
     let stateRowsSent = 0;
     let txRowsSent = 0;
     let commitRowsSent = 0;
@@ -408,6 +413,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // that gap and triggered deferred-commit/forced-partial-commit divergence.
     const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
+    _certPins.set(remotePeer, { fromRound: certToRound + 1, since: nowMs() });   // GC keeps the joiner's catch-up range
     _activeServes++;
     _activeServeStreams.set(remotePeer, stream);
     // Serve-side stall guard (mirrors the client's): an abandoned stream leaves
@@ -564,6 +570,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       if (_activeServeStreams.get(remotePeer) === stream) _activeServeStreams.delete(remotePeer);
     }
 
+    // "sent" is handed to the kernel; the tail still needs INFLIGHT_BOUND / rate to land.
+    const rate = _servedBytes / Math.max(1, nowMs() - _serveStartedAt);   // bytes per ms
+    const drainMs = Math.min(SNAPSHOT_SERVE.DRAIN_GRACE_MAX_MS,
+      Math.max(SNAPSHOT_SERVE.DRAIN_GRACE_MIN_MS, SNAPSHOT_SERVE.INFLIGHT_BOUND_BYTES / Math.max(rate, 1e-6)));
+    _draining.set(remotePeer, nowMs() + drainMs);
     _metrics.serves_completed = (_metrics.serves_completed || 0) + 1;
     _metrics.last_serve_bytes = _servedBytes;
     _metrics.last_serve_rows = stateRowsSent + txRowsSent + commitRowsSent
@@ -575,6 +586,43 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       `rp=${rpRowsSent})`
     );
   }
+
+  function isServingTo(peerId) {
+    if (_activeServeStreams.has(peerId)) return true;
+    const until = _draining.get(peerId);
+    if (until === undefined) return false;
+    if (nowMs() < until) return true;
+    _draining.delete(peerId);
+    return false;
+  }
+
+  // ── Cert retention pins (sender side) ───────────────────────────────────
+  // A slow download outlasts GC_DEPTH; without the pin the source has pruned the
+  // joiner's catch-up range and answers snapshot_required, and the joiner loops.
+  function _prunePins() {
+    const cutoff = nowMs() - SNAPSHOT_SERVE.CERT_PIN_MAX_MS;
+    for (const [peer, pin] of _certPins) if (pin.since < cutoff) _certPins.delete(peer);
+  }
+
+  /** Lowest round any in-flight joiner still needs; 0 when nothing is pinned. */
+  function certRetentionFloor() {
+    _prunePins();
+    let floor = 0;
+    for (const pin of _certPins.values()) if (floor === 0 || pin.fromRound < floor) floor = pin.fromRound;
+    return floor;
+  }
+
+  /** The joiner asked for certs from `fromRound`: it holds everything below. */
+  function advanceCertPin(peerId, fromRound) {
+    _draining.delete(peerId);
+    const pin = _certPins.get(peerId);
+    if (!pin) return;
+    if (fromRound > pin.fromRound) pin.fromRound = fromRound;
+  }
+
+  function releaseCertPin(peerId) { _certPins.delete(peerId); }
+
+  function lastInstallSource() { return _lastInstallSource; }
 
   // ── Client: request a snapshot from a peer and install it ────────────────
   /**
@@ -666,7 +714,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         _metrics.install_in_progress_bytes = total;
         const rows = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
         _metrics.install_in_progress_rows = rows;
-        const pct = snapTotalRows > 0 ? Math.min(100, Math.floor((rows / snapTotalRows) * 100)) : 0;
+        // The header's row total undercounts (certs keep landing while it streams); 100 is reserved for done.
+        const pct = snapTotalRows > 0 ? Math.min(99, Math.floor((rows / snapTotalRows) * 100)) : 0;
         _metrics.install_in_progress_percent = pct;
         if (_installProgress) _installProgress.percent = pct;
         const mb = Math.floor(total / (25 * 1024 * 1024)) * 25;
@@ -1063,6 +1112,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
       _snapInstalled = true;
       _snapInstallInProgress = false;
+      _lastInstallSource = peerId;
       return {
         round: Number(header.round),
         consensus_index: Number(header.consensusIndex || 0),
@@ -1608,6 +1658,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
      *  Lets anti-entropy avoid interrupting an in-flight install (which would
      *  leave partial state and fail the state-root verify). */
     isInstalling: () => _snapInstallInProgress,
+    // The sender's pings share the saturated path; evicting mid-serve kills the transfer.
+    isServingTo,
+    certRetentionFloor,
+    advanceCertPin,
+    releaseCertPin,
+    lastInstallSource,
     SNAPSHOT_PROTOCOL,
     /** Cumulative counters for /metrics. */
     stats: () => ({ metrics: { ..._metrics }, install: _installProgress }),

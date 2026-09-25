@@ -61,7 +61,7 @@ const log = getLogger("tip.bullshark");
  *                                              dag.getNode(nodeId)?.public_key.
  * @returns {Object} Bullshark instance
  */
-function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout, onCertsPruned }) {
+function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout, onCertsPruned, certRetentionFloor = null }) {
   // Track which certificates have already been ordered (by hash)
   const _orderedCertHashes = new Set();
 
@@ -809,6 +809,8 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    * (GC_INTERVAL_COMMITS default 10), so ~20-60s between prune calls
    * depending on commit rate.
    */
+  let _lastLoggedPinFloor = 0;
+
   function _maybeRunCertGC() {
     const interval = CONSENSUS.GC_INTERVAL_COMMITS;
     if (!interval || interval <= 0) return;
@@ -817,8 +819,21 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     const gcDepth = CONSENSUS.GC_DEPTH;
     if (!gcDepth || gcDepth <= 0) return;
 
-    const cutoff = _lastCommittedRound - gcDepth;
+    // Retention is the larger of the genesis depth and the node-local floor.
+    const retainRounds = Math.max(gcDepth, Number(CONSENSUS.CERT_RETENTION_MIN_ROUNDS || 0));
+    let cutoff = _lastCommittedRound - retainRounds;
     if (cutoff <= 0) return;
+    // A joiner mid-download still needs every cert after its snapshot's tail.
+    const floor = typeof certRetentionFloor === "function" ? Number(certRetentionFloor() || 0) : 0;
+    if (floor > 0 && floor < cutoff) {
+      if (floor !== _lastLoggedPinFloor) {
+        log.info(`Cert GC: retention held at round ${floor} for a joiner still catching up (window would be ${cutoff})`);
+        _lastLoggedPinFloor = floor;
+      }
+      cutoff = floor;
+    } else if (_lastLoggedPinFloor !== 0) {
+      _lastLoggedPinFloor = 0;
+    }
 
     try {
       if (typeof dag.pruneCertificatesBefore !== "function") return;
@@ -830,7 +845,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
         if (typeof onCertsPruned === "function") {
           try { onCertsPruned(); } catch (err) { log.warn(`onCertsPruned hook failed: ${err.message}`); }
         }
-        log.info(`Cert GC: pruned ${n} certs with round < ${cutoff} (retaining last ${gcDepth} rounds)`);
+        log.info(`Cert GC: pruned ${n} certs with round < ${cutoff} (retaining last ${retainRounds} rounds)`);
 
         // Reclaim freed SQLite pages back to the filesystem. Without this
         // the DB file keeps growing even with row count bounded — DELETE

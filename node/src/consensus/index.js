@@ -196,10 +196,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // Late-bound to bullshark.driveCommit (bullshark is created below): sync-
   // imported certs must drive commit, or a behind node holds them uncommitted.
   let _driveCommitAfterSync = null;
+  // Built after sync + bullshark, consulted by both (cert pins, GC floor).
+  let snapshotHandlerForRetention = null;
   const syncHandler = createSyncHandler({
     dag, network, isAuthorizedPeer,
     onCertsImported: (round) => { if (_driveCommitAfterSync) _driveCommitAfterSync(round); },
     preVerifyTxs: (txs) => _preVerifyIncomingTxs(txs),
+    onCertSyncRequest: (peerId, fromRound) => { if (snapshotHandlerForRetention) snapshotHandlerForRetention.advanceCertPin(peerId, fromRound); },
   });
 
   // ── Create snapshot handler (§14 state-snapshot fast-sync) ─────────────────
@@ -219,6 +222,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     // Keep the cert-DAG merkle GC-aligned: re-source the sync-handler tree when
     // bullshark prunes old certs, so all nodes' roots reflect the same live set.
     onCertsPruned: () => { try { syncHandler.onCertsPruned(); } catch { /* ignore */ } },
+    certRetentionFloor: () => (snapshotHandlerForRetention ? snapshotHandlerForRetention.certRetentionFloor() : 0),
     onMissingCertsTimeout: (voteRound, missingCount) => {
       if (antiEntropyForResync && typeof antiEntropyForResync.triggerSnapshotResync === "function") {
         // Stagger resync by node_id so all nodes don't simultaneously enter
@@ -396,6 +400,14 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       }
     },
   });
+  snapshotHandlerForRetention = snapshotHandler;
+  // A joining node's inbound is saturated by sync traffic; rebuilding its transports kills that sync.
+  if (network && typeof network.setTransferGuard === "function") {
+    network.setTransferGuard((peerId) =>
+      (narwhal && typeof narwhal.joinState === "function" && narwhal.joinState() !== "ready")
+      || (typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId))
+      || (typeof syncHandler.isServingTo === "function" && syncHandler.isServingTo(peerId)));
+  }
 
   // Periodic heartbeat summary — emits one INFO line per interval with
   // deltas, stays silent during true idle. Per-round events are debug-level.
@@ -474,10 +486,22 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getSelfNodeId: () => nodeId,
     isAuthorizedPeer,
     onPeerSuspect: (peerId, tipNodeId) => {
+      const who = tipNodeId?.slice(-8) || peerId.slice(0, 12);
+      // A bulk sync (snapshot or cert tail) starves pings both ways; evicting while
+      // we are still joining, or while we stream to THIS peer, kills the transfer.
+      const joining = narwhal && typeof narwhal.joinState === "function" && narwhal.joinState() !== "ready";
+      const serving = (snapshotHandler && typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId))
+        || (syncHandler && typeof syncHandler.isServingTo === "function" && syncHandler.isServingTo(peerId));
+      if (joining || serving) {
+        log.warn(`heartbeat: peer ${who} is suspect ${joining ? `while we are ${narwhal.joinState()}` : "while we stream to it"}, not evicting`);
+        heartbeat.forgive(peerId);
+        return;
+      }
       log.warn(
-        `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} is suspect ` +
-        `(${CONSENSUS.HEARTBEAT_SUSPECT_MISSES} consecutive misses), AE will reconcile`
+        `heartbeat: peer ${who} is suspect ` +
+        `(${CONSENSUS.HEARTBEAT_SUSPECT_MISSES} consecutive misses), hanging up; reconnect re-authorizes`
       );
+      if (network && typeof network.hangUp === "function") network.hangUp(peerId);
     },
   });
 

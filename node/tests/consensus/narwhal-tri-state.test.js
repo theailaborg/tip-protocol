@@ -29,7 +29,7 @@ const path = require("path");
 
 const SRC = path.resolve(__dirname, "../../src");
 const SHARED = path.resolve(__dirname, "../../../shared");
-const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
+const { initCrypto, generateMLDSAKeypair, shake256 } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
 const { createNarwhal } = require(path.join(SRC, "consensus", "narwhal"));
@@ -240,6 +240,31 @@ describe("narwhal tri-state join FSM", () => {
       expect(narwhal.joinState()).toBe("syncing");
       expect(narwhal.stats().catchUpTarget).toBe(0);
       expect(narwhal.stats().syncEnteredAt).toBeGreaterThan(0);
+      narwhal.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // The tail is complete and only the promotion poll is pending; on a congested
+  // link those polls time out for a while. Reverting threw away a finished
+  // install and started another multi-minute snapshot (test cluster, 2026-09-25).
+  test("watchdog holds catching_up past the threshold once the cert tail has reached the target", () => {
+    jest.useFakeTimers();
+    try {
+      const { narwhal, dag } = buildNarwhal();
+      narwhal.enterSyncMode();
+      narwhal.start();
+      narwhal.markSnapshotInstalled(100, 150);
+      dag.saveCertificate({
+        hash: shake256("cert:150:self"), round: 150, author_node_id: SELF_ID,
+        batch: { round: 150, author_node_id: SELF_ID, txs: [], signature: "00" },
+        acknowledgments: [], parent_hashes: [], signature: "00", timestamp: 1767225600150,
+      });
+      expect(dag.getLatestRound()).toBeGreaterThanOrEqual(150);
+      jest.advanceTimersByTime(CONSENSUS.ROUND_TIMEOUT_MS * 11);
+      expect(narwhal.joinState()).toBe("catching_up");
+      expect(narwhal.stats().catchUpTarget).toBe(150);
       narwhal.stop();
     } finally {
       jest.useRealTimers();

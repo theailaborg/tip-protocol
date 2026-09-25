@@ -25,6 +25,8 @@
 "use strict";
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
+const { SNAPSHOT_SERVE } = require("../../../shared/constants");
 const { createMerkleTree } = require("./merkle-tree");
 const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
 const { serializeCertificate, deserializeCertificate } = require("../consensus/certificate-codec");
@@ -50,7 +52,7 @@ const SYNC_PROTOCOL = "/tip/sync/1.0.0";
  * @param {Object} options.network     libp2p network node
  * @param {Function} options.isAuthorizedPeer  (peerId) => boolean
  */
-function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCertsImported = null, preVerifyTxs = null }) {
+function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCertsImported = null, preVerifyTxs = null, onCertSyncRequest = null }) {
   // Build Merkle tree from existing certificates
   let _merkle = _buildMerkleFromDAG();
 
@@ -133,6 +135,16 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
    * critical once the DAG gets large enough that the encoded aggregate
    * would approach or exceed 16 MB.
    */
+  const _serving = new Map();   // remotePeer → until ms: cert tail streaming, or its tail still draining
+
+  function isServingTo(peerId) {
+    const until = _serving.get(peerId);
+    if (until === undefined) return false;
+    if (nowMs() < until) return true;
+    _serving.delete(peerId);
+    return false;
+  }
+
   async function _handleIncomingSync(stream, remotePeer) {
     // Request is still a single unframed message — one-shot request path
     // matches snapshot-handler's convention.
@@ -157,6 +169,10 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
 
     const fromRound = request.fromRound || 1;
     const latestRound = dag.getLatestRound();
+    // A joiner we served a snapshot to now holds everything below fromRound.
+    if (typeof onCertSyncRequest === "function") {
+      try { onCertSyncRequest(remotePeer, fromRound); } catch { /* bookkeeping only */ }
+    }
 
     log.info(`Sync: peer requested from round ${fromRound} (we have ${latestRound})`);
 
@@ -191,6 +207,11 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
     // consumption on the sender is bounded by a single Certificate's
     // protobuf encoding (few KB), not by total cert count.
     let certsSent = 0;
+    // A long tail over a thin link is a bulk transfer like a snapshot: the
+    // joiner's pings queue behind it, so liveness verdicts on it stand down.
+    const startedAt = nowMs();
+    _serving.set(remotePeer, Number.MAX_SAFE_INTEGER);
+    try {
     await _sendFramedResponse(stream, remotePeer, {
       header: {
         fromRound, toRound: latestRound, latestRound,
@@ -217,6 +238,13 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
     });
 
     log.info(`Sync: sent ${certsSent} certificates (rounds ${fromRound}-${latestRound})`);
+    } finally {
+      // "sent" is handed to the kernel; keep standing down while the tail drains at this serve's rate.
+      const rate = (certsSent * 8192) / Math.max(1, nowMs() - startedAt);
+      const drainMs = Math.min(SNAPSHOT_SERVE.DRAIN_GRACE_MAX_MS,
+        Math.max(SNAPSHOT_SERVE.DRAIN_GRACE_MIN_MS, SNAPSHOT_SERVE.INFLIGHT_BOUND_BYTES / Math.max(rate, 1e-6)));
+      _serving.set(remotePeer, nowMs() + drainMs);
+    }
   }
 
   /**
@@ -272,7 +300,15 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
 
     let stream;
     try {
-      stream = await network.openStream(peerId, SYNC_PROTOCOL);
+      // Bounded like the read: a hung open on a congested link must not dangle.
+      const openTimeoutMs = overrideTimeoutMs != null ? overrideTimeoutMs : CONSENSUS.SYNC_TOTAL_TIMEOUT_MS;
+      const openAbort = new AbortController();
+      const openTimer = setTimeout(() => openAbort.abort(), openTimeoutMs);
+      try {
+        stream = await network.openStream(peerId, SYNC_PROTOCOL, { signal: openAbort.signal });
+      } finally {
+        clearTimeout(openTimer);
+      }
     } catch (err) {
       throw new Error(`Sync: failed to open stream to ${peerId.slice(0, 12)}: ${err.message}`);
     }
@@ -308,6 +344,21 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
       const maxResponseBytes = overrideMaxBytes != null ? overrideMaxBytes : CONSENSUS.SYNC_MAX_RESPONSE_BYTES;
       const totalTimeoutMs = overrideTimeoutMs != null ? overrideTimeoutMs : CONSENSUS.SYNC_TOTAL_TIMEOUT_MS;
 
+      // Stall timeout, re-armed per chunk: a thin link needs minutes for a
+      // long cert tail, only zero progress for totalTimeoutMs is a hang.
+      let timeoutHandle;
+      let rejectStall;
+      const timeoutPromise = new Promise((_resolve, reject) => { rejectStall = reject; });
+      timeoutPromise.catch(() => { /* observed via the race below */ });
+      const armStall = () => {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = setTimeout(() => {
+          try { stream.close(); } catch { /* ignore — forces the for-await below to end */ }
+          rejectStall(new Error(`sync stalled, no bytes for ${totalTimeoutMs}ms`));
+        }, totalTimeoutMs);
+      };
+      armStall();
+
       const readPromise = (async () => {
         const chunks = [];
         let total = 0;
@@ -318,17 +369,10 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
             throw new Error(`response exceeded max bytes: ${total} > ${maxResponseBytes}`);
           }
           chunks.push(c);
+          armStall();
         }
         return chunks;
       })();
-
-      let timeoutHandle;
-      const timeoutPromise = new Promise((_resolve, reject) => {
-        timeoutHandle = setTimeout(() => {
-          try { stream.close(); } catch { /* ignore — forces the for-await above to end */ }
-          reject(new Error(`sync timeout after ${totalTimeoutMs}ms`));
-        }, totalTimeoutMs);
-      });
 
       let chunks;
       try {
@@ -458,6 +502,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
   // (single source of truth, shared with narwhal.js).
 
   return {
+    isServingTo,
     registerProtocol,
     syncFromPeer,
     onCertificateCommitted,

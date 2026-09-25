@@ -21,6 +21,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { KnexAdapter } = require("../../src/db/knex-adapter");
+const { nowMs } = require("../../../shared/time");
 
 const logStub = { info() { }, warn() { }, error() { } };
 
@@ -80,6 +81,20 @@ describe("persistenceStats + parity probe", () => {
     await a._ffChain;
     expect(a.persistenceStats().queue_depth).toBe(0);
     expect(a.persistenceStats().oldest_pending_ms).toBe(0);
+  });
+
+  // Bulk rows bypass the _ff chain; a multi-minute install left the settled clock
+  // stale and the first ordinary write afterwards read as a wedge (fail-stop).
+  test("a bulk-install flush is a settled write, install time never reads as a stall", async () => {
+    a._ffLastSettledMs = nowMs() - 200_000;
+    a.beginBulkInstall();
+    try {
+      a.setConsensusMeta("bulk_probe", "1");
+      await a.flush();
+    } finally {
+      a.endBulkInstall();
+    }
+    expect(a.persistenceStats().last_settled_age_ms).toBeLessThan(5_000);
   });
 
   test("parity probe passes when mirror and DB agree", async () => {

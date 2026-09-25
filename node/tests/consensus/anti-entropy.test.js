@@ -486,8 +486,7 @@ describe("queryPeer (client)", () => {
     };
 
     // Override the peer-timeout to a short value so the test runs fast.
-    // We can't mutate the genesis constant, but we can test at default
-    // 2s — tolerable in the runner.
+    // Runs at the real default (10s, sized for bloated links), so the test gets its own budget.
     const ae = createAntiEntropy({
       network: fakeNetwork({ openStreamImpl: async () => hangingStream }),
       syncHandler: fakeSyncHandler(),
@@ -505,7 +504,7 @@ describe("queryPeer (client)", () => {
     expect(ae.stats().metrics.peer_rpc_failures).toBe(0);
     // Sanity: the timeout actually triggered (not an instant error).
     expect(elapsed).toBeGreaterThanOrEqual(500);
-  }, 5000);
+  }, 20_000);
 
   test("identity mismatch: peer claims wrong node_id → rejected, increments peer_identity_mismatch", async () => {
     const { encode } = require(path.join(SRC, "network", "proto"));
@@ -540,7 +539,7 @@ describe("queryPeer (client)", () => {
     const status = await ae.queryPeer("peer-libp2p-id");
     expect(status).toBeNull();
     expect(ae.stats().metrics.peer_identity_mismatch).toBe(1);
-  });
+  }, 20_000);
 
   test("identity match: peer claims correct node_id → accepted", async () => {
     const { encode } = require(path.join(SRC, "network", "proto"));
@@ -2059,3 +2058,67 @@ describe("frontier reconciliation (sub_quorum escape)", () => {
     expect(frontier).toHaveLength(1);
   });
 });
+
+// After a long download the source is the one peer that still holds the
+// certs after the snapshot's tail (it pinned them); asking only the others
+// got snapshot_required and restarted the whole snapshot (test cluster, 2026-09-25).
+describe("post-snapshot cert-fill asks the snapshot source first", () => {
+  test("the source is synced from certFillFromRound before the other peers", async () => {
+    const calls = [];
+    const sync = fakeSyncHandler({
+      syncImpl: async (peerId, opts) => {
+        calls.push([peerId, opts.fromRound]);
+        if (calls.length === 1) return { imported: 0, fromRound: 6, toRound: 6, peerLatestRound: 5000, snapshotRequired: true, earliestAvailableRound: 4500 };
+        return { imported: 3, fromRound: opts.fromRound, toRound: opts.fromRound + 2, peerLatestRound: 5010 };
+      },
+    });
+    const snap = fakeSnapshotHandler({ snapImpl: async () => ({ round: 5000, peer_committed_round: 5004, consensus_index: 42, rows_installed: 100, state_merkle_root: "deadbeef" }) });
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { "peer-id": "tip://node/peer", "other-1": "tip://node/other1" } }),
+      syncHandler: sync, snapshotHandler: snap, narwhal: fakeNarwhal(),
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 5 }),
+      log: silentLog(),
+    });
+    const result = await ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 5000 }), selfState({ committed_round: 5 }));
+    expect(result).toBe("snapshot_installed");
+    expect(calls[0]).toEqual(["peer-id", 6]);        // the gap pull that hit the GC horizon
+    expect(calls[1]).toEqual(["peer-id", 5005]);     // cert-fill from the SOURCE first
+    expect(calls.slice(2).map(([p]) => p)).toEqual(["other-1"]);
+  });
+});
+
+// On a live chain a joiner behind a thin link is always the last pull's worth of
+// rounds behind at poll time and never met the exact-equality promotion
+// (test cluster, 2026-09-25: catching_up for 15 minutes at the live edge).
+describe("catching_up promotes within the sync tolerance", () => {
+  const mk = (gap, { root = "aabbcc", target = 100, peerJoin = "ready" } = {}) => {
+    const narwhal = fakeNarwhal({ joinState: "catching_up", catchUpTarget: target });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 500 }),
+      log: silentLog(),
+    });
+    return { narwhal, run: () => ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 500 + gap, state_merkle_root: root, join_state: peerJoin }), selfState({ committed_round: 500 })) };
+  };
+  test("a few rounds behind with the same root and the target passed: promoted, gap still pulled", async () => {
+    const { narwhal, run } = mk(8);
+    await run();
+    expect(narwhal._calls.markCaughtUp).toEqual([500]);
+    expect(narwhal.joinState()).toBe("ready");
+  });
+  test("beyond the tolerance: not promoted", async () => {
+    const { narwhal, run } = mk(CONSENSUS.SYNC_FROM_PEER_TOLERANCE_ROUNDS + 1);
+    await run();
+    expect(narwhal._calls.markCaughtUp).toEqual([]);
+  });
+  test("different root, target not reached, or peer not ready: not promoted", async () => {
+    for (const opts of [{ root: "ffffff" }, { target: 600 }, { peerJoin: "catching_up" }]) {
+      const { narwhal, run } = mk(8, opts);
+      await run();
+      expect(narwhal._calls.markCaughtUp).toEqual([]);
+    }
+  });
+});
+

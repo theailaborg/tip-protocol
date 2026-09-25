@@ -32,6 +32,7 @@
 "use strict";
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
+const { HEARTBEAT_INBOUND_SILENCE_MS } = require("../../../shared/constants");
 const { nowMs } = require("../../../shared/time");
 const { encode, decode } = require("./proto");
 const { getLogger } = require("../logger");
@@ -47,7 +48,10 @@ const log = getLogger("tip.heartbeat");
  * @param {Function} [options.isAuthorizedPeer]  (libp2pPeerId) => bool
  * @param {Function} [options.onPeerSuspect]     (libp2pPeerId, tipNodeId) => void — called after SUSPECT_MISSES misses
  * @param {Object}   [options.log]               Override logger
- * @returns {{ start, stop, registerHandler, peerStates }}
+ * @returns {{ start, stop, registerHandler, peerStates, rttStats, forgive }}
+ *
+ * A miss on a congested path is queueing, not death: the verdict needs our
+ * probes failing AND the peer's own pings absent (see _aliveInbound).
  */
 function createHeartbeatManager({
   network,
@@ -76,6 +80,7 @@ function createHeartbeatManager({
         try { await stream.close(); } catch { /* ignore */ }
         return;
       }
+      if (peerId) _markInbound(peerId);
       try {
         // Drain the ping (we don't need its payload to reply)
         for await (const _chunk of stream.source) { break; }
@@ -91,6 +96,21 @@ function createHeartbeatManager({
         try { await stream.close(); } catch { /* ignore */ }
       }
     });
+  }
+
+  function _markInbound(peerId) {
+    const ps = _peerState.get(peerId) || { consecutiveMisses: 0 };
+    ps.lastInboundAt = nowMs();
+    _peerState.set(peerId, ps);
+    _log.debug(`heartbeat: ping from ${peerId.slice(0, 12)}`);
+  }
+
+  // Pinged us since this miss streak began, or within the silence bound (pings
+  // bunch behind a bloated ack path): congestion, not a dead peer.
+  function _aliveInbound(ps) {
+    if (!ps.lastInboundAt || !ps.missTimes || ps.missTimes.length === 0) return false;
+    const since = Math.min(ps.missTimes[0], nowMs() - HEARTBEAT_INBOUND_SILENCE_MS);
+    return ps.lastInboundAt >= since;
   }
 
   // ── Client side: ping one peer ───────────────────────────────────────────
@@ -121,19 +141,36 @@ function createHeartbeatManager({
     const sentAt = nowMs();
     let stream = null;
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { if (stream) stream.close(); } catch { /* ignore */ }
-    }, CONSENSUS.HEARTBEAT_TIMEOUT_MS);
+    // Bounded by OUR timer: a hung open to a black-holed peer froze every tick.
+    const abort = new AbortController();
+    let expire;
+    const deadline = new Promise((_, reject) => {
+      expire = setTimeout(() => {
+        timedOut = true;
+        abort.abort();
+        try { if (stream) stream.close(); } catch { /* ignore */ }
+        reject(new Error("timeout"));
+      }, CONSENSUS.HEARTBEAT_TIMEOUT_MS);
+    });
+    deadline.catch(() => { /* observed via the race below */ });
+    const timer = expire;
 
-    try {
-      stream = await network.openStream(peerId, NETWORK.HEARTBEAT_PROTOCOL);
+    const probe = (async () => {
+      const opened = network.openStream(peerId, NETWORK.HEARTBEAT_PROTOCOL, { signal: abort.signal });
+      // If the open outlives the deadline, close whatever it eventually yields.
+      opened.then((s) => { if (timedOut) { try { s.close(); } catch { /* ignore */ } } }, () => { });
+      stream = await opened;
       await stream.sink([ping]);
-
       const chunks = [];
       for await (const chunk of stream.source) {
         chunks.push(chunk.subarray ? chunk.subarray() : chunk);
       }
+      return chunks;
+    })();
+    probe.catch(() => { /* observed via the race below */ });
+
+    try {
+      const chunks = await Promise.race([probe, deadline]);
 
       if (timedOut || chunks.length === 0) {
         throw new Error(timedOut ? "timeout" : "empty response");
@@ -162,6 +199,7 @@ function createHeartbeatManager({
       const ps = _peerState.get(peerId) || { consecutiveMisses: 0 };
       const wasConsecutiveMisses = ps.consecutiveMisses;
       ps.consecutiveMisses = 0;
+      ps.missTimes = [];
       ps.lastSeenAt = nowMs();
       _peerState.set(peerId, ps);
 
@@ -173,6 +211,7 @@ function createHeartbeatManager({
 
       const ps = _peerState.get(peerId) || { consecutiveMisses: 0 };
       ps.consecutiveMisses = (ps.consecutiveMisses || 0) + 1;
+      ps.missTimes = [...(ps.missTimes || []), nowMs()].slice(-CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
       _peerState.set(peerId, ps);
 
       _log.debug(
@@ -180,10 +219,21 @@ function createHeartbeatManager({
       );
 
       if (ps.consecutiveMisses >= CONSENSUS.HEARTBEAT_SUSPECT_MISSES) {
+        if (_aliveInbound(ps)) {
+          _log.info(
+            `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} unreachable outbound ` +
+            `(${ps.consecutiveMisses} misses) but it pinged us ${Math.round((nowMs() - ps.lastInboundAt) / 1000)}s ago, after the misses began: congested, not suspect`
+          );
+          return;
+        }
         _log.warn(
           `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} ` +
           `suspect — ${ps.consecutiveMisses} consecutive misses`
         );
+        // A verdict is consumed: the next one needs a fresh streak, or a
+        // reconnected peer was evicted again on its first miss (hangup storm).
+        ps.consecutiveMisses = 0;
+        ps.missTimes = [];
         if (onPeerSuspect) onPeerSuspect(peerId, tipNodeId);
       }
     } finally {
@@ -197,6 +247,8 @@ function createHeartbeatManager({
   async function _runOnce() {
     if (!_running || !network) return;
     const peers = network.authorizedPeers ? Object.entries(network.authorizedPeers()) : [];
+    const live = new Set(peers.map(([id]) => id));
+    for (const id of _peerState.keys()) if (!live.has(id)) _peerState.delete(id);   // gone peers carry no streak into a reconnect
     if (peers.length === 0) return;
 
     // Stagger pings across the interval window to avoid a thundering-herd on
@@ -235,6 +287,12 @@ function createHeartbeatManager({
     _log.info("heartbeat stopped");
   }
 
+  // Transfer-time misses are not evidence once the link is idle.
+  function forgive(peerId) {
+    const ps = _peerState.get(peerId);
+    if (ps) { ps.consecutiveMisses = 0; ps.missTimes = []; }
+  }
+
   function peerStates() {
     const authorized = (network && network.authorizedPeers && network.authorizedPeers()) || {};
     const out = {};
@@ -244,7 +302,7 @@ function createHeartbeatManager({
     return out;
   }
 
-  return { start, stop, registerHandler, peerStates, rttStats };
+  return { start, stop, registerHandler, peerStates, rttStats, forgive };
 }
 
 module.exports = { createHeartbeatManager };

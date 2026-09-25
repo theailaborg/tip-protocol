@@ -39,6 +39,9 @@ mint partner private keys.
 - [ ] Partner's production host provisioned per `NODE_REQUIREMENTS.md`, with a
       **static** public IP
 - [ ] Inbound TCP **4000 and 4001** verified open from the public internet
+- [ ] Partner's node link confirmed: **25 Mbit/s download and upload, sustained**
+      minimum, 50 recommended (`NODE_REQUIREMENTS.md`); a shared office line is
+      usually not it, and a slower link installs but never keeps up
 - [ ] Partner's node domain resolves to their stated IP (`dig +short <domain>`)
       , needed **by their first boot**, not for registration: the node probes
       its own domain before announcing it on-chain. Booting without DNS only
@@ -67,6 +70,7 @@ Infrastructure details to collect alongside:
 | static public IP of the node host | the node's advertised address in its env; how peers dial it |
 | domain the node will serve on | published **on-chain** as their API endpoint; must be permanent |
 | confirmation TCP 4000 + 4001 are open | 4000 API, 4001 p2p; without 4001 they never fully join |
+| internet link of the node host | 25 Mbit/s symmetric sustained minimum, 50 recommended (`NODE_REQUIREMENTS.md`); ask for the plan's sustained rate, not the advertised peak |
 | ops contact name + email | who we call when their node misbehaves |
 
 The mainnet node needs its **own host**: a partner already running a testnet

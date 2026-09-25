@@ -128,6 +128,7 @@ async function createNetworkNode(options = {}) {
   // quick reconnect (see the peer:connect handler).
   const _recentlyAuthed = new Map();
   let _onPeerAuthorized = null;
+  let _transferGuard = null;   // (peerId) => true while a rebuild would kill a sync in flight
 
   // Cumulative connection-churn counters. Gauges (current peer count) alias
   // through sub-scrape flaps; these survive so rate() exposes the flap itself.
@@ -177,8 +178,16 @@ async function createNetworkNode(options = {}) {
     peerDiscovery,
     // Raise libp2p's ping-timeout floor so a brief event-loop stall doesn't abort
     // a healthy committee connection (default floor is 5s; stalls can exceed it).
+    connectionManager: {
+      // A negotiation reply rides the peer's egress queue; right after a bulk
+      // transfer that is tens of seconds, and libp2p's 10s default failed every open.
+      inboundStreamProtocolNegotiationTimeout: CONSENSUS.STREAM_NEGOTIATION_TIMEOUT_MS,
+      outboundStreamProtocolNegotiationTimeout: CONSENSUS.STREAM_NEGOTIATION_TIMEOUT_MS,
+    },
     connectionMonitor: {
       pingTimeout: { minTimeout: CONSENSUS.CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS },
+      // Liveness belongs to the heartbeat; a snapshot mid-install starves pings.
+      abortConnectionOnPingFailure: false,
     },
     services: {
       identify: identify(),
@@ -380,6 +389,10 @@ async function createNetworkNode(options = {}) {
   // connection is half-dead (the re-handshake re-auths it but never rebuilds the
   // transport). Force-close it and re-dial a fresh one.
   async function _forceRedial(peerId) {
+    if (_transferGuard && _transferGuard(peerId)) {
+      log.warn(`channel-health: sends to ${peerId.slice(0, 12)} failing while a sync is in flight, not rebuilding`);
+      return;
+    }
     _netMetrics.force_redials++;
     log.warn(`channel-health: rebuilding transport to ${peerId.slice(0, 12)} after sustained outbound send failures`);
     try {
@@ -494,6 +507,11 @@ async function createNetworkNode(options = {}) {
   }
 
   // ── Public interface ───────────────────────────────────────────────────
+  /** Drop every connection to a peer. Idempotent: no connection, no-op. */
+  function hangUp(peerId) {
+    return node.hangUp(peerIdFromString(peerId)).catch(() => { });
+  }
+
   return {
     /** The underlying libp2p node */
     node,
@@ -504,6 +522,7 @@ async function createNetworkNode(options = {}) {
 
     /** Register callback for when a peer completes TIP handshake */
     onPeerAuthorized(fn) { _onPeerAuthorized = fn; },
+    setTransferGuard(fn) { _transferGuard = fn; },
 
     /** Set GossipSub topic handlers (called after consensus init) */
     setTopicHandlers(h) { _topicHandlers = h; },
@@ -523,6 +542,8 @@ async function createNetworkNode(options = {}) {
 
     /** Total bootstrap chains re-armed by the isolation backstop since start. */
     bootstrapRearms: () => _bootstrapRearms,
+
+    hangUp,
 
     /** Connected authorized peer IDs (libp2p peerId) */
     peers: () => [..._authorizedPeers.keys()],
@@ -587,8 +608,8 @@ async function createNetworkNode(options = {}) {
      * @param {string} protocol e.g. "/tip/sync/1.0.0"
      * @returns {Promise<Stream>}
      */
-    async openStream(peerId, protocol) {
-      return node.dialProtocol(peerIdFromString(peerId), protocol);
+    async openStream(peerId, protocol, opts) {
+      return node.dialProtocol(peerIdFromString(peerId), protocol, opts);
     },
 
     broadcastToAuthorized,

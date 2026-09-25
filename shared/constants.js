@@ -109,6 +109,19 @@ const SNAPSHOT_REQUEST = Object.freeze({
   MAX_MS: 5000,
 });
 
+// Sender-side snapshot bookkeeping. The pin bound is a leak guard for a joiner
+// that vanished mid-transfer (~10KB/round), never the working limit.
+const SNAPSHOT_SERVE = Object.freeze({
+  CERT_PIN_MAX_MS: 2 * 60 * 60_000,
+  // "sent" = handed to the kernel; the tail drains at the serve's own rate.
+  INFLIGHT_BOUND_BYTES: 16 * 1024 * 1024,   // Linux tcp_wmem autotuning maximum
+  DRAIN_GRACE_MIN_MS: 30_000,
+  DRAIN_GRACE_MAX_MS: 15 * 60_000,
+});
+
+// A peer behind a bloated link pings us in bunches (49s gaps seen at 1mbit).
+const HEARTBEAT_INBOUND_SILENCE_MS = 120_000;
+
 // #132: 1-byte kind tag as each frame's first body byte routes frames as they
 // stream. Doubles as a format discriminator (a raw-protobuf frame starts 0x08),
 // so a version-mixed pair fails cleanly; a mismatch cannot fork the chain.
@@ -1070,6 +1083,8 @@ module.exports = {
   CLASSIFIER_CLIENT,
   SNAPSHOT_DOWNLOAD,
   SNAPSHOT_REQUEST,
+  SNAPSHOT_SERVE,
+  HEARTBEAT_INBOUND_SILENCE_MS,
   SNAPSHOT_FRAME_KIND,
   SNAPSHOT_INSTALL_MARKER_KEY,
   SNAPSHOT_INSTALL_BATCH_ROWS,

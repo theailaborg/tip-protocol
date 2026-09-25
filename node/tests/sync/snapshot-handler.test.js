@@ -901,3 +901,104 @@ describe("§69 snapshot ships recent certs for joiner committee derivation", () 
     }
   });
 });
+
+describe("§14 isServingTo: the sender knows which peer it is streaming to", () => {
+  test("true only while the serve stream is live, false before and after", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    expect(sourceHandler.isServingTo("test-client")).toBe(false);
+
+    let seenLive = false;
+    const serve = sourceHandler._handleIncomingSnapshot(server, "test-client");
+    const request = destHandler.requestSnapshotFromPeer("test-server", {});
+    let settled = false;
+    Promise.all([serve, request]).finally(() => { settled = true; });
+    while (!settled) {
+      if (sourceHandler.isServingTo("test-client")) seenLive = true;
+      await new Promise((r) => setImmediate(r));
+    }
+    const [, result] = await Promise.all([serve, request]);
+    expect(result.round).toBe(2);
+    expect(seenLive).toBe(true);
+    // "sent" is handed to the kernel: the tail is still draining to the joiner
+    expect(sourceHandler.isServingTo("test-client")).toBe(true);
+    expect(sourceHandler.isServingTo("someone-else")).toBe(false);
+    // the joiner's catch-up request proves the download is over
+    sourceHandler.advanceCertPin("test-client", 3);
+    expect(sourceHandler.isServingTo("test-client")).toBe(false);
+  });
+
+  test("the drain grace expires on its own, bounded by DRAIN_GRACE_MAX_MS", async () => {
+    const { SNAPSHOT_SERVE } = require("../../../shared/constants");
+    const { nowMs } = require("../../../shared/time");
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+    expect(sourceHandler.isServingTo("test-client")).toBe(true);
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(nowMs() + SNAPSHOT_SERVE.DRAIN_GRACE_MAX_MS + 1);
+      expect(sourceHandler.isServingTo("test-client")).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe("§14 cert retention pins: the sender keeps what its joiner will need", () => {
+  const { SNAPSHOT_SERVE } = require("../../../shared/constants");
+  const { nowMs } = require("../../../shared/time");
+
+  test("serving pins the round after the shipped cert tail; catch-up requests move it; release clears it", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    expect(sourceHandler.certRetentionFloor()).toBe(0);
+
+    const [, result] = await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+    // the snapshot shipped certs up to the committed round; the joiner needs the next one on
+    expect(sourceHandler.certRetentionFloor()).toBe(result.peer_committed_round + 1);
+    expect(destHandler.lastInstallSource()).toBe("test-server");
+
+    // the joiner asks for certs from a later round: it holds everything below
+    sourceHandler.advanceCertPin("test-client", result.peer_committed_round + 40);
+    expect(sourceHandler.certRetentionFloor()).toBe(result.peer_committed_round + 40);
+    // a lower request never moves the pin backwards
+    sourceHandler.advanceCertPin("test-client", 1);
+    expect(sourceHandler.certRetentionFloor()).toBe(result.peer_committed_round + 40);
+    // an unknown peer is a no-op
+    sourceHandler.advanceCertPin("nobody", 999);
+    expect(sourceHandler.certRetentionFloor()).toBe(result.peer_committed_round + 40);
+
+    sourceHandler.releaseCertPin("test-client");
+    expect(sourceHandler.certRetentionFloor()).toBe(0);
+  });
+
+  test("a pin outlives the serve but not the leak-guard bound", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+    expect(sourceHandler.certRetentionFloor()).toBeGreaterThan(0);
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(nowMs() + SNAPSHOT_SERVE.CERT_PIN_MAX_MS + 1);
+      expect(sourceHandler.certRetentionFloor()).toBe(0);
+      expect(sourceHandler.isServingTo("test-client")).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+

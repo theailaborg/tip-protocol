@@ -49,7 +49,8 @@
         "y": 0,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 2,
@@ -116,7 +117,8 @@
         "y": 1,
         "w": 8,
         "h": 4
-      }
+      },
+      "panels": []
     },
     {
       "id": 3,
@@ -175,7 +177,8 @@
           }
         }
       },
-      "description": "**Divergence detections (15m)** - Rate of state-root divergences anti-entropy *detected and auto-healed* in the last 15m (`tip_consensus_divergence_total` is a lifetime counter; this is its windowed increase).\n\n**Healthy**: 0 at steady state. Non-zero during catch-up/rejoin is EXPECTED and benign - a behind node legitimately differs from the frontier until it finishes resyncing; the canary fires, then the resync reconciles it. Yellow = recent reconcile activity to be aware of, not an emergency.\n\n**The real fork emergency** is the 'Byzantine fork (halted / detection round)' panel: that fires only when a node could NOT reconcile and halted. Watch that one for paging."
+      "description": "**Divergence detections (15m)** - Rate of state-root divergences anti-entropy *detected and auto-healed* in the last 15m (`tip_consensus_divergence_total` is a lifetime counter; this is its windowed increase).\n\n**Healthy**: 0 at steady state. Non-zero during catch-up/rejoin is EXPECTED and benign - a behind node legitimately differs from the frontier until it finishes resyncing; the canary fires, then the resync reconciles it. Yellow = recent reconcile activity to be aware of, not an emergency.\n\n**The real fork emergency** is the 'Byzantine fork (halted / detection round)' panel: that fires only when a node could NOT reconcile and halted. Watch that one for paging.",
+      "panels": []
     },
     {
       "id": 4,
@@ -238,7 +241,8 @@
         "y": 1,
         "w": 8,
         "h": 4
-      }
+      },
+      "panels": []
     },
     {
       "id": 5,
@@ -296,7 +300,8 @@
         "y": 5,
         "w": 8,
         "h": 4
-      }
+      },
+      "panels": []
     },
     {
       "id": 6,
@@ -346,7 +351,8 @@
           }
         }
       },
-      "description": "**Quorum threshold** - The 2f+1 majority needed for Bullshark to commit an anchor, derived from the active committee size. For N nodes: quorum = floor(2N/3) + 1.\n\n**Healthy**: stable value matching the active committee.\n\n**Trouble**: changes unexpectedly = committee membership shifted (could be legitimate auto-derivation from `recent_producers` or a node being silently dropped)."
+      "description": "**Quorum threshold** - The 2f+1 majority needed for Bullshark to commit an anchor, derived from the active committee size. For N nodes: quorum = floor(2N/3) + 1.\n\n**Healthy**: stable value matching the active committee.\n\n**Trouble**: changes unexpectedly = committee membership shifted (could be legitimate auto-derivation from `recent_producers` or a node being silently dropped).",
+      "panels": []
     },
     {
       "id": 7,
@@ -408,7 +414,8 @@
         "y": 5,
         "w": 8,
         "h": 4
-      }
+      },
+      "panels": []
     },
     {
       "id": 8,
@@ -475,7 +482,8 @@
         "y": 9,
         "w": 8,
         "h": 4
-      }
+      },
+      "panels": []
     },
     {
       "id": 9,
@@ -533,7 +541,8 @@
         "y": 9,
         "w": 8,
         "h": 4
-      }
+      },
+      "panels": []
     },
     {
       "id": 10,
@@ -545,7 +554,8 @@
         "y": 13,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 11,
@@ -597,7 +607,8 @@
         "y": 14,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 12,
@@ -669,7 +680,8 @@
         "y": 14,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 13,
@@ -731,7 +743,8 @@
             ]
           }
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 14,
@@ -793,7 +806,8 @@
             ]
           }
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 15,
@@ -839,7 +853,8 @@
           ]
         }
       },
-      "description": "**Narwhal current round** - The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing.\n\n**Healthy**: linear monotonic growth on all nodes; convergent across the federation.\n\n**Trouble**: flat line on any node = production stalled (likely halt-gate); large drift between nodes = sync gap that anti-entropy should auto-recover (#28/#46)."
+      "description": "**Narwhal current round** - The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing.\n\n**Healthy**: linear monotonic growth on all nodes; convergent across the federation.\n\n**Trouble**: flat line on any node = production stalled (likely halt-gate); large drift between nodes = sync gap that anti-entropy should auto-recover (#28/#46).",
+      "panels": []
     },
     {
       "id": 16,
@@ -887,7 +902,8 @@
           ]
         }
       },
-      "description": "**Bullshark commits / 5s** - Rate of anchor commits in 5-second windows.\n\n**Healthy**: ~2-3 commits per 5s on a 2-second-round network. All nodes show the same rate.\n\n**Trouble**: zero or sporadic - consensus is failing to make progress (check halt status + peer connectivity)."
+      "description": "**Bullshark commits / 5s** - Rate of anchor commits in 5-second windows.\n\n**Healthy**: ~2-3 commits per 5s on a 2-second-round network. All nodes show the same rate.\n\n**Trouble**: zero or sporadic - consensus is failing to make progress (check halt status + peer connectivity).",
+      "panels": []
     },
     {
       "id": 17,
@@ -899,7 +915,8 @@
         "y": 42,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 18,
@@ -967,7 +984,8 @@
         "y": 43,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 19,
@@ -1039,7 +1057,8 @@
         "y": 43,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 20,
@@ -1091,7 +1110,8 @@
         "y": 54,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 21,
@@ -1143,7 +1163,8 @@
         "y": 54,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 22,
@@ -1155,59 +1176,8 @@
         "y": 65,
         "w": 24,
         "h": 1
-      }
-    },
-    {
-      "id": 23,
-      "type": "timeseries",
-      "title": "Producer-pause stuck duration (rotation boundary)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prom-tip"
       },
-      "description": "Milliseconds a node has been producer-paused at a rotation boundary with no tx to carve. Sustained > 0 means a stuck boundary; pull-repair runs and the pause is never bypassed.",
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "tip_consensus_producer_paused_ms{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
-          "legendFormat": "{{name}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ms",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never"
-          },
-          "color": {
-            "mode": "palette-classic"
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 66,
-        "w": 12,
-        "h": 11
-      }
+      "panels": []
     },
     {
       "id": 24,
@@ -1259,7 +1229,8 @@
           ]
         }
       },
-      "description": "**Anti-entropy: peers queried / gaps pulled** - Anti-entropy is the pull-side safety net (#28) that runs every 4s, querying every authorized peer's sync-status and pulling missing certs (or via #46 falling back to snapshot if the gap exceeds gc_depth).\n\n**Healthy**: peers_queried ticks at the AE cadence; gaps_pulled stays at 0 (push path delivers everything live).\n\n**Trouble**: gaps_pulled > 0 sustained = push-path reliability issue (#26, #27); RPC failures = peer unreachable."
+      "description": "**Anti-entropy: peers queried / gaps pulled** - Anti-entropy is the pull-side safety net (#28) that runs every 4s, querying every authorized peer's sync-status and pulling missing certs (or via #46 falling back to snapshot if the gap exceeds gc_depth).\n\n**Healthy**: peers_queried ticks at the AE cadence; gaps_pulled stays at 0 (push path delivers everything live).\n\n**Trouble**: gaps_pulled > 0 sustained = push-path reliability issue (#26, #27); RPC failures = peer unreachable.",
+      "panels": []
     },
     {
       "id": 25,
@@ -1306,7 +1277,8 @@
           ]
         }
       },
-      "description": "**Cert GC (rounds pruned)** - Cumulative count of certificate rows pruned by Bullshark's GC trigger (every `gc_interval_commits`, prunes certs older than `gc_depth` rounds).\n\n**Healthy**: linearly growing, lagging the anchor commit rate by gc_depth rounds.\n\n**Trouble**: stuck at 0 with high commit count = GC isn't firing (check `TIP_GC_DISABLED` env). Sudden huge jump = lots of certs pruned at once (after a long offline period)."
+      "description": "**Cert GC (rounds pruned)** - Cumulative count of certificate rows pruned by Bullshark's GC trigger (every `gc_interval_commits`, prunes certs older than `gc_depth` rounds).\n\n**Healthy**: linearly growing, lagging the anchor commit rate by gc_depth rounds.\n\n**Trouble**: stuck at 0 with high commit count = GC isn't firing (check `TIP_GC_DISABLED` env). Sudden huge jump = lots of certs pruned at once (after a long offline period).",
+      "panels": []
     },
     {
       "id": 26,
@@ -1318,7 +1290,8 @@
         "y": 88,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 27,
@@ -1380,7 +1353,8 @@
         "y": 89,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 28,
@@ -1432,7 +1406,8 @@
         "y": 89,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 29,
@@ -1485,7 +1460,8 @@
             "max"
           ]
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 30,
@@ -1532,7 +1508,8 @@
           ]
         }
       },
-      "description": "**Mempool size over time** - Per-node pending-tx queue size, time series.\n\n**Healthy on idle**: flat at 0.\n\n**Healthy on bursts**: brief spikes that drain quickly.\n\n**Trouble**: monotonically growing line - submissions outpacing commits. Investigate consensus liveness or rate-limit upstream."
+      "description": "**Mempool size over time** - Per-node pending-tx queue size, time series.\n\n**Healthy on idle**: flat at 0.\n\n**Healthy on bursts**: brief spikes that drain quickly.\n\n**Trouble**: monotonically growing line - submissions outpacing commits. Investigate consensus liveness or rate-limit upstream.",
+      "panels": []
     },
     {
       "id": 31,
@@ -1544,7 +1521,8 @@
         "y": 122,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 32,
@@ -1605,7 +1583,8 @@
         "footer": {
           "show": false
         }
-      }
+      },
+      "panels": []
     },
     {
       "id": 33,
@@ -1662,7 +1641,8 @@
         "y": 129,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 34,
@@ -1714,7 +1694,8 @@
         "y": 129,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 35,
@@ -1726,7 +1707,8 @@
         "y": 140,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 36,
@@ -1788,7 +1770,8 @@
         "y": 141,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 37,
@@ -1850,7 +1833,8 @@
         "y": 141,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 38,
@@ -1912,7 +1896,8 @@
         "y": 152,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 39,
@@ -1924,7 +1909,8 @@
         "y": 163,
         "w": 24,
         "h": 1
-      }
+      },
+      "panels": []
     },
     {
       "id": 40,
@@ -1991,7 +1977,8 @@
         "y": 164,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 41,
@@ -2053,7 +2040,8 @@
         "y": 164,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 42,
@@ -2110,7 +2098,8 @@
         "y": 175,
         "w": 12,
         "h": 11
-      }
+      },
+      "panels": []
     },
     {
       "id": 43,
@@ -2174,7 +2163,8 @@
         "y": 9,
         "w": 8,
         "h": 4
-      }
+      },
+      "panels": []
     },
     {
       "id": 44,
@@ -2244,7 +2234,8 @@
         "y": 17,
         "w": 12,
         "h": 8
-      }
+      },
+      "panels": []
     },
     {
       "id": 45,
@@ -2319,7 +2310,8 @@
           "legendFormat": "{{node}}",
           "refId": "A"
         }
-      ]
+      ],
+      "panels": []
     },
     {
       "id": 47,
@@ -2356,7 +2348,8 @@
           "legendFormat": "{{node}}",
           "refId": "A"
         }
-      ]
+      ],
+      "panels": []
     },
     {
       "id": 48,
@@ -2393,7 +2386,8 @@
           "legendFormat": "{{node}}",
           "refId": "A"
         }
-      ]
+      ],
+      "panels": []
     },
     {
       "id": 49,
@@ -2430,7 +2424,8 @@
           "legendFormat": "{{node}}",
           "refId": "A"
         }
-      ]
+      ],
+      "panels": []
     },
     {
       "id": 50,
@@ -2483,7 +2478,65 @@
         "y": 203,
         "w": 12,
         "h": 7
-      }
+      },
+      "panels": []
+    },
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "Round time per node (s)",
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 77
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "datasource": null,
+          "refId": "A",
+          "expr": "(1 / rate(tip_narwhal_current_round{node=~\"$node\"}[2m])) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}}"
+        },
+        {
+          "datasource": null,
+          "refId": "B",
+          "expr": "1 / max(rate(tip_narwhal_current_round[2m]))",
+          "legendFormat": "fleet"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "decimals": 2,
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "description": "Seconds per consensus round as each node observes it (1 / rate of its current round over 2m). Healthy nodes agree within noise; a node that reads slower is lagging. 'fleet' is the fastest node's view. Cert retention is set in rounds (gc_depth, TIP_CERT_RETENTION_MIN_ROUNDS), so recoverable outage in minutes = rounds x this value.",
+      "panels": []
     }
   ],
   "links": [

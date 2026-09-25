@@ -23,7 +23,13 @@ const LOCAL_CONFIG = Object.freeze({
   BATCH_WAIT_MS:                       _num("TIP_BATCH_WAIT_MS",                       500),
   CONSENSUS_SUMMARY_INTERVAL_MS:       _num("TIP_CONSENSUS_SUMMARY_INTERVAL_MS",       60000),
   ANTI_ENTROPY_INTERVAL_MS:            _num("TIP_ANTI_ENTROPY_INTERVAL_MS",            4000),
-  ANTI_ENTROPY_PEER_TIMEOUT_MS:        _num("TIP_ANTI_ENTROPY_PEER_TIMEOUT_MS",        2000),
+  // 2s was a LAN assumption: a probe reply rides the peer's egress queue, tens of seconds on a bloated link.
+  ANTI_ENTROPY_PEER_TIMEOUT_MS:        _num("TIP_ANTI_ENTROPY_PEER_TIMEOUT_MS",        10000),
+  // libp2p bounds every stream negotiation with its own timer (default 10s), combined with the caller's signal.
+  STREAM_NEGOTIATION_TIMEOUT_MS:       _num("TIP_STREAM_NEGOTIATION_TIMEOUT_MS",       60000),
+  // Cert retention floor in rounds. gc_depth (genesis, 500) was sized for 2s rounds; at 0.4s
+  // it covers 3.4 min. 4500 rounds is ~30 min today: revisit when the round time changes.
+  CERT_RETENTION_MIN_ROUNDS:           _num("TIP_CERT_RETENTION_MIN_ROUNDS",           4500),
   SYNC_RETRY_BASE_MS:                  _num("TIP_SYNC_RETRY_BASE_MS",                  1000),
   SNAPSHOT_BUSY_RETRY_MS:              _num("TIP_SNAPSHOT_BUSY_RETRY_MS",              5000),
   ACK_STREAM_TIMEOUT_MS:               _num("TIP_ACK_STREAM_TIMEOUT_MS",               3000),
