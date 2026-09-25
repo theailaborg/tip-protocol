@@ -44,10 +44,11 @@
 
 const { mldsaVerify, canonicalJson, shake256 } = require("../../../shared/crypto");
 const {
-  TX_TYPES, SNAPSHOT_DOWNLOAD, SNAPSHOT_REQUEST,
+  TX_TYPES, SNAPSHOT_DOWNLOAD, SNAPSHOT_REQUEST, SNAPSHOT_SERVE,
   SNAPSHOT_FRAME_KIND, SNAPSHOT_INSTALL_MARKER_KEY, SNAPSHOT_INSTALL_BATCH_ROWS,
 } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
 const { computeQuorum } = require("../consensus/certificate");
 const { computeStateMerkleRoot, computeStateMerkleRootPerTable, createStateRootBuilder } = require("../consensus/state-root");
 const { canonicalPk } = require("../dag");
@@ -82,6 +83,7 @@ function _frameKind(kind, body) {
 // Safe at module load: PC.init() runs before any application module
 // is required (see node/src/index.js boot order).
 const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
+const SNAPSHOT_ACK_PROTOCOL = NETWORK.SNAPSHOT_ACK_PROTOCOL;
 
 /**
  * Create the snapshot handler.
@@ -126,6 +128,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // cause). Excess joiners are declined and pick another helper.
   let _activeServes = 0;
   const _activeServeStreams = new Map();  // remotePeer → live serve stream (stale-serve replacement)
+  const _awaitingAck = new Map();         // remotePeer → deadline ms: served, receipt still owed
   const MAX_CONCURRENT_SERVES = 1;
 
   // Live install progress for operators to poll (surfaced via stats()). null
@@ -252,13 +255,30 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       }
     });
 
-    log.info(`Snapshot protocol registered: ${SNAPSHOT_PROTOCOL}`);
+    await network.handle(SNAPSHOT_ACK_PROTOCOL, async ({ stream, connection }) => {
+      const remotePeer = connection?.remotePeer?.toString() || "unknown";
+      try {
+        if (!isAuthorizedPeer(remotePeer)) return;
+        const ack = await _readOneMessage(stream, "SnapshotAck");
+        if (_awaitingAck.delete(remotePeer)) {
+          log.info(`Snapshot: ${remotePeer.slice(0, 12)} acked round ${Number(ack?.round || 0)} ` +
+            `(${Number(ack?.bytesReceived || 0)} bytes received), liveness verdicts resume`);
+        }
+      } catch (err) {
+        log.debug(`Snapshot: unreadable ack from ${remotePeer.slice(0, 12)}: ${err.message}`);
+      } finally {
+        try { stream.close(); } catch { /* ignore */ }
+      }
+    });
+
+    log.info(`Snapshot protocol registered: ${SNAPSHOT_PROTOCOL} (+ ${SNAPSHOT_ACK_PROTOCOL})`);
   }
 
   async function _handleIncomingSnapshot(stream, remotePeer) {
     // A 0-byte body is proto3's all-defaults message ("send your latest"), so a
     // falsy read is an empty request, not an error; rejecting it stalled joiners.
     const request = (await _readOneMessage(stream, "SnapshotRequest")) || {};
+    _awaitingAck.delete(remotePeer);   // a new request supersedes the receipt owed for the last serve
 
     const minRound = Number(request.minRound || 0);
 
@@ -564,6 +584,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       if (_activeServeStreams.get(remotePeer) === stream) _activeServeStreams.delete(remotePeer);
     }
 
+    _awaitingAck.set(remotePeer, nowMs() + SNAPSHOT_SERVE.ACK_DEADLINE_MS);
     _metrics.serves_completed = (_metrics.serves_completed || 0) + 1;
     _metrics.last_serve_bytes = _servedBytes;
     _metrics.last_serve_rows = stateRowsSent + txRowsSent + commitRowsSent
@@ -574,6 +595,33 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       `rotations=${rotationRowsSent} certs=${certRowsSent}@[${certFromRound},${certToRound}] ` +
       `rp=${rpRowsSent})`
     );
+  }
+
+  // "Sent" is handed-to-socket: the tail drains through the joiner's link for
+  // as long as that link is thin, with the joiner's pings queued behind it.
+  function _ackStillOwed(peerId) {
+    const until = _awaitingAck.get(peerId);
+    if (until === undefined) return false;
+    if (nowMs() < until) return true;
+    _awaitingAck.delete(peerId);
+    return false;
+  }
+
+  function isServingTo(peerId) {
+    return _activeServeStreams.has(peerId) || _ackStillOwed(peerId);
+  }
+
+  async function _sendSnapshotAck(peerId, ack) {
+    let stream = null;
+    try {
+      stream = await network.openStream(peerId, SNAPSHOT_ACK_PROTOCOL);
+      await stream.sink([_frame(encode("SnapshotAck", ack))]);
+      if (typeof stream.closeWrite === "function") await stream.closeWrite();
+    } catch (err) {
+      log.debug(`Snapshot: receipt to ${peerId.slice(0, 12)} not delivered: ${err.message}`);
+    } finally {
+      try { if (stream) stream.close(); } catch { /* ignore */ }
+    }
   }
 
   // ── Client: request a snapshot from a peer and install it ────────────────
@@ -874,6 +922,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
       if (!header) throw new Error("empty response from peer");
       if (!end) throw new Error("response missing SnapshotEnd terminator");
+      // Receipt on its own stream (ours is half-closed for writes). Not awaited:
+      // a sender without the handler just fails the open.
+      _sendSnapshotAck(peerId, { round: Number(header.round), bytesReceived: totalBytes, requesterNodeId });
       await flushBatch();
 
       // Every phase must have delivered its trailer , a peer that omitted one
@@ -1608,6 +1659,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
      *  Lets anti-entropy avoid interrupting an in-flight install (which would
      *  leave partial state and fail the state-root verify). */
     isInstalling: () => _snapInstallInProgress,
+    // The sender's heartbeat pings cross the same saturated path as the stream it
+    // is serving, so they time out too. Evicting the joiner mid-serve on a "dead
+    // peer" verdict is the same mistake as the client-side abort, from the other
+    // end. Holds from the request until the joiner's receipt (or its deadline).
+    isServingTo,
     SNAPSHOT_PROTOCOL,
     /** Cumulative counters for /metrics. */
     stats: () => ({ metrics: { ..._metrics }, install: _installProgress }),

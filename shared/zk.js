@@ -28,6 +28,8 @@ const path    = require("path");
 const fs      = require("fs");
 const snarkjs = require("snarkjs");
 
+const { canonicalizeGovId, GOV_ID_MAX_CHARS } = require("./gov-id");
+
 const CIRCUITS_DIR = path.join(__dirname, "../circuits");
 
 // ─── Load verification key (server-side) ─────────────────────────────────────
@@ -54,7 +56,7 @@ function _loadVKey() {
  * @returns {string} decimal string
  */
 function encodeGovId(govId) {
-  const norm  = govId.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 30);
+  const norm  = canonicalizeGovId(govId).slice(0, GOV_ID_MAX_CHARS);
   const hex   = Buffer.from(norm, "utf8").toString("hex");
   return hex ? BigInt("0x" + hex).toString() : "0";
 }

@@ -69,4 +69,59 @@ function renderEnvFromExample(overrides, opts = {}) {
   return notes.length ? notes.map((l) => `# ${l}`).join("\n") + "\n" + text : text;
 }
 
-module.exports = { renderEnvFromExample };
+// .env.example documents dev defaults: a localhost classifier, permissive CORS,
+// heuristic fallback when that classifier is down, and paths under the
+// generating machine's output folder. Every one of those is wrong on a live
+// node, and each would travel silently into a partner's deployment. A generator
+// running with --production overlays this instead.
+//
+// Values mirror what the mainnet fleet actually runs. Per-node values (node id,
+// keys, bucket, DB name) are NOT here: they belong to the caller.
+const FEDERATION_CORS_ORIGINS = "https://theailab.org,https://www.theailab.org,https://vp.theailab.org";
+const FEDERATION_CLASSIFIER_URL = "https://tipclassifier.theailab.org";
+
+// docker-compose mounts ./data at /app/data with WORKDIR=/app, and the key file
+// read-only at genesis-data/backups.
+//
+// TIP_LOG_DIR is deliberately absent. Every compose file mounts its per-node host
+// directory at the SAME container path, /app/node/logs, so separation happens on
+// the host side. Unset, the logger resolves to <repo>/node/logs, which IS that
+// path in a container and is also correct natively. Setting it to a relative
+// value resolves against /app instead and silently writes to an unmounted dir.
+const PRODUCTION_PATHS = Object.freeze({
+  TIP_DATA_DIR: "./data",
+  TIP_DB_PATH: "./data/tip.db",
+  CREDENTIALS_DIR: "genesis-data/backups",
+});
+
+/**
+ * Production overlay for a generated node env.
+ * @param {Object} [o]
+ * @param {string} [o.credentialsFileName]  `<node-id>.tip.json`, placed in the mounted key dir
+ * @returns {Object} overrides to spread into renderEnvFromExample
+ */
+function productionEnvDefaults({ credentialsFileName } = {}) {
+  return {
+    NODE_ENV: "production",
+    TIP_CLASSIFIER_URL: FEDERATION_CLASSIFIER_URL,
+    TIP_CORS_ORIGINS: FEDERATION_CORS_ORIGINS,
+    // 1 hands out heuristic verdicts when the classifier is unreachable; the
+    // fleet turned that off after the breaker served them under load.
+    TIP_CLASSIFIER_FALLBACK: "0",
+    TIP_PRESCAN_CONCURRENCY: "4",
+    TIP_RATE_LIMIT_MAX: "1000",
+    TIP_DATA_DIR: PRODUCTION_PATHS.TIP_DATA_DIR,
+    TIP_DB_PATH: PRODUCTION_PATHS.TIP_DB_PATH,
+    ...(credentialsFileName
+      ? { TIP_NODE_CREDENTIALS_FILE: `${PRODUCTION_PATHS.CREDENTIALS_DIR}/${credentialsFileName}` }
+      : {}),
+  };
+}
+
+module.exports = {
+  renderEnvFromExample,
+  productionEnvDefaults,
+  FEDERATION_CORS_ORIGINS,
+  FEDERATION_CLASSIFIER_URL,
+  PRODUCTION_PATHS,
+};

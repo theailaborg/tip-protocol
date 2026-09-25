@@ -901,3 +901,89 @@ describe("§69 snapshot ships recent certs for joiner committee derivation", () 
     }
   });
 });
+
+describe("§14 serve receipt: the sender's liveness verdicts stay suspended until the joiner acks", () => {
+  const { NETWORK } = require("../../../shared/protocol-constants");
+  const { SNAPSHOT_SERVE } = require("../../../shared/constants");
+  const { nowMs } = require("../../../shared/time");
+  const ACK = NETWORK.SNAPSHOT_ACK_PROTOCOL;
+
+  function makeAckedHandlers({ sourceDag, destDag }) {
+    const { client, server } = createStreamPair();
+    const ackPair = createStreamPair();
+    const handlers = {};
+    const opened = [];
+    const sourceHandler = createSnapshotHandler({
+      dag: sourceDag,
+      network: { node: {}, handle: async (proto, fn) => { handlers[proto] = fn; } },
+      isAuthorizedPeer: () => true,
+    });
+    const destHandler = createSnapshotHandler({
+      dag: destDag,
+      network: {
+        node: {},
+        openStream: async (peerId, proto) => { opened.push(proto); return proto === ACK ? ackPair.client : client; },
+      },
+      isAuthorizedPeer: () => true,
+    });
+    return { server, ackServer: ackPair.server, handlers, opened, sourceHandler, destHandler };
+  }
+
+  async function serveOnce(h, opts = {}) {
+    return Promise.all([
+      h.sourceHandler._handleIncomingSnapshot(h.server, "test-client"),
+      h.destHandler.requestSnapshotFromPeer("test-server", { requesterNodeId: "tip://node/joiner", ...opts }).catch(() => null),
+    ]);
+  }
+
+  test("joiner acks after SnapshotEnd on its own stream; the sender then owes nothing", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const h = makeAckedHandlers({ sourceDag: fx.sourceDag, destDag: initDAG({ dbPath: ":memory:" }) });
+    await h.sourceHandler.registerProtocol();
+    expect(h.handlers[ACK]).toBeDefined();
+    expect(h.sourceHandler.isServingTo("test-client")).toBe(false);
+
+    const [, result] = await serveOnce(h);
+    expect(result.round).toBe(2);
+    expect(h.opened).toContain(ACK);
+    // "sent" is handed-to-socket: until the receipt lands the joiner is still being served
+    expect(h.sourceHandler.isServingTo("test-client")).toBe(true);
+
+    await h.handlers[ACK]({ stream: h.ackServer, connection: { remotePeer: "test-client" } });
+    expect(h.sourceHandler.isServingTo("test-client")).toBe(false);
+  });
+
+  test("an ack from a peer that was never served is ignored, and an unauthorized ack clears nothing", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const h = makeAckedHandlers({ sourceDag: fx.sourceDag, destDag: initDAG({ dbPath: ":memory:" }) });
+    await h.sourceHandler.registerProtocol();
+    await serveOnce(h);
+    expect(h.sourceHandler.isServingTo("test-client")).toBe(true);
+    // the receipt stream carries the joiner's ack, but the sender attributes it to the connection's peer
+    await h.handlers[ACK]({ stream: h.ackServer, connection: { remotePeer: "someone-else" } });
+    expect(h.sourceHandler.isServingTo("test-client")).toBe(true);
+    expect(h.sourceHandler.isServingTo("someone-else")).toBe(false);
+  });
+
+  test("a declined serve owes no receipt", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const h = makeAckedHandlers({ sourceDag: fx.sourceDag, destDag: initDAG({ dbPath: ":memory:" }) });
+    await serveOnce(h, { minRound: 999_999 });
+    expect(h.sourceHandler.isServingTo("test-client")).toBe(false);
+  });
+
+  test("an owed receipt expires at ACK_DEADLINE_MS so a joiner that vanished mid-drain is evictable again", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const h = makeAckedHandlers({ sourceDag: fx.sourceDag, destDag: initDAG({ dbPath: ":memory:" }) });
+    await serveOnce(h);
+    expect(h.sourceHandler.isServingTo("test-client")).toBe(true);
+    // isServingTo is synchronous; fake timers only move the clock it reads.
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(nowMs() + SNAPSHOT_SERVE.ACK_DEADLINE_MS + 1);
+      expect(h.sourceHandler.isServingTo("test-client")).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});

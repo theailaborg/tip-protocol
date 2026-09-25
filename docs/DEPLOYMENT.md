@@ -57,7 +57,7 @@ DAG, serve the REST API, and participate in the network. That is it.
 
 | Item | Full Node | VP Node |
 |------|-----------|---------|
-| Node.js 20+ or Python 3.12+ | Required | Required |
+| Node.js 24+ | Required | Required |
 | Docker and Docker Compose (optional) | Recommended | Recommended |
 | Public IP address | Recommended for gossip | Required |
 | Open ports 4000 (REST) and 4001 (gossip) | Recommended | Required |
@@ -132,21 +132,36 @@ Expected response:
 ```json
 {
   "status": "ok",
-  "version": "2.0.0",
-  "chain_id": "tip-devnet-v2",
+  "version": "2.5.0",
+  "node_id": "tip://node/<id>",
   "dag_count": 0
 }
 ```
 
-### Step 5: Seed the genesis block (first launch only)
+`/health` does not return `genesis_hash` or a chain id. To confirm which chain
+the image carries, read the baked genesis directly:
+
+```bash
+python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"
+```
+
+### Step 5: Seed the genesis block (FOUNDING node only)
+
+> **Do not run this if you are joining an existing network.** Seeding mints a
+> new genesis and a new founding VP. A node that seeds has a different
+> `genesis_hash` from the fleet, so the p2p handshake rejects it, it peers with
+> nobody, and it sits at `join_state: syncing` forever. There is no clean
+> "wrong network" error and `scripts/seed.js` will not stop you. Partners
+> joining mainnet skip straight to Step 6: the genesis is already baked into
+> the image and state arrives by sync.
 
 ```bash
 docker compose exec tip-node node scripts/seed.js
 ```
 
 This mints the genesis block, registers the founding VP, and writes the
-genesis ring members to the DAG. You must complete this step before the
-node is useful.
+genesis ring members to the DAG. Only the first node of a **brand new** chain
+does this.
 
 After seeding:
 
@@ -212,7 +227,12 @@ node scripts/seed.js
 
 ---
 
-## Option C: Manual Setup (Python)
+## Option C: Manual Setup (Python) , UNMAINTAINED
+
+> `python/` is no longer maintained and does not track the Node implementation.
+> It has not been validated against the current genesis, schema migrations or
+> consensus code, so it must not be used for a mainnet or test-cluster node.
+> Kept for reference only; use Option A or B.
 
 ```bash
 git clone https://github.com/theailaborg/tip-protocol.git
@@ -353,6 +373,104 @@ The load-bearing gotchas to not relearn the hard way:
 
 ---
 
+## Joining an Existing Federation (partner node)
+
+The section above is a **cold start** for a brand new chain. A partner joining
+mainnet is a different job: the chain already exists, so the node mints nothing
+and instead proves it agrees with everyone else. We register the node and issue
+the credentials bundle first, per
+[`REGISTRATION_AND_KEY_DISTRIBUTION.md`](./REGISTRATION_AND_KEY_DISTRIBUTION.md).
+
+The one rule that matters: **never run `scripts/seed.js`**. It mints a fresh
+genesis, and a node whose `genesis_hash` differs cannot complete the p2p
+handshake with anybody. The symptom is not an error, it is zero peers and
+`join_state: syncing` forever.
+
+**1. Clone and place the credentials.** The zip is flat; the key has to be moved
+to where `node.env` points it and handed to uid 1001, the container user.
+
+```bash
+git clone https://github.com/theailaborg/tip-protocol.git ~/tip-protocol
+cd ~/tip-protocol
+
+cp <bundle>/NODE-KEY__tip-node-<id>.tip.json genesis-data/backups/tip-node-<id>.tip.json
+cp <bundle>/node.env .env                     # compose reads .env, not node.env
+
+mkdir -p data logs/node-1
+sudo chown -R 1001:1001 genesis-data/backups data logs
+sudo chmod 600 genesis-data/backups/tip-node-<id>.tip.json
+```
+
+The `ORG-IDENTITY__*.tip.json` from the same bundle does **not** belong on this
+host. It signs as the company, not as the node; keep it offline.
+
+**2. Confirm the chain before starting anything.**
+
+```bash
+python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"
+```
+
+It must match the federation's genesis prefix. If it does not, you are on the
+wrong branch or a stale clone, and nothing below will work.
+
+**3. Fill the host-specific values** left as placeholders in `.env`:
+`TIP_PUBLIC_IP` (static/elastic, peers store it), `TIP_PUBLIC_URL`, and
+`DB_PASSWORD`. Confirm `TIP_BOOTSTRAP_PEERS` is populated and
+`TIP_REG_CREDIT_CAP_ACTIVATION_MS` matches the fleet.
+
+**4. Build and start.** No seed step.
+
+```bash
+sudo docker compose build tip-node
+sudo docker compose up -d
+docker compose logs -f tip-node
+```
+
+**5. Watch it sync.** A joining node downloads a snapshot before it can
+participate, which takes minutes on a live chain. Progress, not speed, is what
+to watch:
+
+```bash
+curl -s http://localhost:4000/ready | python3 -m json.tool
+```
+
+`join_state` moves `syncing` → `catching_up` → `ready`. Snapshot installs are
+not resumable today, so a dropped transfer restarts it; repeated restarts
+usually mean an unstable link rather than a broken node.
+
+**6. Verify, in this order.** Each proves something different:
+
+```bash
+# reachable and not halted
+curl -s http://localhost:4000/ready      | python3 -m json.tool   # ready:true, halted:false
+
+# on the right chain: the handshake authorises peers against the genesis-scoped
+# on-chain registry, so a non-zero peer count IS proof of the correct genesis
+curl -s http://localhost:4000/health     | python3 -m json.tool   # peers.connected >= 1
+
+# the definitive check: identical state at the same round
+curl -s http://localhost:4000/v1/state-root
+curl -s https://node.theailab.org/v1/state-root
+```
+
+Equal `state_merkle_root` at equal `round` means the node's entire state is
+byte-identical to the rest of the federation. Rounds advance every ~2s, so
+compare matching round numbers rather than two snapshots taken seconds apart.
+
+**7. Announce the public endpoint** once DNS resolves to this host. It is
+optional at registration and updated any time afterwards, signed by the node's
+own key with no council re-approval:
+
+```bash
+curl -X POST http://localhost:4000/v1/node/endpoint/announce
+```
+
+**8. Before real traffic**, provision S3 media storage per
+[`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md). The generated env ships
+`TIP_MEDIA_BACKEND=fs`, which writes media bytes to the node disk.
+
+---
+
 ## Upgrading a Running Federation (rolling)
 
 The section above is a cold start. Upgrading a live chain is different: the
@@ -421,7 +539,7 @@ mainnet bootstrap peers, complete this checklist.
 - [ ] `TIP_PUBLIC_URL` is set to your node's public HTTPS URL
 - [ ] `TIP_BOOTSTRAP_PEERS` points to the mainnet bootstrap peers
 - [ ] Port 4001 (gossip) is open for TCP from any IP
-- [ ] Port 4000 (REST API) is behind a reverse proxy (nginx, Caddo, or Cloudflare)
+- [ ] Port 4000 (REST API) is behind a reverse proxy (nginx, Caddy, or Cloudflare)
 
 **Chain**
 

@@ -18,7 +18,8 @@
  *   --partner SLUG               Partner folder shared with the org registration
  *   --port 4100                  API port for the new node (default: 4100)
  *   --p2p-port 4101              libp2p port for the new node (default: api-port + 1)
- *   --public-ip 127.0.0.1        Publicly-reachable IP (default: 127.0.0.1)
+ *   --public-ip 1.2.3.4          Publicly-reachable IP (default: 127.0.0.1;
+ *                                --production leaves a CHANGE_ME placeholder)
  *   --vp-file PATH               Founding VP .tip.json. Defaults to the VP in
  *                                genesis-data/backups (the LOCAL/TEST VP);
  *                                pass the mainnet VP explicitly for mainnet.
@@ -26,12 +27,20 @@
  *   --db-user tip_node2          Per-node DB user (default: tip; Oracle nodes need tip_node2/3/4)
  *   --db-host postgres           DB host (default: postgres)
  *   --db-port 5432               DB port (default: 5432)
- *   --db-password ...            DB password (default: secret, the local-compose value)
+ *   --db-password ...            DB password (default: secret, the local-compose value;
+ *                                --production leaves a CHANGE_ME placeholder)
  *   --public-url https://...     Public URL of the new node (default: http://localhost:<port>)
  *   --api-endpoint https://...   Endpoint the node announces on chain (default: unset)
  *   --classifier-url https://... Classifier base URL (default: the .env.example value)
  *   --cors-origins a,b           Allowed origins (default: the .env.example value)
- *   --production                 NODE_ENV=production and force an explicit CORS origin list
+ *   --production                 NODE_ENV=production plus the federation's live defaults:
+ *                                classifier URL, CORS origins, strict classifier
+ *                                fallback, mainnet rate limit and prescan
+ *                                concurrency, and container-relative data/log paths
+ *   --reg-credit-activation-ms N CONSENSUS GATE: must equal what the rest of the
+ *                                fleet runs or the node forks. Read it off a node
+ *                                already in the network
+ *   --dry-run                    Render the env and print the plan; register nothing
  *   --operated-by tip://id/...   Identity responsible for this node (optional)
  *   --operator-key-file ./x.json That identity's .tip.json; required with --operated-by,
  *                                since the operator must cosign the registration
@@ -74,7 +83,7 @@ const {
   signBody,
 } = require("../shared/crypto");
 
-const { renderEnvFromExample } = require("./node-env-template");
+const { renderEnvFromExample, productionEnvDefaults } = require("./node-env-template");
 const { loadVpBackup } = require("./genesis-backups");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
@@ -86,6 +95,7 @@ const T = {
 const ok = (m) => console.log(`${T.green}  ✓${T.reset} ${m}`);
 const fail = (m) => console.log(`${T.red}  ✗${T.reset} ${m}`);
 const info = (m) => console.log(`${T.cyan}  ℹ${T.reset} ${m}`);
+const warn = (m) => console.log(`${T.yellow}  !${T.reset} ${m}`);
 const label = (k, v) => console.log(`    ${T.dim}${k.padEnd(24)}${T.reset}${v}`);
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
@@ -118,7 +128,7 @@ const operatorKeyFile = getArg("--operator-key-file", null);
 const vpFile = getArg("--vp-file", null);
 const apiPort = parseInt(getArg("--port", "4100"), 10);   // API port for the new node
 const p2pPort = parseInt(getArg("--p2p-port", String(apiPort + 1)), 10);   // libp2p port; convention is API+1
-const publicIp = getArg("--public-ip", "127.0.0.1");      // override for prod / cloud deployments
+const publicIpArg = getArg("--public-ip", null);          // override for prod / cloud deployments
 const dbNameOverride = getArg("--db-name", null);         // per-node DB name (optional)
 const dbUserOverride = getArg("--db-user", null);         // per-node DB user (optional; needed for Oracle)
 const forceHalted = args.includes("--force");              // allow registration against a halted node
@@ -129,7 +139,7 @@ const forceHalted = args.includes("--force");              // allow registration
 // and a value that is right for our box is usually wrong or unsafe on theirs.
 const dbHost = getArg("--db-host", "postgres");
 const dbPort = getArg("--db-port", "5432");
-const dbPassword = getArg("--db-password", "secret");
+const dbPasswordArg = getArg("--db-password", null);
 const classifierUrl = getArg("--classifier-url", null);
 // Announced on chain by init-endpoint-announce, so it must never be inherited:
 // a generated node would publish the generating machine's endpoint as its own.
@@ -137,6 +147,18 @@ const apiEndpoint = getArg("--api-endpoint", null);
 const publicUrl = getArg("--public-url", null);
 const corsOrigins = getArg("--cors-origins", null);
 const isProduction = args.includes("--production");
+const dryRun = args.includes("--dry-run");
+
+// A dev default that reaches a production env is worse than an obvious blank:
+// 127.0.0.1 silently drops the node out of the mesh and "secret" is a live
+// credential. Under --production these become placeholders that fail loudly.
+const publicIp = publicIpArg || (isProduction ? "CHANGE_ME_PUBLIC_IP" : "127.0.0.1");
+const dbPassword = dbPasswordArg || (isProduction ? "CHANGE_ME_STRONG_DB_PASSWORD" : "secret");
+// CONSENSUS GATE. Unset falls back to a constant that a fleet whose operator
+// already pinned a real activation is NOT running, and a mismatch forks. Read
+// it off a node already in the network rather than guessing.
+const regCreditActivationMs = getArg("--reg-credit-activation-ms", null);
+
 
 /** Slugify a display name into a filesystem-safe identifier. */
 function slugify(s) {
@@ -308,23 +330,30 @@ async function main() {
   }
 
   // 6. Register via API
-  info("Registering node...");
   let result;
-  try {
-    const postHeaders = forceHalted ? { "x-bootstrap-force": "1" } : {};
-    const response = await post(`${nodeUrl}/v1/node/register`, {
-      ...registrationFields,
-      council_signature: councilSignature,
-      ...(operatorSignature ? { operator_signature: operatorSignature } : {}),
-    }, postHeaders);
-    result = response.data || response;
-    ok(`Node registered: ${result.node_id}`);
-    label("Name", result.name);
-    label("Confirmation", result.confirmation || "registered");
-  } catch (err) {
-    fail(`Registration failed: ${err.message}`);
-    if (err.data) console.error("  ", JSON.stringify(err.data, null, 2));
-    process.exit(1);
+  if (dryRun) {
+    // Nothing is sent. The keypair above is a throwaway used only so the env
+    // preview carries a realistic node id.
+    result = { node_id: nodeId, name, registered_at: null, confirmation: "dry-run" };
+    warn("--dry-run: skipping registration, rendering the env only");
+  } else {
+    info("Registering node...");
+    try {
+      const postHeaders = forceHalted ? { "x-bootstrap-force": "1" } : {};
+      const response = await post(`${nodeUrl}/v1/node/register`, {
+        ...registrationFields,
+        council_signature: councilSignature,
+        ...(operatorSignature ? { operator_signature: operatorSignature } : {}),
+      }, postHeaders);
+      result = response.data || response;
+      ok(`Node registered: ${result.node_id}`);
+      label("Name", result.name);
+      label("Confirmation", result.confirmation || "registered");
+    } catch (err) {
+      fail(`Registration failed: ${err.message}`);
+      if (err.data) console.error("  ", JSON.stringify(err.data, null, 2));
+      process.exit(1);
+    }
   }
 
   // 7. Resolve output directory now that we have a tip-id.
@@ -353,8 +382,12 @@ async function main() {
     registered_on: nodeUrl,
   }, null, 2);
   const tipFileName = result.node_id.replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-") + ".tip.json";
-  fs.writeFileSync(path.join(outDir, tipFileName), tipJson, { mode: 0o600 });
-  ok(`Backup: ${outDir}/${tipFileName}`);
+  if (dryRun) {
+    ok(`Backup (skipped, dry-run): ${outDir}/${tipFileName}`);
+  } else {
+    fs.writeFileSync(path.join(outDir, tipFileName), tipJson, { mode: 0o600 });
+    ok(`Backup: ${outDir}/${tipFileName}`);
+  }
   // The node reads both keys from this .tip.json via TIP_NODE_CREDENTIALS_FILE,
   // so the generated .env never inlines the secret.
   const tipFileRel = path.relative(process.cwd(), path.join(outDir, tipFileName));
@@ -375,13 +408,6 @@ async function main() {
   // recorded relative to the project root because that's where the node
   // is meant to be launched from.
   const dataDirRel = `./${path.relative(process.cwd(), path.join(outDir, "data"))}`;
-  // Per-node log dir at the top-level `./logs/<slug>-<short-id>` — matches
-  // the existing convention used by docker-compose (`./logs/node-1`) and
-  // by the founding `.env`. Without an explicit TIP_LOG_DIR, the logger
-  // defaults to `node/logs/` which every generated node would share,
-  // clobbering each other's per-process log streams. Each node's own
-  // sub-directory keeps debug.log / info.log / error.log unambiguous.
-  const logDirRel = `./logs/${slug}-${shortId}`;
   const envFileName = `${slug}.env`;
   const envPath = path.join(outDir, envFileName);
   const envRelForLaunch = path.relative(process.cwd(), envPath);
@@ -389,6 +415,8 @@ async function main() {
   // Drop-in .env from .env.example + the values we know. Anything omitted here
   // keeps its .env.example default. See node-env-template.js.
   const u = (x) => (x === "" || x === undefined || x === null ? undefined : x);
+  // Layered: per-node values, then the production overlay (which owns the
+  // federation-wide and container-path policy), then explicit flags, which win.
   const envContent = renderEnvFromExample({
     TIP_NODE_ID: result.node_id,
     PORT: apiPort,
@@ -398,8 +426,7 @@ async function main() {
     TIP_ENABLE_MDNS: "false",
     TIP_DATA_DIR: dataDirRel,
     TIP_DB_PATH: `${dataDirRel}/tip.db`,
-    TIP_LOG_DIR: logDirRel,
-    TIP_PUBLIC_URL: u(publicUrl) || `http://localhost:${apiPort}`,
+    TIP_PUBLIC_URL: u(publicUrl) || (isProduction ? "CHANGE_ME_PUBLIC_URL" : `http://localhost:${apiPort}`),
     TIP_NODE_CREDENTIALS_FILE: tipFileRel,
     DB_DRIVER: "postgres",
     DB_HOST: dbHost,
@@ -407,11 +434,15 @@ async function main() {
     DB_NAME: dbNameOverride || "tip_protocol",
     DB_USER: dbUserOverride || "tip",
     DB_PASSWORD: dbPassword,
-    TIP_CLASSIFIER_URL: u(classifierUrl),
     TIP_API_ENDPOINT: u(apiEndpoint),
-    NODE_ENV: isProduction ? "production" : undefined,
-    TIP_CORS_ORIGINS: u(corsOrigins)
-      || (isProduction ? "CHANGE_ME_YOUR_CLIENT_ORIGINS_COMMA_SEPARATED" : undefined),
+
+    ...(isProduction ? productionEnvDefaults({ credentialsFileName: tipFileName }) : {}),
+
+    // Explicit flags outrank the overlay. --cors-origins REPLACES the list, so
+    // pass the federation origins too or the VP and public site lose access.
+    ...(u(classifierUrl) ? { TIP_CLASSIFIER_URL: u(classifierUrl) } : {}),
+    ...(u(corsOrigins) ? { TIP_CORS_ORIGINS: u(corsOrigins) } : {}),
+    TIP_REG_CREDIT_CAP_ACTIVATION_MS: u(regCreditActivationMs),
   }, {
     headerNotes: [
       `${name}`,
@@ -421,6 +452,12 @@ async function main() {
   });
   fs.writeFileSync(envPath, envContent, { mode: 0o600 });
   ok(`Env file: ${outDir}/${envFileName}`);
+  if (isProduction && !regCreditActivationMs) {
+    warn("TIP_REG_CREDIT_CAP_ACTIVATION_MS is unset. It is a consensus gate: a node");
+    warn("  that disagrees with the fleet forks. Read it off a node already in the");
+    warn("  network (grep TIP_REG_CREDIT_CAP_ACTIVATION_MS .env) and re-run with");
+    warn("  --reg-credit-activation-ms <value>, or set it by hand before first boot.");
+  }
 
   // 8. Print setup instructions
   const envRel = envRelForLaunch;

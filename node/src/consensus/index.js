@@ -474,10 +474,24 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getSelfNodeId: () => nodeId,
     isAuthorizedPeer,
     onPeerSuspect: (peerId, tipNodeId) => {
+      const who = tipNodeId?.slice(-8) || peerId.slice(0, 12);
+      // A snapshot in flight saturates the path in both directions: the joiner's
+      // outbound pings starve behind the inbound stream, and the sender's pings to
+      // that joiner queue behind the stream it is pushing. Either side evicting on
+      // that verdict kills the transfer, so stand down while installing, or while
+      // serving THIS peer. That is the download working, not the peer dying.
+      const installing = snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling();
+      const serving = snapshotHandler && typeof snapshotHandler.isServingTo === "function" && snapshotHandler.isServingTo(peerId);
+      if (installing || serving) {
+        log.warn(`heartbeat: peer ${who} is suspect during snapshot ${installing ? "install" : "serve"}, not evicting`);
+        heartbeat.forgive(peerId);
+        return;
+      }
       log.warn(
-        `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} is suspect ` +
-        `(${CONSENSUS.HEARTBEAT_SUSPECT_MISSES} consecutive misses), AE will reconcile`
+        `heartbeat: peer ${who} is suspect ` +
+        `(${CONSENSUS.HEARTBEAT_SUSPECT_MISSES} consecutive misses), hanging up; reconnect re-authorizes`
       );
+      if (network && typeof network.hangUp === "function") network.hangUp(peerId);
     },
   });
 

@@ -50,6 +50,32 @@ looking at, which is the same as not sending them.
 The username is always `promtail` and is already set in the agent's config, so
 there is nothing to fill in for it.
 
+## First: make sure your node is actually writing log files
+
+The agent only forwards files your node has written. The node container runs as
+uid **1001**, and Docker creates a bind-mounted directory owned by root, so on a
+fresh host the node cannot write into its own log directory and silently falls
+back to container stdout only.
+
+Fix it before starting the agent:
+
+```bash
+mkdir -p ~/tip-protocol/logs
+sudo chown -R 1001:1001 ~/tip-protocol/logs
+docker compose restart tip-node
+```
+
+Then confirm the files exist and are growing:
+
+```bash
+ls -la ~/tip-protocol/logs/*/
+# expect access.log, debug.log, error.log and info.log, with non-zero sizes
+```
+
+If that directory is empty, stop here and fix it. The agent will start happily
+and report no errors while shipping almost nothing, which is the one failure
+mode that looks like success.
+
 ## Setup
 
 One container, next to the node. From the repository you already have:
@@ -68,9 +94,16 @@ directory:
 - ../../../logs/node-1:/tip-logs:ro
 ```
 
-That path must match what your node writes. It is the host directory your node's
-compose file mounts at `/app/node/logs`, which follows `TIP_LOG_DIR` in your
-`.env`. If your node uses a different name, change `node-1` to match.
+That path must match what your node writes. It is the host side of the mount
+your node's compose file makes at `/app/node/logs`. If your node uses a
+different directory name, change `node-1` to match.
+
+**Check `TIP_LOG_DIR` in your `.env` is not set.** Left unset, the node writes
+to `/app/node/logs`, which is the mounted path. If it is set to a relative path
+such as `./logs/node-1`, that resolves against the container's working
+directory `/app`, giving `/app/logs/node-1`, which is **not** mounted. Your logs
+then stay inside the container, disappear when it is recreated, and never reach
+us. Comment the line out and restart the node.
 
 Then start it:
 
@@ -86,14 +119,30 @@ on its own.
 
 ## Confirming it works
 
-Tell us once it is running and we will confirm the logs are arriving, usually
-within a minute. From your side, the agent's own log is the only signal:
+Two checks, and the second is the one that matters.
+
+**1. The agent is not erroring:**
 
 ```bash
 docker logs tip-promtail --since 5m | grep -i error
 ```
 
-Silence is success.
+**2. It is actually reading the log files.** A quiet agent with an empty
+directory looks identical to a healthy one, so confirm it can see them:
+
+```bash
+docker exec tip-promtail ls -la /tip-logs/
+docker exec tip-promtail sh -c 'ls /tip-logs/*/ | head'
+```
+
+You should see the dated directory and the four `.log` files. An empty listing
+means the mount path in `docker-compose.promtail.yml` does not match where your
+node writes, or the directory permissions above were never applied.
+
+Tell us once it is running and we will confirm from our side. What we check is
+that four separate streams arrive from your node, one per log level, not just
+container output. If only container output reaches us, the file mount is wrong
+even though nothing on your side reports an error.
 
 ## Stopping it temporarily
 
