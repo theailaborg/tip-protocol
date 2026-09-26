@@ -11,6 +11,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+**A restarted node no longer halts and snapshot-recovers on boot**
+- The pre-scan verdict is rounded to basis points where the blend is produced,
+  so the transaction, memory, store, snapshot and state hash all carry one
+  value. content.prescan_probability was float4 in Postgres; a blend such as
+  0.37174999999999997 hashed as 3717 live and 3718 after the round-trip, and
+  every restarted mainnet node diverged from the fleet. Migration 010 widens
+  the column and restores each row from its verdict transaction at basis
+  points, so the state root does not change and nodes roll one at a time.
+
 **Node 2.6.1: a reconnect never snapshots state it already holds**
 - The attested state root decides a reconnect sync: same root, no sync mode and
   no snapshot; a different root pulls certificates and snapshots only when the
