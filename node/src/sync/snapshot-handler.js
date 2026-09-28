@@ -430,21 +430,31 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // requests with "serve capacity reached" (node3 rejoin incident, 2026-07-08).
     let _serveStalled = false;
     let _serveStallTimer = null;
+    // Aborting a stream whose connection already died need not settle a pending
+    // sink()/closeWrite(), so the serve races this too (slot held 2 days, 2026-09-28).
+    let _giveUp;
+    const _abandoned = new Promise((_, reject) => { _giveUp = reject; });
+    _abandoned.catch(() => {});
+    const _abandon = (reason) => {
+      _serveStalled = true;
+      const err = new Error(reason);
+      _abortStream(stream, err);
+      _giveUp(err);
+    };
     const _armServeStall = () => {
       if (_serveStalled) return;
       if (_serveStallTimer) clearTimeout(_serveStallTimer);
-      _serveStallTimer = setTimeout(() => {
-        _serveStalled = true;
-        _abortStream(stream, new Error("snapshot serve stalled , joiner stopped reading"));
-      }, SNAPSHOT_DOWNLOAD.STALL_MS);
+      _serveStallTimer = setTimeout(() => _abandon("snapshot serve stalled , joiner stopped reading"), SNAPSHOT_DOWNLOAD.STALL_MS);
       _serveStallTimer.unref?.();
     };
+    const _serveDeadline = setTimeout(() => _abandon("snapshot serve exceeded its deadline"), SNAPSHOT_SERVE.MAX_MS);
+    _serveDeadline.unref?.();
     _armServeStall();
     try {
       const _countBytes = async function* (gen) {
         for await (const buf of gen) { _servedBytes += buf.length; _armServeStall(); yield buf; }
       };
-      await stream.sink(_countBytes((async function* () {
+      await Promise.race([stream.sink(_countBytes((async function* () {
         // Yield to the event loop every ~256 framed rows so heartbeats / IO keep
         // firing during a large serve; without it the row flood starves the loop.
         let _yielded = 0;
@@ -563,18 +573,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           rpRowCount: rpRowsSent,
         });
         yield _frameKind(K.END, endBuf);
-      })()));
+      })())), _abandoned]);
       // Half-close our write direction so the client's read loop sees a clean
       // EOF and stops waiting. Without it the client blocks until its download
       // deadline (~180s) and treats a complete serve as a timeout.
       if (typeof stream.closeWrite === "function") {
-        await stream.closeWrite();
+        await Promise.race([stream.closeWrite(), _abandoned]);
       }
     } catch (err) {
       log.warn(`Snapshot: stream write ${_serveStalled ? "stalled" : "failed"} to ${remotePeer}: ${err.message}`);
       return;
     } finally {
       if (_serveStallTimer) clearTimeout(_serveStallTimer);
+      clearTimeout(_serveDeadline);
       _activeServes--;
       if (_activeServeStreams.get(remotePeer) === stream) _activeServeStreams.delete(remotePeer);
     }

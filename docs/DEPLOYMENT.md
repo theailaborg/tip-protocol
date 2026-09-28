@@ -132,7 +132,7 @@ Expected response:
 ```json
 {
   "status": "ok",
-  "version": "2.6.2",
+  "version": "2.6.3",
   "node_id": "tip://node/<id>",
   "dag_count": 0
 }
@@ -491,10 +491,22 @@ git fetch origin && git checkout <sha>
 git stash pop -q
 diff -q genesis-data/genesis.json /tmp/genesis-backup.json   # MUST be identical
 
-# 3. rebuild (genesis is baked into the image) and recreate this node only
+# 3. rebuild (genesis is baked into the image); the running container keeps its image
 docker compose build tip-node
+
+# 4. gate: stop this node, apply the new migrations, and prove its database
+#    rebuilds to the live root of an untouched peer. Exit 0 means MATCH.
+docker compose stop tip-node
+docker compose run --rm --no-deps -T --entrypoint node tip-node \
+  scripts/check-boot-root.js --migrate --peer https://<untouched-peer>
+
+# 5. only on MATCH: recreate this node
 docker compose up -d --no-deps --force-recreate tip-node
 ```
+
+On MISMATCH, do not start the node on the new version: it would halt at boot and
+depend on a peer's single snapshot slot to recover. The script prints per-table
+roots; the table that differs from the peer's is where the database drifted.
 
 Then verify **before** moving on:
 
@@ -506,15 +518,15 @@ Then verify **before** moving on:
 Give it a few minutes rather than seconds. A node that comes up and then dies
 on its second cycle looks healthy at t+30s.
 
-Two things that are normal and should not stop a rollout:
+Nodes on different commits reporting **identical** state roots is normal: the
+canonical projections used for hashing are explicit whitelists, so a column added
+by a new migration does not enter the root. Mixed versions agree by design.
 
-- Nodes on different commits reporting **identical** state roots. The canonical
-  projections used for hashing are explicit whitelists, so a column added by a
-  new migration does not enter the root. Mixed versions agree by design.
-- A single `HALT (byzantine_fork)` about 8-10s after boot that clears itself
-  via snapshot resync. The node is behind, not forked; anti-entropy compares its
-  catching-up root against peers that are further ahead. It self-heals and
-  `halted` returns to `false`.
+A `HALT (byzantine_fork)` after boot is **not** normal, even when it clears itself
+through a snapshot. It means this node's database rebuilt to a different root than
+the fleet holds. It was read as harmless for months and hid a real drift until a
+restart found no peer able to serve a snapshot (2026-09-28). Stop the rollout and
+run the gate against the node's database.
 
 Anything else, stop and investigate before touching the next node.
 

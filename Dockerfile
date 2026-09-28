@@ -72,6 +72,8 @@ COPY --chown=tipnode:tipnode circuits/         ./circuits/
 # Copy browser extension zip if present (glob trick: bracket makes COPY no-op if missing)
 COPY --chown=tipnode:tipnode browser-extensio[n]/*.zip ./browser-extension/
 COPY --chown=tipnode:tipnode package.json      ./package.json
+# Pre-restart gate, run from the node image before any rolling restart.
+COPY --chown=tipnode:tipnode scripts/check-boot-root.js ./scripts/check-boot-root.js
 
 # Genesis state the node reads at boot. genesis.json is the minted, self-contained
 # block (carries protocol_constants). genesis-config.json is a seed-time input and

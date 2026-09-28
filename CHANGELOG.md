@@ -11,6 +11,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+**Node 2.6.3: a dead joiner can no longer hold the snapshot slot; the last drifted row is corrected**
+- A snapshot serve races its transfer and its final close against the stall
+  timer and a one-hour deadline. Aborting a stream whose connection had already
+  died did not settle the pending close, and on mainnet both peers held their
+  single serve slot for two days, so a halted node had nowhere to recover from.
+- Migration 011 sets the one mainnet content row whose attested value (4249)
+  differs from its transaction to that value; migration 010 had rebuilt it from
+  the transaction and the restarted node halted. No-op on every other network.
+- The score write persists the clamped value the mirror holds.
+- `scripts/check-boot-root.js` is the pre-restart gate: it rebuilds the root
+  from a node's database exactly as boot does and compares it with a live peer.
+  The rolling-upgrade runbook requires a MATCH before a node restarts.
+
 **Node 2.6.2: a restarted node no longer halts and snapshot-recovers on boot**
 - The pre-scan verdict is rounded to basis points where the blend is produced,
   so the transaction, memory, store, snapshot and state hash all carry one
