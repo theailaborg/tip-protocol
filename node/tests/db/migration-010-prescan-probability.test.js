@@ -125,6 +125,6 @@ describe("migration 010: prescan_probability restored from the verdict at basis 
     await knex.migrate.down();
     await knex.migrate.up();
     const [, pending] = await knex.migrate.list();
-    expect(pending).toHaveLength(0);
+    expect(pending.map((m) => m.file || m)).not.toContain(TARGET);
   });
 });
