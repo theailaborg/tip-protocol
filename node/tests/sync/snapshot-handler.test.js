@@ -35,7 +35,7 @@ const { loadTypes } = require(path.join(SRC, "network", "proto"));
 
 const { createStreamPair } = require("../helpers/stream-pair");
 const { buildCommittedDag } = require("../helpers/commit-builder");
-const { SNAPSHOT_FRAME_KIND } = require(path.join(SHARED, "constants"));
+const { SNAPSHOT_FRAME_KIND, SNAPSHOT_DOWNLOAD } = require(path.join(SHARED, "constants"));
 
 // #132 streaming wire format: each frame is [4-byte BE length][1-byte kind]
 // [protobuf], so the kind byte sits at index 4. Row frames are interleaved
@@ -1048,3 +1048,43 @@ describe("§14 install marker hygiene (a wedged joiner must not refuse ready on 
   });
 });
 
+
+// A joiner whose connection died mid-download: the serve's close never settles and
+// abort cannot reach it. Mainnet held its only serve slot for two days this way.
+describe("snapshot serve: a dead joiner never holds the serve slot", () => {
+  afterEach(() => jest.useRealTimers());
+
+  function deadJoinerStream() {
+    const state = { closeWriteCalled: false };
+    return {
+      state,
+      source: (async function* () { yield Buffer.alloc(4); })(),
+      sink: async (src) => { for await (const _chunk of src) { /* accepted by the kernel */ } },
+      closeWrite: () => { state.closeWriteCalled = true; return new Promise(() => {}); },
+      abort: () => {},
+      close: () => {},
+    };
+  }
+
+  test("the stall timer releases the slot when closeWrite never settles", async () => {
+    jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick", "queueMicrotask"] });
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const handler = createSnapshotHandler({
+      dag: fx.sourceDag,
+      network: { node: {}, handle: async () => { } },
+      isAuthorizedPeer: () => true,
+    });
+    const ghost = deadJoinerStream();
+    let settled = false;
+    const serving = handler._handleIncomingSnapshot(ghost, "ghost").then(() => { settled = true; });
+
+    for (let i = 0; i < 500 && !ghost.state.closeWriteCalled; i++) await new Promise((r) => setImmediate(r));
+    expect(ghost.state.closeWriteCalled).toBe(true);
+    expect(handler.isServingTo("ghost")).toBe(true);
+
+    await jest.advanceTimersByTimeAsync(SNAPSHOT_DOWNLOAD.STALL_MS + 1_000);
+    await serving;
+    expect(settled).toBe(true);
+    expect(handler.isServingTo("ghost")).toBe(false);
+  });
+});

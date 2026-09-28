@@ -117,6 +117,7 @@ const SNAPSHOT_SERVE = Object.freeze({
   INFLIGHT_BOUND_BYTES: 16 * 1024 * 1024,   // Linux tcp_wmem autotuning maximum
   DRAIN_GRACE_MIN_MS: 30_000,
   DRAIN_GRACE_MAX_MS: 15 * 60_000,
+  MAX_MS: 60 * 60_000,   // backstop: a serve always frees its single slot
 });
 
 // A peer behind a bloated link pings us in bunches (49s gaps seen at 1mbit).

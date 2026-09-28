@@ -1319,7 +1319,9 @@ class KnexAdapter {
 
   setScore(tipId, score, offenseCount, lastUpdatedISO) {
     this.mirror.setScore(tipId, score, offenseCount, lastUpdatedISO);
-    const row = { tip_id: tipId, score, offense_count: offenseCount || 0, last_updated: lastUpdatedISO };
+    // Persist what the mirror holds: it clamps to [0, 1000], and boot hashes the DB value.
+    const held = this.mirror.getScore(tipId);
+    const row = { tip_id: tipId, score: held.score, offense_count: held.offense_count, last_updated: held.last_updated };
     this._ff(() => this._dbInsert("scores", "tip_id", row, "merge"));
   }
 

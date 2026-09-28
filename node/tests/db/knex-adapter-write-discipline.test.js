@@ -97,6 +97,16 @@ describe("persistenceStats + parity probe", () => {
     expect(a.persistenceStats().last_settled_age_ms).toBeLessThan(5_000);
   });
 
+  // Boot hashes the DB value, so an unclamped write forks the root at restart.
+  test("setScore persists the clamped score the mirror holds", async () => {
+    a.setScore("tip://id/US-clamp00000000001", 1200, 0, 1790000000000);
+    a.setScore("tip://id/US-clamp00000000002", -5, 1, 1790000000001);
+    await a.flush();
+    const rows = await a.knex("scores").whereIn("tip_id", ["tip://id/US-clamp00000000001", "tip://id/US-clamp00000000002"]).orderBy("tip_id").select("score");
+    expect(rows.map((r) => r.score)).toEqual([1000, 0]);
+    expect(a.getScore("tip://id/US-clamp00000000001").score).toBe(1000);
+  });
+
   test("parity probe passes when mirror and DB agree", async () => {
     a.saveContent({
       ctid: "parity-ct", origin_code: "OH", content_hash: "h",
