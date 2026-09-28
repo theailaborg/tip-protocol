@@ -55,7 +55,7 @@ async function main() {
   await adapter._hydrate();
   const rebuilt = adapter.mirror.stateRoot();
 
-  console.log(`database : ${cfg.dbName}`);
+  console.log(`database : ${process.env.DB_NAME || cfg.dbName || "(DATABASE_URL)"}`);
   console.log(`rebuilt  : ${rebuilt}`);
   console.log(`expected : ${expected.root}  (${expected.source})`);
   for (const t of computeStateMerkleRootPerTable(adapter.mirror)) {
