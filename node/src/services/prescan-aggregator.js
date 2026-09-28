@@ -43,6 +43,7 @@
 "use strict";
 
 const { MODALITY_WEIGHTS } = require("../../../shared/protocol-constants");
+const { roundProbability } = require("../../../shared/prescan-probability");
 const { primaryModality } = require("./content-type");
 
 /**
@@ -226,7 +227,7 @@ function aggregate(modalityResults, contentType) {
 
     const probability = _weightedAverage(collapsed, weights);
     return {
-      probability: _clamp01(probability),
+      probability: _finalize(probability),
       overall_degraded: overallDegraded,
       overall_hard_degraded: overallHardDegraded,
       modality_results: enriched,
@@ -238,7 +239,7 @@ function aggregate(modalityResults, contentType) {
   const probability = _primaryFloorLift(collapsed, primary, primaryResult.probability, weights);
 
   return {
-    probability: _clamp01(probability),
+    probability: _finalize(probability),
     overall_degraded: overallDegraded,
     overall_hard_degraded: overallHardDegraded,
     modality_results: enriched,
@@ -255,6 +256,12 @@ function _clamp01(p) {
   if (p < 0) return 0;
   if (p > 1) return 1;
   return p;
+}
+
+// The blend is float arithmetic (0.2736*0.3 + 0.4699*0.3 over 0.6 gives
+// 0.37174999999999997); consensus carries basis points, so round here once.
+function _finalize(p) {
+  return roundProbability(_clamp01(p));
 }
 
 module.exports = {

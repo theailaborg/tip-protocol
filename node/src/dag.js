@@ -33,6 +33,7 @@ const { nowMs } = require("../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES, PENDING_OWNER_HEAD_TTL_MS, UPLOAD_SESSION_STATE } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
 const { subjectTipId, subjectTipIds } = require("./tx-attribution");
+const { quantizeProbability } = require("../../shared/prescan-probability");
 const { log } = require("./logger");
 
 // ─── SQLite loaded lazily ─────────────────────────────────────────────────────
@@ -101,12 +102,9 @@ function _canonIdentity(r) {
     tx_id: r.tx_id || null,
   };
 }
-// prescan_probability is float4 in the DB but float64 live; hashing the raw float
-// forked the state root between restarted and live nodes (incident 2026-07-06).
-// Basis-point quantization collapses both representations to one value.
-function _quantizeProb(p) {
-  return typeof p === "number" && Number.isFinite(p) ? Math.round(p * 10000) : 0;
-}
+// Hashing the raw float forked the state root between restarted and live nodes
+// (incident 2026-07-06); the leaf carries basis points, same as the stored value.
+const _quantizeProb = quantizeProbability;
 
 function _canonContent(r) {
   // Intentionally excluded: `dispute_count`, `verification_count`. Both are
