@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-**A restarted node no longer halts and snapshot-recovers on boot**
+**Node 2.6.2: a restarted node no longer halts and snapshot-recovers on boot**
 - The pre-scan verdict is rounded to basis points where the blend is produced,
   so the transaction, memory, store, snapshot and state hash all carry one
   value. content.prescan_probability was float4 in Postgres; a blend such as
