@@ -26,22 +26,34 @@ the identifier from the table in section 2 and use the matching wording, e.g.
 >
 > 1. Full legal name, exactly as registered
 > 2. [registration number wording for their country, from the section 2 table]
-> 3. Date of incorporation
-> 4. Country of registration
-> 5. Production node's static public IP (new host, not the testnet box)
-> 6. Domain the node will serve on (e.g. node.[partner].com). This gets
->    published on-chain, so it must be the address you intend to keep
-> 7. Confirmation that inbound TCP 4000 and 4001 are open to the internet
-> 8. The node host's internet link: 25 Mbit/s download and upload sustained
->    minimum, 50 recommended, ideally a dedicated line rather than the shared
->    office connection
-> 9. Ops contact (name + email) for node issues
+> 3. Legal form, as printed on the certificate (Private Limited, LLP, LLC, Ltd,
+>    GmbH, ...)
+> 4. Date of incorporation
+> 5. Country of registration
+> 6. Whether the business has ever operated under a previous registration
+>    number (before a conversion or re-incorporation); if so, that number and
+>    the date of the change
+> 7. Production node's static public IP (new host, not the testnet box)
+> 8. Domain the node will serve on (e.g. node.[partner].com) and confirmation
+>    that you control its DNS. This gets published on-chain, so it must be the
+>    address you intend to keep
+> 9. Confirmation that inbound TCP 4000 and 4001 are open to the internet
+> 10. The node host's internet link: 25 Mbit/s download and upload sustained
+>     minimum, 50 recommended, ideally a dedicated line rather than the shared
+>     office connection
+> 11. Media storage: the node stores uploaded media in an S3 bucket you own.
+>     Confirm you have an AWS account we can send the setup steps for, or tell
+>     us if you need another arrangement
+> 12. Ops contact for node issues: name, email, and a phone or Signal number
+>     (the bundle comes by email, its password by phone or Signal)
 >
 > Once these arrive we'll register your org and node, and send the credentials
 > bundle.
 
-Items 5-9 apply when the organization will also run a node; drop them for an
-identity-only registration. The rest of this document explains what each answer
+Items 7-12 apply when the organization will also run a node; drop them for an
+identity-only registration. Item 3 feeds `--org-type`, item 6 is the continuity
+question section 2 requires in writing, and item 12 is what makes the password
+deliverable over a second channel (section 5). The rest of this document explains what each answer
 must look like before you act on it.
 
 ### The fields, and where they go
