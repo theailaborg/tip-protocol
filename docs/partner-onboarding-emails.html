@@ -90,11 +90,63 @@
            <input id="f-INCORPORATED" data-ph="INCORPORATED" placeholder="2019-04-11"></div>
       <div><label for="f-COUNTRY">Country</label>
            <input id="f-COUNTRY" data-ph="COUNTRY" placeholder="United Kingdom"></div>
+      <div><label for="f-REG_COUNTRY">Country of registration (email 0 wording)</label>
+           <select id="f-REG_COUNTRY">
+             <option value="GB">United Kingdom (Companies House number)</option>
+             <option value="IN">India (CIN or LLPIN)</option>
+             <option value="US">United States (federal EIN)</option>
+             <option value="AU">Australia (ACN)</option>
+             <option value="FR">France (SIREN)</option>
+             <option value="JP">Japan (Corporate Number)</option>
+             <option value="DE">Germany (HRB/HRA with court)</option>
+             <option value="OTHER">Other (confirm the register first)</option>
+           </select></div>
       <div><label for="f-GENESIS">Mainnet genesis prefix</label>
            <input id="f-GENESIS" data-ph="GENESIS" value="d4666ce12479a5bc" placeholder="d4666ce12479a5bc"></div>
     </div>
     <p class="hint">Only <b>Partner name</b> matters for the test email. The rest fill in the mainnet one.</p>
   </div>
+
+  <!-- ─────────────── DETAILS REQUEST ─────────────── -->
+  <details class="card">
+    <summary class="bar">
+      <div>
+        <h2>0. Request the registration details</h2>
+        <p class="subj">Subject: TIP mainnet: details we need before registering <span class="ph" data-ph="PARTNER">{{PARTNER}}</span></p>
+      </div>
+      <button onclick="event.preventDefault();event.stopPropagation();copyEmail('email-request', this)">Copy email</button>
+    </summary>
+    <p class="warn">Send this first. Pick the country of registration above: item 2 changes to the one
+       identifier that country's registry issues, and nothing else is accepted (a tax or VAT number would
+       mint a second permanent identity). For an identity-only registration, delete items 5 to 9.</p>
+    <div class="body" id="email-request">
+      <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
+        <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
+
+        <p>We're ready to register <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> on TIP mainnet.
+        Mainnet records are permanent and cannot be corrected, so please confirm the following from your
+        official documents, not from memory:</p>
+
+        <ol>
+          <li>Full legal name, exactly as registered</li>
+          <li><span class="ph filled" data-ph="REG_ASK">Companies House company number (8 characters, exactly as printed, keep leading zeros)</span></li>
+          <li>Date of incorporation</li>
+          <li>Country of registration</li>
+          <li>Production node's static public IP (a new host, not the test network box)</li>
+          <li>Domain the node will serve on, for example node.your-domain.com. It is published on chain,
+          so it must be the address you intend to keep</li>
+          <li>Confirmation that inbound TCP 4000 and 4001 are open to the internet</li>
+          <li>The node host's internet link: 25 Mbit/s download and upload sustained minimum, 50
+          recommended, ideally a dedicated line rather than the shared office connection</li>
+          <li>Ops contact (name and email) for node issues</li>
+        </ol>
+
+        <p>Once these arrive we'll register your organization and node, and send the credentials bundle.</p>
+
+        <p>Thanks,<br>The AI Lab Team</p>
+      </div>
+    </div>
+  </details>
 
   <!-- ─────────────── TEST NETWORK ─────────────── -->
   <details class="card">
@@ -375,6 +427,28 @@ FIELDS.forEach((i) => {
   apply(i);
   i.addEventListener("input", () => apply(i));
 });
+
+// Email 0, item 2: the one identifier each registry issues (docs/ORG_REGISTRATION.md section 2).
+const REG_ASK = {
+  GB: "Companies House company number (8 characters, exactly as printed, keep leading zeros)",
+  IN: "CIN (21 characters) for a company, or LLPIN (7 characters) for an LLP, and which one it is",
+  US: "Federal EIN (9 digits), not a state entity number",
+  AU: "ACN (9 digits)",
+  FR: "SIREN (9 digits)",
+  JP: "Corporate Number (13 digits)",
+  DE: "Handelsregister number together with the issuing court, for example HRB 12345 Munich",
+  OTHER: "Your national company registration number and the register that issued it; we confirm the format before registering",
+};
+const REG_COUNTRY = document.getElementById("f-REG_COUNTRY");
+function applyRegAsk() {
+  const text = REG_ASK[REG_COUNTRY.value] || REG_ASK.OTHER;
+  document.querySelectorAll('.ph[data-ph="REG_ASK"]').forEach((el) => { el.textContent = text; });
+  localStorage.setItem("tip-onboard-REG_COUNTRY", REG_COUNTRY.value);
+}
+const savedCountry = localStorage.getItem("tip-onboard-REG_COUNTRY");
+if (savedCountry && REG_ASK[savedCountry]) REG_COUNTRY.value = savedCountry;
+applyRegAsk();
+REG_COUNTRY.addEventListener("change", applyRegAsk);
 
 // The source is hard-wrapped for readability, so every line break inside a <p>
 // would otherwise survive into the clipboard and arrive as ragged mid-sentence
