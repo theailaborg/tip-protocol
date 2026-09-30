@@ -10,6 +10,9 @@ built from the company's registry details rather than a person's government ID.
 
 ### Ready-to-send request
 
+The same request is email 0 in `docs/partner-onboarding-emails.html`, where a country
+selector fills item 2 with the right identifier wording.
+
 Copy, fill the brackets, send. Item 2 depends on the partner's country: take
 the identifier from the table in section 2 and use the matching wording, e.g.
 
