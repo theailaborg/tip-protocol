@@ -122,8 +122,11 @@
       <button onclick="event.preventDefault();event.stopPropagation();copyEmail('email-request', this)">Copy email</button>
     </summary>
     <p class="warn">Send this first. Pick the country of registration above: item 2 changes to the one
-       identifier that country's registry issues, and nothing else is accepted (a tax or VAT number would
-       mint a second permanent identity). For an identity-only registration, delete items 7 to 12.</p>
+       identifier that country's registry issues, asked after the LEI. An LEI is preferred wherever the
+       partner has one: it is globally unique and verifiable in the public GLEIF registry. Most small
+       companies do not have one, so the national identifier stays the normal path. Never accept both for
+       one company, and nothing else (a tax or VAT number would mint a second permanent identity). For an
+       identity-only registration, delete items 7 to 12.</p>
     <div class="body" id="email-request">
       <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
         <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
@@ -134,7 +137,7 @@
 
         <ol>
           <li>Full legal name, exactly as registered</li>
-          <li><span class="ph filled" data-ph="REG_ASK">Companies House company number (8 characters, exactly as printed, keep leading zeros)</span></li>
+          <li><span class="ph filled" data-ph="REG_ASK">Your Legal Entity Identifier (LEI, 20 characters) if the company has one; otherwise the Companies House company number (8 characters, exactly as printed, keep leading zeros)</span></li>
           <li>Legal form, as printed on the certificate (for example Private Limited, LLP, LLC, Ltd, GmbH)</li>
           <li>Date of incorporation</li>
           <li>Country of registration</li>
@@ -440,15 +443,16 @@ FIELDS.forEach((i) => {
 });
 
 // Email 0, item 2: the one identifier each registry issues (docs/ORG_REGISTRATION.md section 2).
+const LEI_FIRST = "Your Legal Entity Identifier (LEI, 20 characters) if the company has one; otherwise ";
 const REG_ASK = {
-  GB: "Companies House company number (8 characters, exactly as printed, keep leading zeros)",
-  IN: "CIN (21 characters) for a company, or LLPIN (7 characters) for an LLP, and which one it is",
-  US: "Federal EIN (9 digits), not a state entity number",
-  AU: "ACN (9 digits)",
-  FR: "SIREN (9 digits)",
-  JP: "Corporate Number (13 digits)",
-  DE: "Handelsregister number together with the issuing court, for example HRB 12345 Munich",
-  OTHER: "Your national company registration number and the register that issued it; we confirm the format before registering",
+  GB: LEI_FIRST + "the Companies House company number (8 characters, exactly as printed, keep leading zeros)",
+  IN: LEI_FIRST + "the CIN (21 characters) for a company, or LLPIN (7 characters) for an LLP, and which one it is",
+  US: LEI_FIRST + "the federal EIN (9 digits), not a state entity number",
+  AU: LEI_FIRST + "the ACN (9 digits)",
+  FR: LEI_FIRST + "the SIREN (9 digits)",
+  JP: LEI_FIRST + "the Corporate Number (13 digits)",
+  DE: LEI_FIRST + "the Handelsregister number together with the issuing court, for example HRB 12345 Munich",
+  OTHER: LEI_FIRST + "your national company registration number and the register that issued it; we confirm the format before registering",
 };
 const REG_COUNTRY = document.getElementById("f-REG_COUNTRY");
 function applyRegAsk() {
