@@ -36,6 +36,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const path = require("path");
 
 const SRC = path.resolve(__dirname, "../../src");
@@ -231,5 +233,30 @@ describe("narwhal handleIncomingBatch — late-batch ack within look-back horizo
     expect(fx.narwhal.stats().metrics.fast_forwards).toBeGreaterThanOrEqual(1);
 
     fx.narwhal.stop();
+  });
+
+  // A node whose own batches always arrive late never completes a round itself
+  // and follows the committee by fast-forwarding. That is progress, not a halt:
+  // the round-advance timestamp must move, or the halt detector reports
+  // sub_quorum on a node that is fully in step (AZ Logics, 2026-09-30).
+  test("fast-forwarding to the committee's round counts as round progress for the halt detector", () => {
+    jest.useFakeTimers({ doNotFake: ["setTimeout", "setInterval", "setImmediate", "clearTimeout", "clearInterval", "nextTick", "queueMicrotask"] });
+    try {
+      const fx = buildNarwhal();
+      fx.narwhal.start();
+      const before = fx.narwhal.lastRoundAdvanceAt();
+      jest.setSystemTime(nowMs() + 120_000);   // two minutes with no round completed locally
+
+      fx.narwhal.handleIncomingBatch(makePeerBatchBytes({
+        round: 100, peerKp: fx.peerKp, peerId: fx.PEER_ID, txs: [],
+      }));
+
+      expect(fx.narwhal.currentRound()).toBe(100);
+      expect(fx.narwhal.lastRoundAdvanceAt()).toBeGreaterThan(before);
+      expect(nowMs() - fx.narwhal.lastRoundAdvanceAt()).toBeLessThan(1_000);
+      fx.narwhal.stop();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

@@ -564,6 +564,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _metrics.fast_forwards++;
       log.info(`Round ${_currentRound}: peer ${batch.author_node_id} is at round ${batch.round} — fast-forwarding`);
       _currentRound = batch.round;
+      // Following the committee is progress: a node whose own batches land late
+      // fast-forwards every round and otherwise reported sub_quorum (AZ, 2026-09-30).
+      _lastRoundAdvanceAt = nowMs();
       _resetRoundState();
       if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
       if (_nextRoundTimer) { clearTimeout(_nextRoundTimer); _nextRoundTimer = null; }

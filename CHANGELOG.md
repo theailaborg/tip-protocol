@@ -11,6 +11,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+**Node 2.6.4: a node that follows the committee by fast-forwarding no longer reports itself halted**
+- Fast-forwarding to a peer's round now refreshes the round-advance timestamp.
+  A node whose own batches always arrive late never completed a round itself,
+  so the halt detector flagged `sub_quorum` and `/ready` went 503 while its
+  rounds and commits were fully in step (AZ Logics, 2026-09-30).
+
 **Node 2.6.3: a dead joiner can no longer hold the snapshot slot; the last drifted row is corrected**
 - A snapshot serve races its transfer and its final close against the stall
   timer and a one-hour deadline. Aborting a stream whose connection had already
