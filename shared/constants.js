@@ -350,6 +350,20 @@ const PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS = 256;
 const PERCEPTUAL_FINGERPRINTS_PROFILE = "cf-fingerprints-1";
 const PERCEPTUAL_FINGERPRINTS_ENCODINGS = Object.freeze(new Set(["gzip+base64", "identity"]));
 
+// Locked .tip.json key file export: the VP app's "tip-key-export-v2" download.
+// Byte layout and KDF parameters must stay identical on both sides or a file
+// written here will not import there (and vice versa).
+const KEY_FILE_EXPORT = Object.freeze({
+  VERSION: "tip-key-export-v2",
+  ALGORITHM: "AES-256-GCM-PBKDF2-200k",
+  SIG_ALGORITHM: "ML-DSA-65",
+  PBKDF2_ITERATIONS: 200_000,
+  PBKDF2_DIGEST: "sha256",
+  SALT_BYTES: 16,
+  IV_BYTES: 12,
+  KEY_BYTES: 32,
+});
+
 // Canonical `tip_id_type` values — the kind of TIP-ID an identity is.
 // Locked enum; rejected at REGISTER_IDENTITY validation time and at
 // REGISTER_CONTENT author cross-check time.
@@ -1113,6 +1127,7 @@ module.exports = {
   PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
   PERCEPTUAL_FINGERPRINTS_PROFILE,
   PERCEPTUAL_FINGERPRINTS_ENCODINGS,
+  KEY_FILE_EXPORT,
   TIP_ID_TYPES,
   TIP_ID_TYPE_VALUES,
   DOMAIN_BINDING_STATUS,
