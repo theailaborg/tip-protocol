@@ -25,9 +25,7 @@ the identifier from the table in section 2 and use the matching wording, e.g.
 > following from your official documents (not from memory):
 >
 > 1. Full legal name, exactly as registered
-> 2. Your Legal Entity Identifier (LEI, 20 characters) if the company has one;
->    otherwise [registration number wording for their country, from the
->    section 2 table]
+> 2. [registration number wording for their country, from the section 2 table]
 > 3. Legal form, as printed on the certificate (Private Limited, LLP, LLC, Ltd,
 >    GmbH, ...)
 > 4. Date of incorporation
@@ -93,28 +91,6 @@ cannot reuse that box (same ports, different genesis). Ask for the number and th
 identifier type together (a CIN reply to an LLPIN question is the classic mix-up).
 
 ## 2. Which registration number, per country
-
-**Preferred: the LEI.** A Legal Entity Identifier (ISO 17442, 20 characters) is
-unique per legal entity worldwide and verifiable in the public GLEIF registry
-(https://search.gleif.org), which shows the legal name, address, status and the
-national registration number it was issued against. That is the check we cannot
-do for a US EIN. Most small companies do not have one (coverage is a few hundred
-thousand US entities), and obtaining one takes a day or two and about $60 a year,
-so it is asked for first and the national identifier below is the fallback, not
-a second option. Rules:
-
-- One identifier per company, ever. A company registered by its national number
-  must not be registered again by LEI, or the reverse; the dedup hash cannot tell
-  them apart and would mint a second permanent identity.
-- Before registering by LEI, look it up in GLEIF: status must be ISSUED (not
-  LAPSED or RETIRED), and the legal name and national registration number shown
-  must match what the partner sent.
-- `register-org.js` validates the national schemes below; LEI acceptance (format
-  plus the ISO 7064 check digits) is a pending script change, so until it lands
-  register by the national identifier and record the LEI in the partner file.
-
-Existing registrations stay as they are: AI Lab and SS Software are registered
-by EIN, AZ Logics by CIN.
 
 The dedup hash is `Poseidon(reg_no, incorporation_date, country)`. The circuit cannot
 tell a company number from a tax number, so **"one company = one identity" only holds
