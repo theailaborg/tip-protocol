@@ -44,6 +44,8 @@
  *   --operated-by tip://id/...   Identity responsible for this node (optional)
  *   --operator-key-file ./x.json That identity's .tip.json; required with --operated-by,
  *                                since the operator must cosign the registration
+ *   --operator-key-date YYYY-MM-DD  Date the operator key file is locked with (an org's
+ *                                incorporation date); required for a tip-key-export-v2 file
  *
  * The generated .env is built from .env.example plus the flags above and
  * nothing else. It deliberately inherits no value from the operator's own
@@ -75,6 +77,7 @@ const http = require("http");
 const https = require("https");
 
 const { nowIso } = require("../shared/time");
+const { datePassword, readKeyFile } = require("../shared/key-file");
 
 const {
   initCrypto,
@@ -125,6 +128,7 @@ const partnerSlug = getArg("--partner", null);
 // identity cosigns the same bytes the founding VP signs.
 const operatedBy = getArg("--operated-by", null);
 const operatorKeyFile = getArg("--operator-key-file", null);
+const operatorKeyDate = getArg("--operator-key-date", null);
 const vpFile = getArg("--vp-file", null);
 const apiPort = parseInt(getArg("--port", "4100"), 10);   // API port for the new node
 const p2pPort = parseInt(getArg("--p2p-port", String(apiPort + 1)), 10);   // libp2p port; convention is API+1
@@ -320,7 +324,11 @@ async function main() {
       fail("--operated-by requires --operator-key-file (the operating identity's .tip.json)");
       process.exit(1);
     }
-    const opKeys = JSON.parse(fs.readFileSync(path.resolve(operatorKeyFile), "utf8"));
+    if (operatorKeyDate && !/^\d{4}-\d{2}-\d{2}$/.test(operatorKeyDate)) {
+      fail("--operator-key-date must be YYYY-MM-DD");
+      process.exit(1);
+    }
+    const opKeys = readKeyFile(path.resolve(operatorKeyFile), operatorKeyDate ? datePassword(operatorKeyDate) : null);
     if (opKeys.tip_id && opKeys.tip_id !== operatedBy) {
       fail(`--operator-key-file is for ${opKeys.tip_id}, not ${operatedBy}`);
       process.exit(1);

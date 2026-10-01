@@ -159,6 +159,7 @@ node scripts/register-node.js \
   --node-url https://node.theailab.org \
   --operated-by "tip://id/<REGION>-<org-id>" \
   --operator-key-file generated/<partner-slug>/org/<org-tip-id>.tip.json \
+  --operator-key-date <incorporation date, YYYY-MM-DD> \
   --vp-file <mainnet VP .tip.json> \
   --production \
   --port 4000 \
@@ -177,6 +178,7 @@ Flag by flag:
 |---|---|
 | `--operated-by` | the org identity accountable for this node |
 | `--operator-key-file` | the org's key from section 4 , produces the cosignature |
+| `--operator-key-date` | the incorporation date the org key is locked with (register-org locks it in the VP app's `tip-key-export-v2` format); omit only for an old plaintext file |
 | `--vp-file` | the founding VP key that signs the council approval. Same rule as register-org: without it the script uses the local/test VP from `genesis-data/backups` and mainnet rejects the signature |
 | `--production` | `NODE_ENV=production` in the generated env; CORS must be filled by the partner, never `*` |
 | `--port` | the partner's node serves API on 4000 (p2p follows on 4001); the script default is 4100, which is for extra local nodes |
@@ -442,6 +444,7 @@ node scripts/register-node.js \
   --operated-by "$ORG_ID" \
   --partner pachyderm \
   --operator-key-file generated/pachyderm/org/<org-tip-id>.tip.json \
+  --operator-key-date 2025-11-11 \
   --production \
   --port 4000 \
   --api-endpoint "https://tipnode.pachyderm.example" \

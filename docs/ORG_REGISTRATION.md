@@ -227,13 +227,22 @@ than one node: they must agree.
 ## 5. Deliver the credential
 
 The script writes `generated/<partner>/org/<tip-id>.tip.json` at mode `0600`
-(pass `--partner <slug>` so the later node registration lands in the same folder),
-containing both keys plus the registry inputs.
+(pass `--partner <slug>` so the later node registration lands in the same folder).
+The file is the VP app's export format (`tip-key-export-v2`): the public key, the
+registry inputs, and the private key **locked with the date of incorporation**
+(PBKDF2-SHA256 200k + AES-256-GCM, the date as `MMDDYYYY`, exactly how the VP app
+locks a personal download with the date of birth). The script re-reads and decrypts
+the file before reporting success, and the organization imports it into the VP app
+by entering that date.
 
-Whoever holds that file can sign as the organization, so it is treated like an SSH
-host key: stored at mode `0600`, never committed. Delivery is part of the partner
-credentials bundle , an AES-256 zip with the password sent over a separate channel;
-the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md` section 6.
+The date is public record, so the lock is one layer, not the delivery channel: a
+leaked file is not usable as-is, but anyone who knows the company can look the date
+up. Whoever holds the file and the date can sign as the organization, so it is still
+treated like an SSH host key: stored at mode `0600`, never committed. Delivery is
+part of the partner credentials bundle , an AES-256 zip with the password sent over a
+separate channel; the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md`
+section 6. The later `register-node.js --operator-key-file` run needs
+`--operator-key-date <incorporation date>` to open it.
 
 The private key is generated locally and never transmitted: registration sends only the
 public key. The planned VP-side page, where an organization generates its own keypair in

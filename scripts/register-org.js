@@ -39,10 +39,13 @@
  *
  * Output:
  *   generated/<partner>/org/
- *     └── <tip-id>.tip.json   Keypair + org metadata (mode 0600)
+ *     └── <tip-id>.tip.json   VP-app export (tip-key-export-v2) + org metadata (mode 0600)
  *
  * The private key is written locally and never transmitted: registration sends
- * only the public key. Deliver the file to the organization over a secure
+ * only the public key. The file is locked with the incorporation date exactly
+ * as the VP app locks a personal download with the date of birth, so it
+ * imports into the VP app and is not usable as-is if it leaks. The date is
+ * public record, so this is one layer, not the delivery channel. Deliver the file to the organization over a secure
  * channel and have them store it at mode 0600.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
@@ -67,6 +70,8 @@ const { generateDedupProof } = require("../shared/zk");
 const { resolveIdScheme } = require("../shared/org-id-schemes");
 const registerIdentitySchema = require("../node/src/schemas/register-identity");
 const { loadVpBackup } = require("./genesis-backups");
+const { KEY_FILE_EXPORT } = require("../shared/constants");
+const { datePassword, encryptPrivateKey, readKeyFile } = require("../shared/key-file");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
 const T = {
@@ -118,7 +123,10 @@ Everything for one partner lives under this directory.
 ## org/  (organization identity)
 The .tip.json here IS the organization on the network: it signs content as them.
 It is NOT needed to run a node. Keep it OFF the node host, with company signing
-material. Mode 0600, never committed, never emailed in the clear.
+material. Mode 0600, never committed, never emailed in the clear. The private key
+inside is locked with the date of incorporation (VP app tip-key-export-v2 format):
+the organization imports it into the VP app with that date, and register-node
+opens it with --operator-key-date.
 
 ## node/  (node identity + env)
 The .tip.json here runs the node: it lives on the node host, read at boot
@@ -283,15 +291,20 @@ async function main() {
 
   const fileName = String(result.tip_id || tipId)
     .replace(/^tip:\/\//, "").replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-") + ".tip.json";
+  const finalTipId = result.tip_id || tipId;
+  // Same envelope as the VP app's download, locked with the incorporation
+  // date, so the organization imports it there the way a person imports theirs.
   const tipJson = JSON.stringify({
-    v: 1,
-    type: "identity",
+    version: KEY_FILE_EXPORT.VERSION,
+    tipId: finalTipId,
+    publicKey: keypair.publicKey,
+    encrypted: encryptPrivateKey(keypair.privateKey, datePassword(incorporated)),
+    algorithm: KEY_FILE_EXPORT.ALGORITHM,
+    sigAlgorithm: KEY_FILE_EXPORT.SIG_ALGORITHM,
     tip_id_type: "organization",
-    name: orgName,
-    tip_id: result.tip_id || tipId,
+    vp_id: vp.vp_id,
+    display_name: orgName,
     region,
-    public_key: keypair.publicKey,
-    private_key: keypair.privateKey,
     // Recorded so the dedup inputs stay auditable: they cannot be recovered
     // from the hash, and re-deriving them wrongly would mint a second identity.
     // The canonical value is what was hashed; the as-provided form is kept so a
@@ -301,17 +314,25 @@ async function main() {
     registration_scheme: scheme.name,
     incorporated,
     dedup_hash: dedupHash,
-    approving_vp_id: vp.vp_id,
     registered_at: result.registered_at || nowMs(),
     registered_on: nodeUrl,
-    generated_at: nowIso(),
+    exportedAt: nowIso(),
+    warning: "Locked with the date of incorporation (MM/DD/YYYY, as registered). There is no recovery if it is lost.",
   }, null, 2);
-  fs.writeFileSync(path.join(outDir, fileName), tipJson, { mode: 0o600 });
+  const credPath = path.join(outDir, fileName);
+  fs.writeFileSync(credPath, tipJson, { mode: 0o600 });
+
+  // Prove the file on disk opens with the date before anyone relies on it.
+  const reread = readKeyFile(credPath, datePassword(incorporated));
+  if (reread.private_key !== keypair.privateKey || reread.public_key !== keypair.publicKey || reread.tip_id !== finalTipId) {
+    throw new Error(`${credPath} did not decrypt back to the generated keypair`);
+  }
 
   console.log("");
-  ok(`Credential: ${path.join(outDir, fileName)}`);
-  warn("Contains the PRIVATE key. Deliver over a secure channel, never chat or email.");
-  warn("Recipient should store it at mode 0600; anyone holding it can sign as this organization.");
+  ok(`Credential: ${credPath}`);
+  ok(`Verified: decrypts with the incorporation date (${incorporated}), imports into the VP app as ${finalTipId}`);
+  warn("Contains the PRIVATE key, locked only with a public date. Deliver over a secure channel, never chat or email.");
+  warn("Recipient should store it at mode 0600; anyone holding it and the date can sign as this organization.");
   console.log("");
 }
 
