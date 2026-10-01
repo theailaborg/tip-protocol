@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-**A node that follows the committee by fast-forwarding no longer reports itself halted**
+**Node 2.6.4: a node that follows the committee by fast-forwarding no longer reports itself halted**
 - Fast-forwarding to a peer's round now refreshes the round-advance timestamp.
   A node whose own batches always arrive late never completed a round itself,
   so the halt detector flagged `sub_quorum` and `/ready` went 503 while its
