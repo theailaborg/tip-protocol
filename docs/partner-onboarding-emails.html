@@ -198,7 +198,7 @@
 
         <p><b>Where to start</b></p>
 
-        <p>Start with <b>README.md</b> in the bundle. The node is open source, so you can read everything
+        <p>Start with <b>README.md</b> in the bundle. The node is open, so you can read everything
         before you provision anything:<br>
         <a href="https://github.com/theailaborg/tip-protocol">https://github.com/theailaborg/tip-protocol</a></p>
 
@@ -325,7 +325,7 @@ curl -s localhost:4000/v1/state-root</pre>
           <li><b>README.md</b> - setup steps</li>
         </ul>
 
-        <p><b>About the genesis:</b> the repository you clone already contains the production genesis ,
+        <p><b>About the genesis:</b> the repository you clone already contains the production genesis:
         do not replace it, and do not reuse your test data directory. After cloning, please verify it
         starts with <b><span class="ph" data-ph="GENESIS">{{GENESIS}}</span></b>:</p>
         <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"</pre>
@@ -343,7 +343,7 @@ Country             : <span class="ph" data-ph="COUNTRY">{{COUNTRY}}</span></pre
         and do not use the identity.</p>
 
         <p><b>Setup</b></p>
-        <p>Follow <b>README.md</b> in the bundle. The node is open source:</p>
+        <p>Follow <b>README.md</b> in the bundle. The node is open:</p>
         <ul>
           <li>Repo: <a href="https://github.com/theailaborg/tip-protocol">https://github.com/theailaborg/tip-protocol</a></li>
           <li>Hardware and OS: <a href="https://github.com/theailaborg/tip-protocol/blob/main/docs/NODE_REQUIREMENTS.md">https://github.com/theailaborg/tip-protocol/blob/main/docs/NODE_REQUIREMENTS.md</a></li>
@@ -433,7 +433,7 @@ function apply(input) {
 }
 FIELDS.forEach((i) => {
   const saved = localStorage.getItem("tip-onboard-" + i.dataset.ph);
-  // GENESIS is a chain constant carried in the markup , never restored over.
+  // GENESIS is a chain constant carried in the markup, never restored over.
   if (saved && i.dataset.ph !== "GENESIS") i.value = saved;
   apply(i);
   i.addEventListener("input", () => apply(i));
