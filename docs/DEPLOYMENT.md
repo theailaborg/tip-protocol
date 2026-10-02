@@ -227,7 +227,7 @@ node scripts/seed.js
 
 ---
 
-## Option C: Manual Setup (Python) , UNMAINTAINED
+## Option C: Manual Setup (Python), UNMAINTAINED
 
 > `python/` is no longer maintained and does not track the Node implementation.
 > It has not been validated against the current genesis, schema migrations or
@@ -271,14 +271,14 @@ files `genesis-data/backups/tip-node-<id>.tip.json` (gitignored).
 curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker ubuntu
 ```
 
-**2. Clone via git (every node)** , `main` already carries the baked genesis.
+**2. Clone via git (every node)**: `main` already carries the baked genesis.
 
 ```bash
 git clone https://x-access-token:<TOKEN>@github.com/theailaborg/tip-protocol.git ~/tip-protocol
 git -C ~/tip-protocol remote set-url origin https://github.com/theailaborg/tip-protocol.git
 ```
 
-**3. Node identity + env (every node)** , owner must be uid 1001.
+**3. Node identity + env (every node)**: owner must be uid 1001.
 
 ```bash
 scp tip-node-<id>.tip.json ubuntu@<node-ip>:~/tip-protocol/genesis-data/backups/
@@ -292,7 +292,7 @@ protocol defaults. Prod values: `NODE_ENV=production`, `TIP_CORS_ORIGINS`
 listing every browser client (the VP app; NOT `*`), a shared `TIP_METRICS_TOKEN`
 identical on all nodes, `TIP_CRYPTO_POOL_SIZE=2` on 4-core hosts.
 
-**Media storage (S3)** , the node writes media bytes to S3 (SSE-KMS) and hands
+**Media storage (S3)**: the node writes media bytes to S3 (SSE-KMS) and hands
 the classifier presigned URLs. Provision the bucket + KMS key + IAM role once
 and set `TIP_MEDIA_BACKEND=s3`, `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`,
 `TIP_MEDIA_S3_KMS_KEY_ID` in each node's `.env`. Full step-by-step (Terraform or
@@ -300,7 +300,7 @@ console/CLI, IAM policy, VPC endpoint, smoke tests): **[`PROD_S3_SETUP.md`](PROD
 Credentials come from the instance role (EC2) / IRSA (EKS), never a long-lived
 `AWS_ACCESS_KEY_ID` in the env.
 
-**4. Log directory permissions (GOTCHA)** , the compose bind-mounts
+**4. Log directory permissions (GOTCHA)**: the compose bind-mounts
 `./logs/node-1`, which docker creates root-owned, so the container cannot write
 its per-level log files. Fix before first boot:
 
@@ -311,7 +311,7 @@ mkdir -p ~/tip-protocol/logs && sudo chown -R 1001:1001 ~/tip-protocol/logs
 Skip this and the log dir stays empty (logs only reach docker stdout) and Loki
 never gets the `level` label.
 
-**5. Build (every node)** , bakes the genesis into the image.
+**5. Build (every node)**: bakes the genesis into the image.
 
 ```bash
 cd ~/tip-protocol && sudo docker compose build tip-node
@@ -344,7 +344,7 @@ docker exec tip-postgres psql -U tip -d "$DB_NAME" -tAc \
   "SELECT name FROM knex_migrations ORDER BY id;"
 ```
 
-**7. Validate** , across all nodes: `/health` shows `byzantineForkHalt=none`,
+**7. Validate** across all nodes: `/health` shows `byzantineForkHalt=none`,
 `joinState=ready`, `peers=<N-1>`, rounds advancing; the same
 `state_merkle_root` at the same round from `/v1/state-root` (`/health` does not
 return `genesis_hash`),
@@ -352,22 +352,22 @@ identities = genesis ring size, and the same committed tx count (converged).
 
 **8. Observability** (obs host: Prometheus + Grafana + Loki + Caddy)
 
-Full step-by-step , monitoring host, per-node agent, verify, operations , is the
+Full step-by-step (monitoring host, per-node agent, verify, operations) is the
 runbook at **[`infra/observability/prod/README.md`](../infra/observability/prod/README.md)**.
 The load-bearing gotchas to not relearn the hard way:
 
-- **Metrics**: `infra/observability/prod/prometheus.yml` (gitignored) , job
+- **Metrics**: `infra/observability/prod/prometheus.yml` (gitignored), job
   `tip-federation` (do NOT rename), targets = the nodes' **private** IPs `:4000`,
   `Bearer` = the shared `TIP_METRICS_TOKEN`, and `chmod 644` the file (a `sudo`
   edit that leaves it `root:600` crash-loops Prometheus). Verify
   `count(up{job="tip-federation"}==1)` returns N.
-- **Logs**: promtail per node (`infra/observability/agent/`) , requires Step 4.
+- **Logs**: promtail per node (`infra/observability/agent/`), requires Step 4.
   `promtail.env`: `LOKI_URL=logs.<domain>`, `LOKI_PASSWORD=<plaintext>`,
   `NODE_LABEL=node<n>`; then `docker compose -f docker-compose.promtail.yml up -d`.
   It tags `node` + derives `level` from the per-level filenames. Set the Loki
   basic-auth (`LOKI_BASIC_AUTH_HASH` via `caddy hash-password`) in the obs `.env`.
 - **DNS (GOTCHA)**: `logs.<domain>` must be **DNS-only (grey cloud), NOT
-  Cloudflare-proxied** , Caddy owns TLS + basic-auth for the push; a proxy in
+  Cloudflare-proxied**: Caddy owns TLS + basic-auth for the push; a proxy in
   front breaks the ACME challenge and the push times out. `grafana.<domain>`
   proxied is fine (browser UI).
 

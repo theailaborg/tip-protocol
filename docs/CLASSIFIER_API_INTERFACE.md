@@ -1,10 +1,10 @@
-# TIP Protocol , Classifier API Interface
+# TIP Protocol: Classifier API Interface
 
 The contract between the TIP node backend and the AI classifier service: what
 the node **sends**, what the classifier **returns**, and what the classifier
 **does with the media URLs**.
 
-Media is delivered **by reference** , the node sends presigned URLs, the
+Media is delivered **by reference**: the node sends presigned URLs, the
 classifier downloads the bytes directly from storage. Text is sent inline.
 
 ## Transport
@@ -69,14 +69,14 @@ A registration with N media items sends **one request** with N entries in
 ### What the classifier does with the URLs
 
 1. **Download each `files[].url`** with a plain HTTPS `GET`. No credentials, no
-   headers , the signature is in the query string; S3 returns the bytes.
+   headers: the signature is in the query string; S3 returns the bytes.
    Download the bytes **immediately on receiving the request** (before queuing
    heavy inference), so the URL is still valid (see TTL below).
 2. **Run the modality** on each downloaded file (image / audio / video) and the
    text.
 3. **Return one response** with a `modality_results[]` entry per file + text.
 4. **Isolate per-file failures:** if a URL is unreachable, expired, or the file
-   is unreadable, return that file's entry with a non-null `error` , do not fail
+   is unreadable, return that file's entry with a non-null `error`; do not fail
    the whole request. The other files still return results.
 
 ### What the node expects back
@@ -108,7 +108,7 @@ A registration with N media items sends **one request** with N entries in
 | `flagged`, `rationales` | ignored | The node derives flagged from its own tier thresholds; rationales are not stored. |
 
 The node computes the final tier/decision from `probability` using its own
-protocol constants. The classifier does **not** decide flag/status/grace , it
+protocol constants. The classifier does **not** decide flag/status/grace; it
 returns evidence (probability + provenance + per-file error). This keeps the
 classifier freely swappable without affecting consensus.
 
@@ -228,7 +228,7 @@ default: **300 s** (`TIP_MEDIA_PRESIGN_TTL_SEC`).
 Media requests sent with `client_ref` use **3600 s** instead (`PRESCAN_JOB.MEDIA_URL_TTL_SEC`): a job may wait in the classifier's queue before it downloads. A resubmit after a failed or lost job always carries freshly signed links.
 
 The URL only needs to live long enough for the classifier to **download** the
-bytes , not to finish analyzing them. Once downloaded, the URL can expire.
+bytes, not to finish analyzing them. Once downloaded, the URL can expire.
 
 ### Download time (rough, at ~50-100 MB/s from S3)
 
@@ -252,7 +252,7 @@ bytes , not to finish analyzing them. Once downloaded, the URL can expire.
 
 Oversize media is **not** an HTTP error: report it per file as `error: "file_too_large"` in `modality_results[]` so the node fails open immediately for that content rather than waiting an hour.
 
-A per-file download/analysis failure is **not** a request error , it is
+A per-file download/analysis failure is **not** a request error; it is
 reported as a non-null `error` on that file's `modality_results[]` entry, with
 the rest of the response intact.
 

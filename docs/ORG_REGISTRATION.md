@@ -74,7 +74,7 @@ Worth telling them, since it pre-empts the obvious objection:
 > values are never published: only a hash goes on chain, so nobody can read your
 > registration details from the ledger.
 
-### Node details , when the organization will also run a node
+### Node details: when the organization will also run a node
 
 Ask in the same message, so registration is not blocked on a second round-trip:
 
@@ -139,7 +139,7 @@ some jurisdictions make legal-form changes a new entity with a new identifier:
 
 | country | behaviour on form change | exposed? |
 |---|---|---|
-| **IN** | LLP → company conversion issues a **new CIN and a new incorporation date** | **yes , worst case** |
+| **IN** | LLP → company conversion issues a **new CIN and a new incorporation date** | **yes, worst case** |
 | **DE** | moving the company seat changes the court, so a **new HRB** (the court is part of our value) | **yes, same class** |
 | GB | company number persists through LTD→PLC and renames | robust |
 | FR / JP / AU | SIREN / Corporate Number / ACN persist through form changes | robust |
@@ -168,13 +168,13 @@ approval step does:
 | `--name` | yes | the full legal name, exactly as registered, quoted | `--name "AZLOGICS PRIVATE LIMITED"` |
 | `--reg-number` | yes | the country's accepted identifier from the table in §2, exact format, leading zeros kept | `--reg-number U72900MH2021PTC362851` |
 | `--incorporated` | yes | date of incorporation, `YYYY-MM-DD` only | `--incorporated 2021-06-28` |
-| `--region` | yes in practice | ISO-3166-1 alpha-2 country of incorporation; must be in the §2 scheme table or the run stops. Default `GB` , always pass it explicitly | `--region IN` |
+| `--region` | yes in practice | ISO-3166-1 alpha-2 country of incorporation; must be in the §2 scheme table or the run stops. Default `GB`, always pass it explicitly | `--region IN` |
 | `--org-type` | no | the legal form as the jurisdiction names it, freeform by design (forms differ per country), but must be 2-64 chars of lowercase letters, digits and hyphens. Common values: `private-limited-company`, `public-limited-company`, `llp`, `llc`, `gmbh`, `nonprofit` | `--org-type private-limited-company` |
 | `--node-url` | for mainnet | the node to register through. Default `http://localhost:4000` (local rehearsal) | `--node-url https://node.theailab.org` |
-| `--vp-file` | **for mainnet** | path to the mainnet founding VP `.tip.json`. When omitted the script picks up whatever VP sits in `genesis-data/backups`, which on a dev machine is the test VP , mainnet rejects it | `--vp-file <VP_KEY_FILE>` |
+| `--vp-file` | **for mainnet** | path to the mainnet founding VP `.tip.json`. When omitted the script picks up whatever VP sits in `genesis-data/backups`, which on a dev machine is the test VP, mainnet rejects it | `--vp-file <VP_KEY_FILE>` |
 | `--partner` | recommended | partner folder name under `generated/`; use the same value for the node registration so both land together | `--partner azlogics` |
 | `--out-dir` | no | full override of the output dir. Default `generated/<partner|slug-short-id>/org/` | `--out-dir /secure/azlogics` |
-| `--dry-run` | no | boolean, no value. Validates the identifier, builds the real proof, prints everything, registers nothing , always run this first | `--dry-run` |
+| `--dry-run` | no | boolean, no value. Validates the identifier, builds the real proof, prints everything, registers nothing; always run this first | `--dry-run` |
 
 `--org-type` note: use lowercase-hyphen spelling of the form on the certificate
 (`Private Limited` → `private-limited-company`). Anything outside
@@ -239,7 +239,7 @@ The date is public record, so the lock is one layer, not the delivery channel: a
 leaked file is not usable as-is, but anyone who knows the company can look the date
 up. Whoever holds the file and the date can sign as the organization, so it is still
 treated like an SSH host key: stored at mode `0600`, never committed. Delivery is
-part of the partner credentials bundle , an AES-256 zip with the password sent over a
+part of the partner credentials bundle, an AES-256 zip with the password sent over a
 separate channel; the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md`
 section 6. The later `register-node.js --operator-key-file` run needs
 `--operator-key-date <incorporation date>` to open it.

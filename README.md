@@ -161,7 +161,7 @@ receives two files out-of-band (Bitwarden Send / Signal / hardware token):
 
 - `.env`: the node's config; no inline secrets, only a pointer to the key file
 - `tip-node-<id>.tip.json`: the ML-DSA-65 keypair (THE secret; see step 2
-  for ownership , the container reads it as uid 1001, not your login user)
+  for ownership, the container reads it as uid 1001, not your login user)
 
 **Step 1.** Clone and install:
 
@@ -192,7 +192,7 @@ security group (libp2p). Nothing else inbound.
 Fronting nodes with Cloudflare: proxied DNS record, an Origin Rule rewriting
 the destination port to 4000, SSL mode Flexible (until origin TLS), and a
 cache-bypass rule for the node hostnames. A 521 on BOTH http and https while
-`http://<ip>:4000/health` answers means the Origin Rule is not applying ,
+`http://<ip>:4000/health` answers means the Origin Rule is not applying;
 check it is deployed and matches on the Hostname field.
 
 The node reads its keypair from that file via `TIP_NODE_CREDENTIALS_FILE`

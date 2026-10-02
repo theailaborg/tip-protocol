@@ -24,7 +24,7 @@ ORG="${2:-$(basename "$PARTNER")}"
 command -v 7zz >/dev/null || { echo "7zz missing: brew install sevenzip" >&2; exit 1; }
 
 # Outputs live next to the partner dir (typically under gitignored my-notes),
-# NEVER next to this script , a repo checkout must not accumulate credential zips.
+# NEVER next to this script: a repo checkout must not accumulate credential zips.
 # All partner zips collect in one deliveries/ directory beside the partner dirs.
 BASE="$(cd "$(dirname "$PARTNER")" && pwd)"
 OUT="$BASE/deliveries"
@@ -59,7 +59,7 @@ if [ -d "$PARTNER/org" ] || [ -d "$PARTNER/node" ]; then
   [ -f "$PARTNER/README.md" ] && cp "$PARTNER/README.md" "$STAGE/$ORG/README.md"
   # No genesis in the bundle: the repo the partner clones already carries the
   # mainnet genesis; shipping a copy is redundant and one more thing to drift.
-  [ -n "$missing" ] && echo "  WARNING , not in this bundle:$missing" >&2
+  [ -n "$missing" ] && echo "  WARNING: not in this bundle:$missing" >&2
   # nothing sensitive at all -> refuse, an empty bundle helps nobody
   [ -z "$envf$nkey$okey" ] && { echo "no credentials found under $PARTNER/{org,node}" >&2; exit 1; }
   # secret-fill reminders: the generator leaves these empty on purpose (runbook 5.2)
@@ -85,7 +85,7 @@ chmod 600 "$ZIP"
 LOG="$BASE/ZIP-PASSWORDS.md"
 # ALWAYS log: a console-only password is unrecoverable the moment the terminal
 # clears, and the zip with it. Create the log on first use.
-[ -f "$LOG" ] || printf '# Zip passwords , local record only, never commit or attach\n' > "$LOG"
+[ -f "$LOG" ] || printf '# Zip passwords, local record only, never commit or attach\n' > "$LOG"
 grep -q '^## Build log$' "$LOG" || printf '\n## Build log\n' >> "$LOG"
 printf '\n- `%s`  %s  password `%s`  sha256 `%s`\n' \
   "$(date '+%Y-%m-%d %H:%M %Z')" "$ORG" "$PASS" \

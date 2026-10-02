@@ -116,7 +116,7 @@ function slugify(s) {
 // One README at the partner root explaining every credential type it may hold.
 // Overwritten on each run so it always reflects the current layout.
 function writePartnerReadme(partnerRoot) {
-  const text = `# Partner credentials , handling rules
+  const text = `# Partner credentials, handling rules
 
 Everything for one partner lives under this directory.
 
@@ -130,15 +130,15 @@ opens it with --operator-key-date.
 
 ## node/  (node identity + env)
 The .tip.json here runs the node: it lives on the node host, read at boot
-(mode 0600, owned by the container user). The .env is the node configuration ,
+(mode 0600, owned by the container user). The .env is the node configuration;
 secrets (classifier key, metrics token) are filled by hand at bundle time, never
 generated here.
 
-## vp/  (verification provider , rarely present)
+## vp/  (verification provider, rarely present)
 A VP key approves registrations. If one exists here, it is the most sensitive
 file in this tree; it never leaves the registration machine.
 
-Delivery: docs/REGISTRATION_AND_KEY_DISTRIBUTION.md section 5 , one AES-256 zip
+Delivery: docs/REGISTRATION_AND_KEY_DISTRIBUTION.md section 6, one AES-256 zip
 via scripts/make-secure-bundle.sh, password over a separate channel.
 `;
   fs.writeFileSync(path.join(partnerRoot, "README.md"), text);
