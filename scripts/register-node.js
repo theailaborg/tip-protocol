@@ -172,27 +172,45 @@ function slugify(s) {
 // One README at the partner root explaining every credential type it may hold.
 // Overwritten on each run so it always reflects the current layout.
 function writePartnerReadme(partnerRoot) {
-  const text = `# Partner credentials, handling rules
+  const text = `# Your TIP credentials, and how to handle them
 
-Everything for one partner lives under this directory.
+Everything in this bundle proves your organization and your node on the
+TIP production network. Treat each file the way you treat a signing
+certificate or an HSM-backed key: these are not credentials we can
+reissue on request. Take an offline backup of both key files before you
+deploy, store the backups with your company signing material, and tell
+us immediately if any file here is ever lost or exposed, so we can act
+on it with you.
 
-## org/  (organization identity)
-The .tip.json here IS the organization on the network: it signs content as them.
-It is NOT needed to run a node. Keep it OFF the node host, with company signing
-material. Mode 0600, never committed, never emailed in the clear.
+## org/ : your organization identity
 
-## node/  (node identity + env)
-The .tip.json here runs the node: it lives on the node host, read at boot
-(mode 0600, owned by the container user). The .env is the node configuration;
-secrets (classifier key, metrics token) are filled by hand at bundle time, never
-generated here.
+The `.tip.json` file in this folder is your organization on the
+network. It signs content as you.
 
-## vp/  (verification provider, rarely present)
-A VP key approves registrations. If one exists here, it is the most sensitive
-file in this tree; it never leaves the registration machine.
+It is not needed to run your node. Keep it off the node host entirely,
+stored wherever you keep company signing material. File mode 0600,
+never committed to version control, never sent over an unencrypted
+channel. The private key inside is locked with your date of
+incorporation: import the file into the TIP VP app and enter that date
+(MM/DD/YYYY) to sign as your organization.
 
-Delivery: docs/REGISTRATION_AND_KEY_DISTRIBUTION.md section 6, one AES-256 zip
-via scripts/make-secure-bundle.sh, password over a separate channel.
+## node/ : your node identity and configuration
+
+The `.tip.json` file in this folder runs your node. It lives on the
+node host and is read by the node process at boot. File mode 0600,
+owned by the container user (uid 1001).
+
+The `.env` file is your node configuration. It carries live
+credentials, including the content classifier key and the metrics
+token, so the same rules apply: file mode 0600, never committed, and
+used only from this node. The classifier key is shared infrastructure;
+a leak forces a rotation for every operator on the network.
+
+## If something goes wrong
+
+If either key file is lost, exposed, or even possibly exposed, contact
+us at tip@theailab.org before doing anything else. Acting early is what
+keeps a mistake from becoming an incident.
 `;
   fs.writeFileSync(path.join(partnerRoot, "README.md"), text);
 }
