@@ -5,7 +5,7 @@ const {
 } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { verifyDedupProof } = require("../../../shared/zk");
-const { TX_TYPES, TX_TYPE_SET, SIGNED_BY_KIND } = require("../../../shared/constants");
+const { TX_TYPES, TX_TYPE_SET, SIGNED_BY_KIND, TIP_ID_TYPES } = require("../../../shared/constants");
 const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
 const linkPlatformSchema = require("../schemas/link-platform");
@@ -225,6 +225,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       tier: scoreData.tier.name, tier_color: scoreData.tier.color,
       content_count: content.length, registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
+      tip_id_type: rec.tip_id_type || TIP_ID_TYPES.PERSONAL,
       org_type: rec.org_type || null,
       verification: { tx_exists: !!tx, tx_id_valid: txValid, on_dag: true },
     };

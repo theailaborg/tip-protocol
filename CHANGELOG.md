@@ -9,6 +9,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+**Node 2.6.5: `GET /v1/identity/:tipId` returns `tip_id_type`**
+- The response now carries `tip_id_type` (`personal` or `organization`), the
+  value the node already enforces on every content registration's `authors[]`.
+  Clients building multi-author bylines can fill each author's type from the
+  lookup instead of guessing; `org_type` is null for genesis organizations, so
+  it was not a usable substitute.
+
 ### Fixed
 
 **Node 2.6.4: a node that follows the committee by fast-forwarding no longer reports itself halted**

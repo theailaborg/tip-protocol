@@ -797,6 +797,22 @@ describe("REST API", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.tip_id).toBe(tipId);
     expect(res.body.data.status).toBe("active");
+    expect(res.body.data.tip_id_type).toBe("personal");
+  });
+
+  test("6.8a GET /v1/identity/:tipId reports an organization's tip_id_type", async () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = generateTIPID("GB", kp.publicKey);
+    dag.saveIdentity({
+      tip_id: tipId, region: "GB", public_key: kp.publicKey,
+      status: "active", vp_id: testVpId, tip_id_type: "organization",
+      creator_name: "KEYLOCK TEST ORG LTD", verified_at: nowMs(),
+    });
+    dag.setScore(tipId, 500, 0, 1767225600000);
+    const res = await request(app).get(`/v1/identity/${encodeURIComponent(tipId)}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.tip_id_type).toBe("organization");
+    expect(res.body.data.creator_name).toBe("KEYLOCK TEST ORG LTD");
   });
 
   test("6.9 GET /v1/identity/:tipId/score returns score", async () => {
