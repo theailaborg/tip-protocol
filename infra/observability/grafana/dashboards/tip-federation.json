@@ -482,6 +482,13 @@
           "instant": true
         },
         {
+          "refId": "Version",
+          "expr": "group by (node, version) (last_over_time(tip_node_build_info[1m]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": ""
+        },
+        {
           "refId": "Peers",
           "expr": "group by (node, peers) (last_over_time(tip_network_peer_list[10s]))",
           "format": "table",
@@ -588,20 +595,29 @@
               "member 1": true,
               "member 2": true,
               "member 3": true,
-              "member 4": true
+              "member 4": true,
+              "Value #Version": true,
+              "Time 10": true,
+              "__name__ 10": true,
+              "instance 10": true,
+              "job 10": true,
+              "federation 10": true,
+              "exported_node 10": true,
+              "role 10": true
             },
             "indexByName": {
               "node": 0,
               "name": 1,
               "status": 2,
               "Value #Online": 3,
-              "Value #SyncState": 4,
-              "Value #InstallPct": 5,
-              "Value #SyncSecs": 6,
-              "Value #CatchSecs": 7,
-              "Value #InCommittee": 8,
-              "Value #Credits": 9,
-              "peers": 10
+              "Value #SyncState": 5,
+              "Value #InstallPct": 6,
+              "Value #SyncSecs": 7,
+              "Value #CatchSecs": 8,
+              "Value #InCommittee": 9,
+              "Value #Credits": 10,
+              "peers": 11,
+              "version": 4
             },
             "renameByName": {
               "node": "Node",
@@ -614,7 +630,8 @@
               "Value #CatchSecs": "Catch-up duration",
               "Value #Credits": "Contribution (credits)",
               "Value #InCommittee": "In committee",
-              "Value #InstallPct": "Install %"
+              "Value #InstallPct": "Install %",
+              "version": "Version"
             }
           }
         }
