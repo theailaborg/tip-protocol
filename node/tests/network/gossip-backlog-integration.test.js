@@ -83,6 +83,39 @@ async function publishMany(pub, n) {
   }
 }
 
+function offHeapMB() {
+  const m = process.memoryUsage();
+  return Math.round((m.external + m.arrayBuffers) / 1048576);
+}
+
+describe("process memory towards a peer that stops reading", () => {
+  const OFFERED = 128;   // messages of 64 KiB = 8 MiB per round
+
+  test("library default: off-heap memory climbs with every megabyte offered to the stalled peer", async () => {
+    const pair = await makePair({ cap: 0 });
+    try {
+      const before = offHeapMB();
+      await publishMany(pair.publisher, OFFERED);
+      await publishMany(pair.publisher, OFFERED);
+      await publishMany(pair.publisher, OFFERED);   // 24 MiB offered
+      const grown = offHeapMB() - before;
+      expect(grown).toBeGreaterThanOrEqual(16);     // most of it is still held for the peer
+    } finally { await pair.stop(); }
+  });
+
+  test("with the cap: the same 24 MiB offered leaves off-heap memory near flat", async () => {
+    const pair = await makePair({ cap: CAP });
+    try {
+      const before = offHeapMB();
+      await publishMany(pair.publisher, OFFERED);
+      await publishMany(pair.publisher, OFFERED);
+      await publishMany(pair.publisher, OFFERED);
+      const grown = offHeapMB() - before;
+      expect(grown).toBeLessThanOrEqual(4);          // at most the cap plus muxer window
+    } finally { await pair.stop(); }
+  });
+});
+
 describe("gossipsub outbound queue towards a peer that stops reading", () => {
   test("library default: the queue grows with every message, nothing bounds it", async () => {
     const pair = await makePair({ cap: 0 });
