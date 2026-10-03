@@ -173,6 +173,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
         // ── Signed canonical fields (mirror canonicalPayload so
         //    commit-handler can replay buildSigningPayload(d))
         algorithm: canonicalPayload.algorithm,
+        biometric_commit: canonicalPayload.biometric_commit,
         creator_name: canonicalPayload.creator_name,
         dedup_hash: canonicalPayload.dedup_hash,
         public_key: canonicalPayload.public_key,
