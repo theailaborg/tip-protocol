@@ -22,6 +22,7 @@
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { nowMs } = require("../../../shared/time");
 const { createChannelHealth } = require("./channel-health");
+const { createOutboundBacklog } = require("./outbound-backlog");
 const { deriveP2pPrivateKey } = require("./peer-key");
 const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
 const { handleIncoming, initiate, unauthorizedPeers, canFastReauth } = require("./handshake");
@@ -135,11 +136,17 @@ async function createNetworkNode(options = {}) {
   const _netMetrics = {
     connects: 0, disconnects: 0, conn_closes: 0,
     handshakes_initiated: 0, rehandshakes: 0, fast_reauths: 0, force_redials: 0,
+    backlog_disconnects: 0,
   };
   // Per-peer outbound-delivery health + force-redial decision (transport auto-heal).
   const _channelHealth = createChannelHealth({
     healThreshold: CONSENSUS.CHANNEL_HEAL_FAIL_THRESHOLD,
     healCooldownMs: CONSENSUS.CHANNEL_HEAL_COOLDOWN_MS,
+  });
+  // Gossip queued per peer, sampled on the peer-health tick (see checkOutboundBacklog).
+  const _outboundBacklog = createOutboundBacklog({
+    limitBytes: CONSENSUS.GOSSIP_MAX_OUTBOUND_BUFFER_BYTES,
+    strikes: CONSENSUS.GOSSIP_BACKLOG_DISCONNECT_STRIKES,
   });
 
   // Deterministic peer id from the TIP node id (see peer-key.js); the same node
@@ -204,6 +211,9 @@ async function createNetworkNode(options = {}) {
         // idle. Discovery's primary mechanism remains the handshake's
         // known_peers[] field.
         doPX: true,
+        // Hard cap on gossip queued for one peer; over it, messages to that
+        // peer are dropped (it catches up through anti-entropy), not buffered.
+        maxOutboundBufferSize: CONSENSUS.GOSSIP_MAX_OUTBOUND_BUFFER_BYTES,
       }),
     },
   });
@@ -382,6 +392,7 @@ async function createNetworkNode(options = {}) {
     _authorizedPeers.delete(remotePeerId);
     directPeers.remove(remotePeerId);
     _channelHealth.forget(remotePeerId);
+    _outboundBacklog.forget(remotePeerId);
     log.info(`Peer disconnected: ${remotePeerId.slice(0, 16)}...${tipNodeId ? ` (${tipNodeId})` : ""}`);
 
     // If this was a bootstrap peer, restart its retry chain.
@@ -404,6 +415,28 @@ async function createNetworkNode(options = {}) {
     } catch { /* ignore */ }
     try { await node.dial(peerIdFromString(peerId)); }
     catch (err) { log.debug(`channel-health: re-dial to ${peerId.slice(0, 12)} failed: ${err.message}`); }
+  }
+
+  // gossipsub keeps one OutboundStream per peer; readableLength is the bytes
+  // queued and not yet read by that peer.
+  function _outboundBacklogBytes() {
+    const streams = pubsub && pubsub.streamsOutbound;
+    if (!streams || typeof streams.entries !== "function") return [];
+    const out = [];
+    for (const [peerId, os] of streams.entries()) {
+      const n = os && os.pushable ? Number(os.pushable.readableLength) || 0 : 0;
+      out.push([String(peerId), n]);
+    }
+    return out;
+  }
+
+  function checkOutboundBacklog() {
+    for (const [peerId, bytes] of _outboundBacklogBytes()) {
+      if (!_outboundBacklog.observe(peerId, bytes)) continue;
+      _netMetrics.backlog_disconnects++;
+      log.warn(`gossip backlog: ${peerId.slice(0, 12)} has ${Math.round(bytes / 1048576)} MB queued and unread, rebuilding transport`);
+      _forceRedial(peerId);
+    }
   }
 
   // One-shot broadcast to every authorized peer over a direct stream.
@@ -558,7 +591,14 @@ async function createNetworkNode(options = {}) {
     directPeers: () => directPeers.list(),
 
     /** Cumulative connection-churn counters (connects/disconnects/closes/re-auth/force-redials). */
-    metrics: () => ({ ..._netMetrics, disconnects_by_peer: Object.fromEntries(_disconnectsByPeer) }),
+    metrics: () => ({
+      ..._netMetrics,
+      disconnects_by_peer: Object.fromEntries(_disconnectsByPeer),
+      outbound_backlog_by_peer: Object.fromEntries(_outboundBacklogBytes().map(([pid, b]) => [_authorizedPeers.get(pid) || pid, b])),
+    }),
+
+    /** Sample every peer's queued gossip bytes; redial a peer stuck over the cap. */
+    checkOutboundBacklog,
 
     /** Per-peer outbound delivery health (send ok/fail, consecutive fails, last-ok age). */
     channelHealth: () => _channelHealth.snapshot().map((c) => ({
