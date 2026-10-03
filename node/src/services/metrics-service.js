@@ -80,6 +80,9 @@ function processSection(config) {
     gauge("tip_process_memory_rss_bytes", "Resident Set Size of the node process", mem.rss),
     gauge("tip_process_memory_heap_used_bytes", "Node heap bytes currently allocated", mem.heapUsed),
     gauge("tip_process_memory_heap_total_bytes", "Node heap capacity", mem.heapTotal),
+    // Buffers and other off-heap memory: where a gossip backlog or stream buffers show up, invisible to heap_used.
+    gauge("tip_process_memory_external_bytes", "Memory held by C++ objects bound to JS (Buffers, streams), outside the V8 heap", mem.external || 0),
+    gauge("tip_process_memory_array_buffers_bytes", "ArrayBuffer and Buffer backing stores, a subset of external", mem.arrayBuffers || 0),
   ].join("\n");
 }
 
@@ -252,6 +255,13 @@ function networkSection(network, dag) {
   out.push(counter("tip_network_handshakes_initiated_total", "Full ML-DSA handshakes this node initiated (no-op skips excluded)", cm.handshakes_initiated));
   out.push(counter("tip_network_rehandshakes_total", "Re-handshakes of connected-but-unauthorized peers", cm.rehandshakes));
   out.push(counter("tip_network_fast_reauths_total", "Reconnects authorized within the grace window without a full handshake", cm.fast_reauths));
+  out.push(counter("tip_network_backlog_disconnects_total", "Peers redialed because their queued, unread gossip stayed over the cap", cm.backlog_disconnects || 0));
+  const backlog = cm.outbound_backlog_by_peer || {};
+  if (Object.keys(backlog).length) {
+    out.push("# HELP tip_network_peer_outbound_backlog_bytes Gossip bytes queued for a peer and not yet read by it");
+    out.push("# TYPE tip_network_peer_outbound_backlog_bytes gauge");
+    for (const [peer, n] of Object.entries(backlog)) out.push(line("tip_network_peer_outbound_backlog_bytes", Number(n) || 0, { peer }));
+  }
   out.push(counter("tip_network_force_redials_total", "Transport rebuilds (force-close + re-dial) after sustained one-directional send failures to a peer", cm.force_redials));
   out.push(counter("tip_network_bootstrap_rearms_total", "Bootstrap retry chains re-armed by the isolation backstop. Non-zero means this node lost every peer with no retry pending, which before the backstop left it isolated indefinitely", (typeof network.bootstrapRearms === "function" ? network.bootstrapRearms() : 0)));
 

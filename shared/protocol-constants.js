@@ -437,6 +437,12 @@ const CONSENSUS = {
   // bounds re-dial churn. Per-node operational tunables.
   get CHANNEL_HEAL_FAIL_THRESHOLD() { return LC.CHANNEL_HEAL_FAIL_THRESHOLD; },
   get CHANNEL_HEAL_COOLDOWN_MS() { return LC.CHANNEL_HEAL_COOLDOWN_MS; },
+  // Gossip queued for one peer is capped: a peer that stays connected but stops
+  // reading otherwise accumulates every batch/cert/ack we publish, unbounded
+  // (mainnet 2026-10-03: a halted partner node held 6.7 GB on node 2, OOM).
+  // Over the cap for STRIKES consecutive peer-health ticks, the peer is redialed.
+  get GOSSIP_MAX_OUTBOUND_BUFFER_BYTES() { return LC.GOSSIP_MAX_OUTBOUND_BUFFER_BYTES; },
+  get GOSSIP_BACKLOG_DISCONNECT_STRIKES() { return LC.GOSSIP_BACKLOG_DISCONNECT_STRIKES; },
   get SYNC_TOTAL_TIMEOUT_MS() { return LC.SYNC_TOTAL_TIMEOUT_MS; },
   get SYNC_MAX_RESPONSE_BYTES() { return LC.SYNC_MAX_RESPONSE_BYTES; },
   // Tier-3 local tunable (shared/local-config.js). Currently has NO consumer in

@@ -68,7 +68,7 @@ describe("Tier-3 local-config / agreed-genesis disjointness (#39/A21)", () => {
   });
 
   test("the local tunable set size is pinned (bump this + document the knob in .env.example when adding one)", () => {
-    expect(Object.keys(LC).length).toBe(38);
+    expect(Object.keys(LC).length).toBe(40);
   });
 });
 
@@ -99,7 +99,7 @@ describe(".env.example Tier-3 recommended defaults match local-config (#39)", ()
     }
   }
 
-  test("parsed all 23 defaults from local-config.js, one per knob", () => {
+  test("parsed all 25 defaults from local-config.js, one per knob", () => {
     expect(Object.keys(defaults).length).toBe(Object.keys(LC).length);
     for (const key of Object.keys(LC)) expect(defaults).toHaveProperty("TIP_" + key);
   });
