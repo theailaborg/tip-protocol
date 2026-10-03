@@ -9,6 +9,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+**Node 2.6.6: gossip queued for one peer is bounded; a stalled reader is redialed**
+- gossipsub keeps one outbound queue per peer and its default cap is
+  unlimited. A peer that stays connected but stops reading its gossip stream
+  (alive enough to answer pings and send requests) made every other node queue
+  each batch, certificate and ack for it without bound, outside the V8 heap.
+  On mainnet (2026-10-03) a halted partner node in that state grew every peer
+  by ~90 MB/min; node 2 was killed by the kernel at 6.7 GB. The queue is now
+  capped (`TIP_GOSSIP_MAX_OUTBOUND_BUFFER_BYTES`, 8 MiB), messages beyond it
+  are dropped for that peer (it catches up through anti-entropy), and a peer
+  over the cap for two peer-health ticks is redialed, which frees the queue.
+- `/health` and `/metrics` expose off-heap memory (`external`,
+  `array_buffers`), the per-peer queued bytes and the redial count, so this
+  class is visible instead of hiding behind a flat `heap_used`.
+- snarkjs left one worker thread per CPU, each with a WASM memory, resident
+  after every dedup-proof verification; the curve is released once no proof
+  call is in flight.
+
 ### Added
 
 **Node 2.6.5: `GET /v1/identity/:tipId` returns `tip_id_type`**
