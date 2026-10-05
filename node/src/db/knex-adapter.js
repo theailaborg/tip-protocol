@@ -368,6 +368,7 @@ class KnexAdapter {
       domain_bindings: this.mirror._domainBindings.size,
       owner_heads: this.mirror._ownerHeads.size,
       platform_links: this.mirror._platformLinks.size,
+      org_members: this.mirror._orgMembers.size,
     };
   }
 
@@ -634,6 +635,12 @@ class KnexAdapter {
     if (!this.mirror._platformLinks) this.mirror._platformLinks = new Map();
     for (const row of plRows) {
       this.mirror._platformLinks.set(row.id, { ...row });
+    }
+
+    // Org members (canonical)
+    const omRows = await this.knex("org_members").select("*");
+    for (const row of omRows) {
+      this.mirror._orgMembers.set(row.invite_tx_id, { ...row });
     }
 
     // Pending domain claims (per-node local)
@@ -1379,7 +1386,7 @@ class KnexAdapter {
       "identities", "content", "scores", "dedup_registry", "revocations",
       "verification_providers", "nodes",
       "entity_keys", // GH #60 — entity_keys is canonical state too.
-      "platform_links", "domain_bindings", "prescan_reviews", "interests_registry",
+      "platform_links", "org_members", "domain_bindings", "prescan_reviews", "interests_registry",
       "protocol_params", // #39 — canonical state, cleared + rebuilt on install
       "owner_heads",
     ];
@@ -1399,6 +1406,7 @@ class KnexAdapter {
       case "revocations": return { tip_id: row.tip_id };
       case "domain_bindings": return { domain: row.domain };
       case "platform_links": return { id: row.id };
+      case "org_members": return { invite_tx_id: row.invite_tx_id };
       case "verification_providers": return { vp_id: row.vp_id };
       case "nodes": return { node_id: row.node_id };
       case "entity_keys": return {
@@ -1503,6 +1511,31 @@ class KnexAdapter {
 
   getPlatformLink(tipId, platform) { return this.mirror.getPlatformLink(tipId, platform); }
   getPlatformLinksByTipId(tipId) { return this.mirror.getPlatformLinksByTipId(tipId); }
+
+  // ── Org members (canonical, in state_merkle_root) ─────────────────────────
+
+  saveOrgMember(rec) {
+    this.mirror.saveOrgMember(rec);
+    const row = {
+      invite_tx_id: rec.invite_tx_id,
+      org_tip_id: rec.org_tip_id,
+      member_tip_id: rec.member_tip_id,
+      role: rec.role,
+      status: rec.status,
+      invited_at: rec.invited_at,
+      accepted_at: rec.accepted_at ?? null,
+      add_tx_id: rec.add_tx_id ?? null,
+      removed_at: rec.removed_at ?? null,
+      remove_tx_id: rec.remove_tx_id ?? null,
+      removed_by: rec.removed_by ?? null,
+    };
+    this._ff(() => this._dbInsert("org_members", "invite_tx_id", row, "merge"));
+  }
+
+  getOrgMember(inviteTxId) { return this.mirror.getOrgMember(inviteTxId); }
+  getOrgMemberByAddTxId(addTxId) { return this.mirror.getOrgMemberByAddTxId(addTxId); }
+  getOrgMembersByOrg(orgTipId) { return this.mirror.getOrgMembersByOrg(orgTipId); }
+  getOrgMembersByMember(memberTipId) { return this.mirror.getOrgMembersByMember(memberTipId); }
 
   savePendingDomainClaim(rec) {
     this.mirror.savePendingDomainClaim(rec);

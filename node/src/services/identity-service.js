@@ -10,6 +10,7 @@ const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
 const linkPlatformSchema = require("../schemas/link-platform");
 const unlinkPlatformSchema = require("../schemas/unlink-platform");
+const roster = require("../schemas/_org-members");
 const bioFetcher = require("./bio-fetcher");
 const { schemaError, verifyPayload, sortCosignatures } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
@@ -227,8 +228,23 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       creator_name: rec.creator_name || null,
       tip_id_type: rec.tip_id_type || TIP_ID_TYPES.PERSONAL,
       org_type: rec.org_type || null,
+      ..._rosterSummary(rec),
       verification: { tx_exists: !!tx, tx_id_valid: txValid, on_dag: true },
     };
+  }
+
+  // Orgs report seat usage; people report the orgs they are active in.
+  function _rosterSummary(rec) {
+    const type = rec.tip_id_type || TIP_ID_TYPES.PERSONAL;
+    if (type === TIP_ID_TYPES.ORGANIZATION) {
+      return {
+        members: {
+          active: roster.activeMembers(dag, rec.tip_id).length,
+          limit: roster.memberLimit(dag, rec.tip_id),
+        },
+      };
+    }
+    return { member_of: roster.activeMemberships(dag, rec.tip_id).map(r => r.org_tip_id) };
   }
 
   // Ownership-proof: client signs the canonical payload { challenge, tip_id }

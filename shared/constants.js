@@ -617,6 +617,12 @@ const TX_TYPES = Object.freeze({
   UPDATE_PROFILE: "UPDATE_PROFILE",
   LINK_PLATFORM: "LINK_PLATFORM",
   UNLINK_PLATFORM: "UNLINK_PLATFORM",
+  // Organization roster. INVITED is org-signed, ADDED is signed by the
+  // invited person (consent on both sides is on chain), REMOVED by either
+  // party. Rows live in org_members (canonical); see schemas/_org-members.js.
+  ORG_MEMBER_INVITED: "ORG_MEMBER_INVITED",
+  ORG_MEMBER_ADDED: "ORG_MEMBER_ADDED",
+  ORG_MEMBER_REMOVED: "ORG_MEMBER_REMOVED",
   // GH #60 — key rotation + recovery. Both append a new entity_keys row
   // and close the prior active one atomically at commit. KEY_ROTATED is
   // signed by the OLD key (user proves possession); KEY_RECOVERY is
@@ -950,6 +956,8 @@ const TIP_ID_FIELDS = Object.freeze({
   APPELLANT_TIP_ID: "appellant_tip_id",   // appeal filed
   VERIFIER_TIP_ID: "verifier_tip_id",     // content-verified
   DISPUTER_TIP_ID: "disputer_tip_id",     // content-disputed (user-mode)
+  ORG_TIP_ID: "org_tip_id",               // org-member-invited (the inviting organization)
+  MEMBER_TIP_ID: "member_tip_id",         // org-member-added (the accepting person)
 });
 const TIP_ID_FIELD_VALUES = Object.freeze(new Set(Object.values(TIP_ID_FIELDS)));
 
@@ -1044,6 +1052,30 @@ const REGISTER_CREDIT = Object.freeze({
 // rule, so gated on tx.timestamp to keep a mixed fleet from forking.
 const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15:00:00 UTC
 
+// Organization roster (org_members). An org invites a registered personal
+// TIP-ID; the invite is usable for INVITE_TTL_MS after its tx.timestamp and
+// never consumes a seat; acceptance does. FREE_MEMBER_LIMIT is the only tier
+// today; a paid plan lands as a per-org lookup in _org-members.memberLimit.
+// Open (unexpired, unaccepted) invites per org are capped at limit x
+// OPEN_INVITE_MULTIPLIER so the table cannot be flooded. Lives in code (not
+// genesis) like REGISTER_CREDIT. ACTIVATION_MS: the three tx types are new
+// commit rules, so an un-upgraded node would fork on them; nodes reject them
+// before this epoch-ms and the fleet upgrades first (TIP_ORG_MEMBERS_ACTIVATION_MS
+// overrides it on an isolated cluster).
+const ORG_MEMBERS = Object.freeze({
+  FREE_MEMBER_LIMIT: 1,
+  OPEN_INVITE_MULTIPLIER: 3,
+  INVITE_TTL_MS: 7 * 24 * 60 * 60 * 1000,
+  ROLE_MAX_LENGTH: 64,
+  ROLE_PATTERN: /^[a-z][a-z0-9_-]{0,63}$/,
+  ACTIVATION_MS: 1792368000000, // 2026-10-19 00:00:00 UTC
+});
+const ORG_MEMBER_STATUS = Object.freeze({
+  INVITED: "invited",
+  ACTIVE: "active",
+  REMOVED: "removed",
+});
+
 // GET /v1/content?parent_url= read gating. parent_url is an unverified
 // assertion (any content may claim any parent) and is never exclusivity-checked,
 // so the lookup caps the scan, drops sub-VERIFIED authors, and returns one entry
@@ -1078,6 +1110,8 @@ module.exports = {
   STATS_SCORING_CACHE_MS,
   REGISTER_CREDIT,
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
+  ORG_MEMBERS,
+  ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   PRESCAN_PERMANENT_MEDIA_ERRORS,

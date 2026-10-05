@@ -9,6 +9,28 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+**Node 2.7.0: organization roster (`ORG_MEMBER_INVITED` / `ORG_MEMBER_ADDED` / `ORG_MEMBER_REMOVED`)**
+- An organization can invite a registered personal TIP-ID onto its roster;
+  the person accepts by signing their own tx that references the invite, so
+  both consents are on chain and any node can list a person's open invites,
+  whichever VP issued either identity. Either party ends a membership alone.
+- Rows live in the new canonical `org_members` table (migration 012, in the
+  state root). An invite is usable for 7 days after its tx and never takes a
+  seat; the seat limit (`ORG_MEMBERS.FREE_MEMBER_LIMIT`, 1) is enforced when
+  the acceptance commits, so an invite sent while a seat was free fails with
+  `member_limit_reached` if the seat is gone by then. Open invites per org are
+  capped at three times the seat limit. Roster changes are score-neutral.
+- API: `POST /v1/identity/:org/members/invite`, `POST /v1/identity/:member/members/accept`,
+  `POST /v1/identity/:signer/members/remove`, `GET /v1/identity/:org/members`
+  (`?include=removed`), `GET /v1/identity/:member/invites`,
+  `GET /v1/identity/:member/memberships`; `GET /v1/identity/:id` adds
+  `members {active, limit}` for organizations and `member_of` for people.
+- Rollout: the three tx types are new commit rules, so every node rejects them
+  before `ORG_MEMBERS.ACTIVATION_MS` (`TIP_ORG_MEMBERS_ACTIVATION_MS` overrides
+  it on an isolated cluster). Upgrade the whole fleet before that epoch.
+
 ### Fixed
 
 **Node 2.6.6: gossip queued for one peer is bounded; a stalled reader is redialed**

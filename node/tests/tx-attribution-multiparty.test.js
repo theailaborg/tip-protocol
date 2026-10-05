@@ -157,6 +157,9 @@ describe("subjectTipIds — completeness guard (every tx_type classified)", () =
     [TX_TYPES.PRESCAN_COMPLETED]: [],
     [TX_TYPES.UNBIND_DOMAIN]: [],
     [TX_TYPES.AI_CLASSIFIER_RESULT]: [],
+    [TX_TYPES.ORG_MEMBER_INVITED]: ["org_tip_id", "member_tip_id"],
+    [TX_TYPES.ORG_MEMBER_ADDED]: ["member_tip_id", "org_tip_id"],
+    [TX_TYPES.ORG_MEMBER_REMOVED]: ["signer_tip_id", "org_tip_id", "member_tip_id"],
     [TX_TYPES.VP_REGISTERED]: [],
     [TX_TYPES.VP_SUSPENDED]: [],
     [TX_TYPES.NODE_REGISTERED]: [],
@@ -168,6 +171,7 @@ describe("subjectTipIds — completeness guard (every tx_type classified)", () =
   const ALL_FIELDS = [
     "tip_id", "signer_tip_id", "author_tip_id", "disputer_tip_id", "appellant_tip_id",
     "verifier_tip_id", "juror_tip_id", "reviewer_tip_id", "assigned_reviewer_tip_id", "creator_tip_id",
+    "org_tip_id", "member_tip_id",
   ];
 
   test("every TX_TYPES value is explicitly classified (no silent default)", () => {

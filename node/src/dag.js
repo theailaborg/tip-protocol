@@ -244,6 +244,24 @@ function _canonPlatformLink(r) {
     tx_id: r.tx_id,
   };
 }
+// Org members: every column participates in state_merkle_root. One row per
+// invite (pk = invite_tx_id); status walks invited -> active -> removed.
+// Signatures are reachable through the three tx ids, not duplicated here.
+function _canonOrgMember(r) {
+  return {
+    invite_tx_id: r.invite_tx_id,
+    org_tip_id: r.org_tip_id,
+    member_tip_id: r.member_tip_id,
+    role: r.role,
+    status: r.status,
+    invited_at: r.invited_at,
+    accepted_at: r.accepted_at ?? null,
+    add_tx_id: r.add_tx_id ?? null,
+    removed_at: r.removed_at ?? null,
+    remove_tx_id: r.remove_tx_id ?? null,
+    removed_by: r.removed_by ?? null,
+  };
+}
 function _canonVP(r) {
   // GH #60: public_key in entity_keys, not here.
   return {
@@ -431,6 +449,7 @@ const SMT_READ = {
   revocations: (st, pk) => { const r = st._revocations.get(pk); return r ? _canonRevocation(r) : null; },
   domain_bindings: (st, pk) => { const r = st._domainBindings.get(pk); return r ? _canonDomainBinding(r) : null; },
   platform_links: (st, pk) => { const r = st._platformLinks.get(pk); return r ? _canonPlatformLink(r) : null; },
+  org_members: (st, pk) => { const r = st._orgMembers.get(pk); return r ? _canonOrgMember(r) : null; },
   verification_providers: (st, pk) => { const r = st._vps.get(pk); return r ? _canonVP(r) : null; },
   nodes: (st, pk) => { const r = st._nodes.get(pk); return r ? _canonNode(r) : null; },
   entity_keys: (st, pk) => { const r = st._entityKeys.get(pk); return r ? _canonEntityKey(r) : null; },
@@ -460,6 +479,7 @@ const CANONICAL_PK = {
   revocations: r => r.tip_id,
   domain_bindings: r => r.domain,
   platform_links: r => r.id,
+  org_members: r => r.invite_tx_id,
   verification_providers: r => r.vp_id,
   nodes: r => r.node_id,
   entity_keys: r => `${r.entity_type}:${r.entity_id}:${r.valid_from_ts}`,
@@ -552,6 +572,7 @@ class MemoryStore {
     this._audioLandmarks = [];                  // audio inverted-index rows { profile, hash, clip_id, t }
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new SmtMap(this, "platform_links"); // key: `${tip_id}::${platform}` (== row.id)
+    this._orgMembers = new SmtMap(this, "org_members"); // invite_tx_id -> roster row (canonical)
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -889,6 +910,24 @@ class MemoryStore {
     return [...this._platformLinks.values()].filter(r => r.tip_id === tipId);
   }
 
+  // ── Org members (canonical, in state_merkle_root) ─────────────────────────
+  saveOrgMember(rec) {
+    this._orgMembers.set(rec.invite_tx_id, { ...rec });
+  }
+  getOrgMember(inviteTxId) {
+    return this._orgMembers.get(inviteTxId) || null;
+  }
+  getOrgMemberByAddTxId(addTxId) {
+    for (const r of this._orgMembers.values()) if (r.add_tx_id === addTxId) return r;
+    return null;
+  }
+  getOrgMembersByOrg(orgTipId) {
+    return [...this._orgMembers.values()].filter(r => r.org_tip_id === orgTipId);
+  }
+  getOrgMembersByMember(memberTipId) {
+    return [...this._orgMembers.values()].filter(r => r.member_tip_id === memberTipId);
+  }
+
   // ── Domain pending claims (local-only; NOT canonical, NOT in merkle root) ─
   // Stores the user-signed claim between POST /register and POST /verify.
   // Only the receiving node has the claim — verification re-establishes
@@ -1087,6 +1126,7 @@ class MemoryStore {
     // GH #60 — entity_keys is canonical state too.
     this._entityKeys.clear();
     this._platformLinks.clear();
+    this._orgMembers.clear();
     // Every table that iterateCanonicalState yields MUST be cleared here,
     // otherwise leftover rows survive a snapshot install and contribute to
     // state_merkle_root → permanent Merkle divergence vs the snapshot author.
@@ -1108,6 +1148,7 @@ class MemoryStore {
       case "revocations": return this._revocations.delete(pk);
       case "domain_bindings": return this._domainBindings.delete(pk);
       case "platform_links": return this._platformLinks.delete(pk);
+      case "org_members": return this._orgMembers.delete(pk);
       case "verification_providers": return this._vps.delete(pk);
       case "nodes": return this._nodes.delete(pk);
       case "entity_keys": return this._entityKeys.delete(pk);
@@ -1703,6 +1744,10 @@ class MemoryStore {
     for (const r of [...this._platformLinks.values()]
       .sort((a, b) => cmpBin(a.id, b.id))) {
       yield { table: "platform_links", row: _canonPlatformLink(r) };
+    }
+    for (const r of [...this._orgMembers.values()]
+      .sort((a, b) => cmpBin(a.invite_tx_id, b.invite_tx_id))) {
+      yield { table: "org_members", row: _canonOrgMember(r) };
     }
     for (const [entity_key, tx_id] of [...this._ownerHeads.entries()]
       .sort((a, b) => cmpBin(a[0], b[0]))) {
@@ -2624,6 +2669,18 @@ class SQLiteStore {
         "SELECT * FROM platform_links WHERE tip_id=?"
       ),
 
+      saveOrgMember: this.db.prepare(
+        `INSERT OR REPLACE INTO org_members
+         (invite_tx_id, org_tip_id, member_tip_id, role, status, invited_at,
+          accepted_at, add_tx_id, removed_at, remove_tx_id, removed_by)
+         VALUES (@invite_tx_id, @org_tip_id, @member_tip_id, @role, @status, @invited_at,
+                 @accepted_at, @add_tx_id, @removed_at, @remove_tx_id, @removed_by)`
+      ),
+      getOrgMember: this.db.prepare("SELECT * FROM org_members WHERE invite_tx_id=?"),
+      getOrgMemberByAddTxId: this.db.prepare("SELECT * FROM org_members WHERE add_tx_id=?"),
+      getOrgMembersByOrg: this.db.prepare("SELECT * FROM org_members WHERE org_tip_id=?"),
+      getOrgMembersByMember: this.db.prepare("SELECT * FROM org_members WHERE member_tip_id=?"),
+
       savePendingDomainClaim: this.db.prepare(
         `INSERT OR REPLACE INTO pending_domain_claims
            (domain,tip_id,method,claimed_at,signature,received_at)
@@ -3525,6 +3582,13 @@ class SQLiteStore {
     return this._stmts.getPlatformLinksByTipId.all(tipId);
   }
 
+  // ── Org members (canonical) ──────────────────────────────────────────────
+  saveOrgMember(rec) { this._stmts.saveOrgMember.run(_canonOrgMember(rec)); }
+  getOrgMember(inviteTxId) { return this._stmts.getOrgMember.get(inviteTxId) || null; }
+  getOrgMemberByAddTxId(addTxId) { return this._stmts.getOrgMemberByAddTxId.get(addTxId) || null; }
+  getOrgMembersByOrg(orgTipId) { return this._stmts.getOrgMembersByOrg.all(orgTipId); }
+  getOrgMembersByMember(memberTipId) { return this._stmts.getOrgMembersByMember.all(memberTipId); }
+
   // ── Pending domain claims (local-only) ───────────────────────────────────
   savePendingDomainClaim(rec) {
     this._stmts.savePendingDomainClaim.run(
@@ -4037,6 +4101,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM platform_links ORDER BY id").iterate()) {
       yield { table: "platform_links", row: _canonPlatformLink(r) };
     }
+    for (const r of db.prepare("SELECT * FROM org_members ORDER BY invite_tx_id").iterate()) {
+      yield { table: "org_members", row: _canonOrgMember(r) };
+    }
     for (const r of db.prepare("SELECT * FROM owner_heads ORDER BY entity_key").iterate()) {
       yield { table: "owner_heads", row: _canonOwnerHead(r) };
     }
@@ -4080,6 +4147,7 @@ class SQLiteStore {
       // GH #60 — entity_keys is canonical state too.
       this.db.prepare("DELETE FROM entity_keys").run();
       this.db.prepare("DELETE FROM platform_links").run();
+      this.db.prepare("DELETE FROM org_members").run();
       // Every table that iterateCanonicalState yields MUST be cleared here,
       // otherwise leftover rows survive a snapshot install and contribute
       // to state_merkle_root → permanent Merkle divergence.
@@ -4100,6 +4168,7 @@ class SQLiteStore {
       case "revocations": return del("DELETE FROM revocations WHERE tip_id=?", row.tip_id);
       case "domain_bindings": return del("DELETE FROM domain_bindings WHERE domain=?", row.domain);
       case "platform_links": return del("DELETE FROM platform_links WHERE id=?", row.id);
+      case "org_members": return del("DELETE FROM org_members WHERE invite_tx_id=?", row.invite_tx_id);
       case "verification_providers": return del("DELETE FROM verification_providers WHERE vp_id=?", row.vp_id);
       case "nodes": return del("DELETE FROM nodes WHERE node_id=?", row.node_id);
       case "entity_keys": return del(
@@ -4706,6 +4775,13 @@ function _buildDagHandle(store, config) {
     updatePlatformLinkStatus: (tipId, platform, update) => store.updatePlatformLinkStatus(tipId, platform, update),
     getPlatformLink: (tipId, platform) => store.getPlatformLink(tipId, platform),
     getPlatformLinksByTipId: (tipId) => store.getPlatformLinksByTipId(tipId),
+
+    // ── Org members (canonical) ───────────────────────────────────────────
+    saveOrgMember: (rec) => store.saveOrgMember(rec),
+    getOrgMember: (inviteTxId) => store.getOrgMember(inviteTxId),
+    getOrgMemberByAddTxId: (addTxId) => store.getOrgMemberByAddTxId(addTxId),
+    getOrgMembersByOrg: (orgTipId) => store.getOrgMembersByOrg(orgTipId),
+    getOrgMembersByMember: (memberTipId) => store.getOrgMembersByMember(memberTipId),
 
     // ── Verification Providers ────────────────────────────────────────────
     saveVP: (rec) => store.saveVP(rec),

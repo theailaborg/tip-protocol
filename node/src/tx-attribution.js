@@ -69,6 +69,15 @@ function subjectTipIds(tx) {
     case TX_TYPES.BIND_DOMAIN:   // d.tip_id is the claimant identity
       return _clean([d.tip_id]);
 
+    // ── Multi-party: organization roster ────────────────────────────────
+    // Both the org and the person see every step; the remover first.
+    case TX_TYPES.ORG_MEMBER_INVITED:
+      return _clean([d.org_tip_id, d.member_tip_id]);
+    case TX_TYPES.ORG_MEMBER_ADDED:
+      return _clean([d.member_tip_id, d.org_tip_id]);
+    case TX_TYPES.ORG_MEMBER_REMOVED:
+      return _clean([d.signer_tip_id, d.org_tip_id, d.member_tip_id]);
+
     // ── Author actions on owned content ─────────────────────────────────
     case TX_TYPES.REGISTER_CONTENT:
       // CNA-2.2: signer_tip_id is the canonical field; in self-attribution

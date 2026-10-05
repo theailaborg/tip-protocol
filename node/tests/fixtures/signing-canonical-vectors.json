@@ -231,5 +231,36 @@
       "parent_url": "https://example.com/parent-post/"
     },
     "canonical": "{\"attribution_mode\":\"self\",\"authors\":[{\"key_mode\":\"attribution\",\"role\":\"byline\",\"signed\":false,\"tip_id\":\"tip://id/US-author\",\"tip_id_type\":\"personal\"}],\"cna_version\":\"CNA-2.2\",\"content_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"extras\":{},\"origin_code\":\"OH\",\"parent_url\":\"https://example.com/parent-post/\",\"registered_urls\":[\"https://example.com/post/\"],\"signer_tip_id\":\"tip://id/US-author\"}"
+  },
+  "ORG_MEMBER_INVITED:base": {
+    "tx_type": "ORG_MEMBER_INVITED",
+    "data": {
+      "org_tip_id": "tip://id/GB-org",
+      "member_tip_id": "tip://id/IN-member",
+      "role": "author",
+      "invited_at": 1767225600000
+    },
+    "canonical": "{\"invited_at\":1767225600000,\"member_tip_id\":\"tip://id/IN-member\",\"org_tip_id\":\"tip://id/GB-org\",\"role\":\"author\"}"
+  },
+  "ORG_MEMBER_ADDED:base": {
+    "tx_type": "ORG_MEMBER_ADDED",
+    "data": {
+      "org_tip_id": "tip://id/GB-org",
+      "member_tip_id": "tip://id/IN-member",
+      "invite_tx_id": "invite-deadbeef",
+      "accepted_at": 1767225600000
+    },
+    "canonical": "{\"accepted_at\":1767225600000,\"invite_tx_id\":\"invite-deadbeef\",\"member_tip_id\":\"tip://id/IN-member\",\"org_tip_id\":\"tip://id/GB-org\"}"
+  },
+  "ORG_MEMBER_REMOVED:base": {
+    "tx_type": "ORG_MEMBER_REMOVED",
+    "data": {
+      "org_tip_id": "tip://id/GB-org",
+      "member_tip_id": "tip://id/IN-member",
+      "add_tx_id": "add-deadbeef",
+      "claimed_at": 1767225600000,
+      "signer_tip_id": "tip://id/GB-org"
+    },
+    "canonical": "{\"add_tx_id\":\"add-deadbeef\",\"claimed_at\":1767225600000,\"member_tip_id\":\"tip://id/IN-member\",\"org_tip_id\":\"tip://id/GB-org\",\"signer_tip_id\":\"tip://id/GB-org\"}"
   }
 }

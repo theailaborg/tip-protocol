@@ -3,7 +3,7 @@
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
 
-function createRouter({ identityService, profileService, keyService }) {
+function createRouter({ identityService, profileService, keyService, orgMemberService }) {
   const router = express.Router();
 
   router.post("/identity/register", asyncHandler(async (req, res) => {
@@ -119,6 +119,40 @@ function createRouter({ identityService, profileService, keyService }) {
       claimedAt: req.body.claimed_at,
     });
     res.status(202).json(result);
+  }));
+
+  // ── Organization roster (ORG_MEMBER_INVITED / ADDED / REMOVED) ──────
+  // :tipId is whoever signs: the org on invite, the person on accept,
+  // either party on remove. Reads are per org (members) or per person
+  // (invites, memberships).
+  router.get("/identity/:tipId/members", asyncHandler((req, res) => {
+    const tipId = decodeURIComponent(req.params.tipId);
+    res.json(orgMemberService.listMembers(tipId, req.query));
+  }));
+
+  router.post("/identity/:tipId/members/invite", asyncHandler((req, res) => {
+    const tipId = decodeURIComponent(req.params.tipId);
+    res.status(202).json(orgMemberService.invite({ urlTipId: tipId, body: req.body }));
+  }));
+
+  router.post("/identity/:tipId/members/accept", asyncHandler((req, res) => {
+    const tipId = decodeURIComponent(req.params.tipId);
+    res.status(202).json(orgMemberService.accept({ urlTipId: tipId, body: req.body }));
+  }));
+
+  router.post("/identity/:tipId/members/remove", asyncHandler((req, res) => {
+    const tipId = decodeURIComponent(req.params.tipId);
+    res.status(202).json(orgMemberService.remove({ urlTipId: tipId, body: req.body }));
+  }));
+
+  router.get("/identity/:tipId/invites", asyncHandler((req, res) => {
+    const tipId = decodeURIComponent(req.params.tipId);
+    res.json(orgMemberService.listInvites(tipId));
+  }));
+
+  router.get("/identity/:tipId/memberships", asyncHandler((req, res) => {
+    const tipId = decodeURIComponent(req.params.tipId);
+    res.json(orgMemberService.listMemberships(tipId));
   }));
 
   router.post("/identity/:tipId/link-platform", asyncHandler(async (req, res) => {

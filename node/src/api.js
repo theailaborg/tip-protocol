@@ -26,6 +26,7 @@ const { createTxSubmitter } = require("./services/helpers");
 
 // Services
 const { createIdentityService } = require("./services/identity-service");
+const { createOrgMemberService } = require("./services/org-member-service");
 const { createContentService } = require("./services/content-service");
 const { createProfileService } = require("./services/profile-service");
 const { createKeyService } = require("./services/key-service");
@@ -93,6 +94,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
 
   // ── Create services ────────────────────────────────────────────────────────
   const identityService = createIdentityService(ctx);
+  const orgMemberService = createOrgMemberService(ctx);
   const contentService = createContentService(ctx);
   const profileService = createProfileService(ctx);
   const keyService = createKeyService(ctx);
@@ -207,7 +209,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, createConsensusGate({ consensusRef }));
 
   // All API routes under /v1
-  app.use(API_VERSION, identityRoutes.createRouter({ identityService, profileService, keyService }));
+  app.use(API_VERSION, identityRoutes.createRouter({ identityService, profileService, keyService, orgMemberService }));
   app.use(API_VERSION, contentRoutes.createRouter({ contentService }));
   app.use(API_VERSION, disputeRoutes.createRouter({ disputeService }));
   app.use(API_VERSION, disputeDetailsRoutes.createRouter({ disputeDetailsService }));

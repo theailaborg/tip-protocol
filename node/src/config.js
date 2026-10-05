@@ -125,6 +125,10 @@ function loadConfig() {
     // isolated test cluster before the mainnet date.
     regCreditCapActivationMs: process.env.TIP_REG_CREDIT_CAP_ACTIVATION_MS
       ? parseInt(process.env.TIP_REG_CREDIT_CAP_ACTIVATION_MS, 10) : undefined,
+    // Org roster activation override (epoch-ms). Same consensus-gate rule as
+    // above: identical on every node, or an isolated test cluster only.
+    orgMembersActivationMs: process.env.TIP_ORG_MEMBERS_ACTIVATION_MS
+      ? parseInt(process.env.TIP_ORG_MEMBERS_ACTIVATION_MS, 10) : undefined,
 
     // ── Pre-scan (v2 FIX-03) ──────────────────────────────────────────────────
     preScanEnabled: true,
