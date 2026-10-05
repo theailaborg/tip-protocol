@@ -125,6 +125,18 @@ describe("client-fillable bounded columns reject over-length values", () => {
     )).toThrow(expect.objectContaining({ code: "region_too_long" }));
   });
 
+  test("identities.biometric_commit", () => {
+    const max = columnsOf("identities").biometric_commit;
+    expect(max).toBe(64);
+    const overlong = "a".repeat(max + 1);
+    const base = { public_key: "00", dedup_hash: "00", zk_proof: {}, vp_id: "tip://vp/1", vp_signature: "x" };
+    expect(() => registerIdentity.validateRequest(
+      { ...base, biometric_commit: overlong }, { dag: { getVP: () => null } },
+    )).toThrow(expect.objectContaining({ code: "biometric_commit_invalid" }));
+    expect(() => registerIdentity.buildSigningPayload({ ...base, biometric_commit: overlong }))
+      .toThrow(expect.objectContaining({ code: "biometric_commit_invalid" }));
+  });
+
   test("domain_bindings.domain", () => {
     const max = columnsOf("domain_bindings").domain;
     expect(max).toBe(253);
@@ -155,7 +167,7 @@ describe("no unreviewed bounded columns", () => {
       tip_id: "server-derived from public_key", region: "assertBounded, both paths",
       vp_id: "DAG-resolved", verification_tier: "enum", score_display_mode: "enum",
       tip_id_type: "enum", status: "server-set", tx_id: "server-derived",
-      org_type: "regex 2-64",
+      org_type: "regex 2-64", biometric_commit: "64-hex regex, both paths",
     },
     domain_bindings: {
       domain: "assertBounded, both paths", tip_id: "DAG-resolved",
