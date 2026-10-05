@@ -39,13 +39,15 @@
  *
  * Output:
  *   generated/<partner>/org/
- *     └── <tip-id>.tip.json   VP-app export (tip-key-export-v2) + org metadata (mode 0600)
+ *     ├── <tip-id>.tip.json           VP-app export (tip-key-export-v2), delivered (mode 0600)
+ *     └── <tip-id>.registration.json  dedup inputs incl. the date, Lab only (mode 0600)
  *
  * The private key is written locally and never transmitted: registration sends
  * only the public key. The file is locked with the incorporation date exactly
  * as the VP app locks a personal download with the date of birth, so it
- * imports into the VP app and is not usable as-is if it leaks. The date is
- * public record, so this is one layer, not the delivery channel. Deliver the file to the organization over a secure
+ * imports into the VP app. The file never carries the date (the dedup inputs,
+ * date included, go to the Lab-only registration record). The date is public
+ * record, so this is one layer, not the delivery channel. Deliver the file to the organization over a secure
  * channel and have them store it at mode 0600.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
@@ -71,8 +73,8 @@ const { resolveIdScheme } = require("../shared/org-id-schemes");
 const registerIdentitySchema = require("../node/src/schemas/register-identity");
 const { loadVpBackup } = require("./genesis-backups");
 const { writePartnerReadme } = require("./partner-readme");
-const { KEY_FILE_EXPORT } = require("../shared/constants");
-const { datePassword, encryptPrivateKey, readKeyFile } = require("../shared/key-file");
+const { datePassword, readKeyFile } = require("../shared/key-file");
+const { buildOrgKeyFiles, recordPathFor } = require("./org-key-file");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
 const T = {
@@ -265,33 +267,25 @@ async function main() {
   const finalTipId = result.tip_id || tipId;
   // Same envelope as the VP app's download, locked with the incorporation
   // date, so the organization imports it there the way a person imports theirs.
-  const tipJson = JSON.stringify({
-    version: KEY_FILE_EXPORT.VERSION,
+  // The date itself goes only into the Lab-only registration record next to it.
+  const { keyFileText, recordText } = buildOrgKeyFiles({
     tipId: finalTipId,
-    publicKey: keypair.publicKey,
-    encrypted: encryptPrivateKey(keypair.privateKey, datePassword(incorporated)),
-    algorithm: KEY_FILE_EXPORT.ALGORITHM,
-    sigAlgorithm: KEY_FILE_EXPORT.SIG_ALGORITHM,
-    tip_id_type: "organization",
-    vp_id: vp.vp_id,
-    display_name: orgName,
-    region,
-    // Recorded so the dedup inputs stay auditable: they cannot be recovered
-    // from the hash, and re-deriving them wrongly would mint a second identity.
-    // The canonical value is what was hashed; the as-provided form is kept so a
-    // later audit can read it back against the certificate it was copied from.
-    registration_number: scheme.normalized,
-    registration_number_as_provided: regNumber,
-    registration_scheme: scheme.name,
+    keypair,
     incorporated,
-    dedup_hash: dedupHash,
-    registered_at: result.registered_at || nowMs(),
-    registered_on: nodeUrl,
+    vpId: vp.vp_id,
+    orgName,
+    region,
+    scheme,
+    regNumber,
+    dedupHash,
+    registeredAt: result.registered_at || nowMs(),
+    registeredOn: nodeUrl,
     exportedAt: nowIso(),
-    warning: "Locked with the date of incorporation (MM/DD/YYYY, as registered). There is no recovery if it is lost.",
-  }, null, 2);
+  });
   const credPath = path.join(outDir, fileName);
-  fs.writeFileSync(credPath, tipJson, { mode: 0o600 });
+  const recordPath = recordPathFor(credPath);
+  fs.writeFileSync(credPath, keyFileText, { mode: 0o600 });
+  fs.writeFileSync(recordPath, recordText, { mode: 0o600 });
 
   // Prove the file on disk opens with the date before anyone relies on it.
   const reread = readKeyFile(credPath, datePassword(incorporated));
@@ -301,6 +295,7 @@ async function main() {
 
   console.log("");
   ok(`Credential: ${credPath}`);
+  ok(`Lab record: ${recordPath} (holds the unlock date; never deliver it)`);
   ok(`Verified: decrypts with the incorporation date (${incorporated}), imports into the VP app as ${finalTipId}`);
   warn("Contains the PRIVATE key, locked only with a public date. Deliver over a secure channel, never chat or email.");
   warn("Recipient should store it at mode 0600; anyone holding it and the date can sign as this organization.");
