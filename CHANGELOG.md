@@ -22,7 +22,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the acceptance commits, so an invite sent while a seat was free fails with
   `member_limit_reached` if the seat is gone by then. Open invites per org are
   capped at three times the seat limit. Roster changes are score-neutral.
-- `GET /v1/identity/search?q=&limit=&type=`: type-ahead for the invite box, TIP-ID prefix or name substring, active personal identities by default. Client contract in `docs/ORG_ROSTER_UI_SPEC.md`.
+- `GET /v1/identity/search?q=&limit=&type=`: type-ahead for the invite box, TIP-ID prefix or name substring, active personal identities by default.
 - API: `POST /v1/identity/:org/members/invite`, `POST /v1/identity/:member/members/accept`,
   `POST /v1/identity/:signer/members/remove`, `GET /v1/identity/:org/members`
   (`?include=removed`), `GET /v1/identity/:member/invites`,
