@@ -687,6 +687,28 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getOrgMember(inviteTxId)).toBeNull();
   });
 
+  test("bylined content: credited in authors[] without being author_tip_id, in both the lookup and the list filter", async () => {
+    const dag = await makeDag();
+    const org = uniq("GB-org");
+    const member = uniq("IN-member");
+    const byline = (ct) => ({ ...contentRec(ct, org), authors: [
+      { key_mode: "attribution", role: "byline", signed: false, tip_id: org, tip_id_type: "organization" },
+      { key_mode: "attribution", role: "byline", signed: false, tip_id: member, tip_id_type: "personal" },
+    ] });
+    const own = uniq("ct"), bylined = uniq("ct"), solo = uniq("ct");
+    dag.saveContent({ ...contentRec(own, member), authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: member, tip_id_type: "personal" }] });
+    dag.saveContent(byline(bylined));
+    dag.saveContent({ ...contentRec(solo, org), authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: org, tip_id_type: "organization" }] });
+
+    expect(dag.getContentBylined(member).map(c => c.ctid)).toEqual([bylined]);
+    expect(dag.getContentBylined(org)).toEqual([]);
+    expect(dag.getContentByAuthor(member).map(c => c.ctid)).toEqual([own]);
+    expect(dag.listContent({ bylined: member, limit: 10 }).map(c => c.ctid)).toEqual([bylined]);
+    expect(dag.listContent({ author: member, limit: 10 }).map(c => c.ctid)).toEqual([own]);
+    // A prefix of the id must not match (exact JSON element match).
+    expect(dag.getContentBylined(member.slice(0, -2))).toEqual([]);
+  });
+
   // ── 12. Canonical state ──────────────────────────────────────────────────
 
   test("clearCanonicalState leaves zero canonical rows", async () => {

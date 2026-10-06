@@ -5,11 +5,12 @@ const {
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
-const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT, PARENT_URL_LOOKUP } = require("../../../shared/constants");
+const { TX_TYPES, TIP_ID_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT, PARENT_URL_LOOKUP } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const contentRegisterSchema = require("../schemas/content-register");
 const contentListSchema = require("../schemas/content-list");
+const roster = require("../schemas/_org-members");
 const { ingestFingerprint } = require("../perceptual/ingest");
 const { findSimilarCtids, matchFingerprintItems } = require("../perceptual/similar");
 const { schemaError } = require("../schemas/_common");
@@ -597,6 +598,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       },
       review_history: _projectReviewHistory(ctid),
       appeal_pending: _isAppealPending(ctid),
+      publisher: _publisherOf(rec),
+      authors_resolved: _resolveAuthors(rec),
       // Content-state half of the update-urls gate, from the same list the rule
       // enforces. The caller still adds "am I the author?" (resolve is public).
       can_update_urls: rules.UPDATE_URLS_ALLOWED_STATUSES.includes(rec.status),
@@ -616,6 +619,43 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     };
     if (opts.includeFingerprints) out.fingerprints = await _projectFingerprints(ctid, opts);
     return out;
+  }
+
+  // Who signed the record: the identity that can retract it and carries its
+  // penalties. Same as author_tip_id except for org posts with a byline.
+  function _publisherOf(rec) {
+    const tipId = rec.signer_tip_id || rec.author_tip_id;
+    const id = dag.getIdentity(tipId);
+    return {
+      tip_id: tipId,
+      name: id ? (id.creator_name || null) : null,
+      tip_id_type: id ? (id.tip_id_type || TIP_ID_TYPES.PERSONAL) : null,
+    };
+  }
+
+  // authors[] with names and the relationship to the signer, so a page can
+  // show "published by X, written by Y" from one call. relationship:
+  // signer | member (active on the signer org's roster now) | listed.
+  function _resolveAuthors(rec) {
+    const signerTipId = rec.signer_tip_id || rec.author_tip_id;
+    const signer = dag.getIdentity(signerTipId);
+    const signerIsOrg = (signer?.tip_id_type || TIP_ID_TYPES.PERSONAL) === TIP_ID_TYPES.ORGANIZATION;
+    return (Array.isArray(rec.authors) ? rec.authors : []).map((a) => {
+      const id = dag.getIdentity(a.tip_id);
+      const sc = id ? scoring.getScore(a.tip_id) : null;
+      let relationship = "listed";
+      if (a.tip_id === signerTipId) relationship = "signer";
+      else if (signerIsOrg && roster.activeMembership(dag, signerTipId, a.tip_id)) relationship = "member";
+      return {
+        tip_id: a.tip_id,
+        name: id ? (id.creator_name || null) : null,
+        tip_id_type: a.tip_id_type || (id ? id.tip_id_type : null) || TIP_ID_TYPES.PERSONAL,
+        role: a.role || null,
+        tier: sc ? sc.tier.name : null,
+        revoked: dag.isRevoked(a.tip_id),
+        relationship,
+      };
+    });
   }
 
   // Slim, read-only projection for the Open Graph card renderer. Reuses
@@ -925,9 +965,15 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   // Slim list row. Heavy fields (authors[], extras, media[]) stay out; clients
   // follow the ctid to resolve() for the full record.
   function _listRow(c) {
+    const signer = c.signer_tip_id || c.author_tip_id;
+    const publisher = signer !== c.author_tip_id || (Array.isArray(c.authors) && c.authors.length > 1)
+      ? dag.getIdentity(signer) : null;
     return {
       ctid: c.ctid,
       author_tip_id: c.author_tip_id,
+      signer_tip_id: signer,
+      attribution_mode: c.attribution_mode || "self",
+      publisher_name: publisher ? (publisher.creator_name || null) : null,
       origin_code: c.origin_code,
       status: c.status,
       prescan_status: c.prescan_status,
