@@ -23,6 +23,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `member_limit_reached` if the seat is gone by then. Open invites per org are
   capped at three times the seat limit. Roster changes are score-neutral.
 - `GET /v1/identity/search?q=&limit=&type=`: type-ahead for the invite box, TIP-ID prefix or name substring, active personal identities by default.
+- Byline read model: `GET /v1/content/:ctid` adds `publisher` (the signer) and
+  `authors_resolved` (every author with name, type, tier and `relationship`:
+  `signer` | `member` | `listed`); `GET /v1/content?bylined=<tip_id>` lists
+  posts that credit an identity without being its `author_tip_id`, and list
+  rows carry `signer_tip_id`, `attribution_mode`, `publisher_name`;
+  `GET /v1/identity/:id` adds `bylined_count`. The `author`/`bylined` filters
+  now accept three-letter region codes.
 - API: `POST /v1/identity/:org/members/invite`, `POST /v1/identity/:member/members/accept`,
   `POST /v1/identity/:signer/members/remove`, `GET /v1/identity/:org/members`
   (`?include=removed`), `GET /v1/identity/:member/invites`,

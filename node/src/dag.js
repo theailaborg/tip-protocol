@@ -253,6 +253,11 @@ function _canonPlatformLink(r) {
     tx_id: r.tx_id,
   };
 }
+// Byline test shared by the stores: in authors[] but not the owning author.
+function _isBylined(c, tipId) {
+  return c.author_tip_id !== tipId && Array.isArray(c.authors) && c.authors.some(a => a && a.tip_id === tipId);
+}
+
 // Org members: every column participates in state_merkle_root. One row per
 // invite (pk = invite_tx_id); status walks invited -> active -> removed, or
 // invited -> cancelled (removed_* then hold the cancel). Signatures are
@@ -714,9 +719,10 @@ class MemoryStore {
   // query. Cursor is an exclusive (registered_at, ctid) tuple; the
   // composite tiebreak makes pagination stable when several rows share
   // a timestamp.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, bylined = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
     let rows = [...this._content.values()];
     if (author) rows = rows.filter(c => c.author_tip_id === author);
+    if (bylined) rows = rows.filter(c => _isBylined(c, bylined));
     if (origin) rows = rows.filter(c => c.origin_code === origin);
     if (status) rows = rows.filter(c => c.status === status);
     if (hasMedia === true) rows = rows.filter(c => Array.isArray(c.media) && c.media.length > 0);
@@ -799,6 +805,11 @@ class MemoryStore {
   }
   getContentByAuthor(tipId) {
     return [...this._content.values()].filter(c => c.author_tip_id === tipId);
+  }
+  // Content that credits tipId in authors[] without being its author_tip_id
+  // (an org post carrying a member's byline).
+  getContentBylined(tipId) {
+    return [...this._content.values()].filter(c => _isBylined(c, tipId));
   }
   // Register-time near-duplicate warning: all content rows sharing an exact
   // (normalized) content_hash. Same content by a different author/origin gets
@@ -3410,6 +3421,10 @@ class SQLiteStore {
     if (stmt) stmt.run(ctid);
   }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
+  getContentBylined(tipId) {
+    return this.db.prepare("SELECT * FROM content WHERE author_tip_id != ? AND instr(authors, ?) > 0")
+      .all(tipId, '"tip_id":' + JSON.stringify(tipId)).map(r => this._hydrateContent(r));
+  }
   getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
   getContentByHash(contentHash) {
     if (!contentHash) return [];
@@ -3418,10 +3433,16 @@ class SQLiteStore {
   // Explorer list — see MemoryStore.listContent for the contract.
   // Filters vary per call, so the statement is built dynamically; the
   // (status, author, origin) columns are indexed.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, bylined = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
     const where = [];
     const params = [];
     if (author) { where.push("author_tip_id = ?"); params.push(author); }
+    if (bylined) {
+      // authors is JSON.stringify'd author objects, so `"tip_id":"<id>"` is an
+      // exact element match (same reasoning as the url filter below).
+      where.push("author_tip_id != ? AND instr(authors, ?) > 0");
+      params.push(bylined, '"tip_id":' + JSON.stringify(bylined));
+    }
     if (origin) { where.push("origin_code = ?"); params.push(origin); }
     if (status) { where.push("status = ?"); params.push(status); }
     if (hasMedia === true) where.push("media IS NOT NULL AND media != '[]'");
@@ -4732,6 +4753,7 @@ function _buildDagHandle(store, config) {
     updateContentUrls: (ctid, urls) => store.updateContentUrls(ctid, urls),
     incrementContentCounter: (ctid, f) => store.incrementContentCounter(ctid, f),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
+    getContentBylined: (id) => store.getContentBylined(id),
     getContentByStatus: (s) => store.getContentByStatus(s),
     // Register-time near-duplicate warning (exact normalized content_hash).
     getContentByHash: (h) => store.getContentByHash(h),
