@@ -3,6 +3,7 @@
 const { nowMs } = require("../../../shared/time");
 const { TX_TYPES, ORG_MEMBER_STATUS } = require("../../../shared/constants");
 const invitedSchema = require("../schemas/org-member-invited");
+const cancelledSchema = require("../schemas/org-member-invite-cancelled");
 const addedSchema = require("../schemas/org-member-added");
 const removedSchema = require("../schemas/org-member-removed");
 const roster = require("../schemas/_org-members");
@@ -59,6 +60,23 @@ function createOrgMemberService({ dag, config, submitTx }) {
     };
   }
 
+  function cancelInvite({ urlTipId, body }) {
+    cancelledSchema.validateRequest(body, { ...deps(), urlTipId });
+    const tx = _submit(TX_TYPES.ORG_MEMBER_INVITE_CANCELLED, {
+      org_tip_id: body.org_tip_id,
+      member_tip_id: body.member_tip_id,
+      invite_tx_id: body.invite_tx_id,
+      claimed_at: body.claimed_at,
+      signer_tip_id: body.signer_tip_id,
+    }, body.signature);
+    log.info(`Org member invite cancelled: ${body.org_tip_id} -> ${body.member_tip_id} by ${body.signer_tip_id}`);
+    return {
+      org_tip_id: body.org_tip_id, member_tip_id: body.member_tip_id,
+      invite_tx_id: body.invite_tx_id, cancel_tx_id: tx.tx_id, cancelled_at: tx.timestamp,
+      confirmation: "proposed",
+    };
+  }
+
   function accept({ urlTipId, body }) {
     addedSchema.validateRequest(body, { ...deps(), urlTipId });
     const tx = _submit(TX_TYPES.ORG_MEMBER_ADDED, {
@@ -103,7 +121,10 @@ function createOrgMemberService({ dag, config, submitTx }) {
       limit: roster.memberLimit(dag, orgTipId),
       members: rows.filter(r => r.status === ORG_MEMBER_STATUS.ACTIVE).map(_view),
       pending_invites: rows.filter(r => roster.isOpenInvite(r, now)).map(_view),
-      ...(includeRemoved ? { removed: rows.filter(r => r.status === ORG_MEMBER_STATUS.REMOVED).map(_view) } : {}),
+      ...(includeRemoved ? {
+        removed: rows.filter(r => r.status === ORG_MEMBER_STATUS.REMOVED).map(_view),
+        cancelled: rows.filter(r => r.status === ORG_MEMBER_STATUS.CANCELLED).map(_view),
+      } : {}),
     };
   }
 
@@ -125,7 +146,7 @@ function createOrgMemberService({ dag, config, submitTx }) {
     };
   }
 
-  return { invite, accept, remove, listMembers, listInvites, listMemberships };
+  return { invite, cancelInvite, accept, remove, listMembers, listInvites, listMemberships };
 }
 
 module.exports = { createOrgMemberService };

@@ -135,6 +135,11 @@ function createRouter({ identityService, profileService, keyService, orgMemberSe
     res.status(202).json(orgMemberService.invite({ urlTipId: tipId, body: req.body }));
   }));
 
+  router.post("/identity/:tipId/members/cancel-invite", asyncHandler((req, res) => {
+    const tipId = decodeURIComponent(req.params.tipId);
+    res.status(202).json(orgMemberService.cancelInvite({ urlTipId: tipId, body: req.body }));
+  }));
+
   router.post("/identity/:tipId/members/accept", asyncHandler((req, res) => {
     const tipId = decodeURIComponent(req.params.tipId);
     res.status(202).json(orgMemberService.accept({ urlTipId: tipId, body: req.body }));

@@ -30,6 +30,7 @@ const { createIdentityService } = require(path.join(SRC, "services", "identity-s
 const { createRouter } = require(path.join(SRC, "routes", "identity"));
 const { errorHandler } = require(path.join(SRC, "middleware", "error-handler"));
 const invitedSchema = require(path.join(SRC, "schemas", "org-member-invited"));
+const cancelledSchema = require(path.join(SRC, "schemas", "org-member-invite-cancelled"));
 const addedSchema = require(path.join(SRC, "schemas", "org-member-added"));
 const removedSchema = require(path.join(SRC, "schemas", "org-member-removed"));
 
@@ -183,5 +184,48 @@ describe("org roster API", () => {
     expect(ghost.status).toBe(412);
     expect(ghost.body.error.code).toBe("invite_not_found");
     expect(h.commitProposed()).toMatchObject({ committed: 0 });
+  });
+});
+
+describe("org roster API: cancel-invite", () => {
+  function signedCancel(h, member, inviteTxId, signer) {
+    const body = { org_tip_id: ORG, member_tip_id: member, invite_tx_id: inviteTxId, claimed_at: nowMs(), signer_tip_id: signer };
+    body.signature = cancelledSchema.sign(cancelledSchema.buildSigningPayload(body), h.keys[signer].privateKey);
+    return body;
+  }
+
+  test("the org cancels, the invitee declines, a third party cannot; a cancelled invite cannot be accepted", async () => {
+    const h = harness();
+    const inv = await request(h.app).post(`/v1/identity/${enc(ORG)}/members/invite`).send(signedInvite(h, ALICE));
+    expect(inv.status).toBe(202);
+    h.commitProposed();
+
+    const byBob = await request(h.app).post(`/v1/identity/${enc(BOB)}/members/cancel-invite`).send(signedCancel(h, ALICE, inv.body.invite_tx_id, BOB));
+    expect(byBob.status).toBe(403);
+    expect(byBob.body.error.code).toBe("not_party");
+
+    const cancel = await request(h.app).post(`/v1/identity/${enc(ORG)}/members/cancel-invite`).send(signedCancel(h, ALICE, inv.body.invite_tx_id, ORG));
+    expect(cancel.status).toBe(202);
+    expect(cancel.body).toMatchObject({ invite_tx_id: inv.body.invite_tx_id, confirmation: "proposed" });
+    expect(h.commitProposed()).toMatchObject({ committed: 1 });
+
+    expect((await request(h.app).get(`/v1/identity/${enc(ALICE)}/invites`)).body.invites).toHaveLength(0);
+    const members = await request(h.app).get(`/v1/identity/${enc(ORG)}/members?include=removed`);
+    expect(members.body.pending_invites).toHaveLength(0);
+    expect(members.body.cancelled).toHaveLength(1);
+    expect(members.body.cancelled[0]).toMatchObject({ status: "cancelled", removed_by: ORG });
+
+    const late = await request(h.app).post(`/v1/identity/${enc(ALICE)}/members/accept`).send(signedAccept(h, ALICE, inv.body.invite_tx_id));
+    expect(late.status).toBe(409);
+    expect(late.body.error.code).toBe("invite_not_open");
+
+    // Invitee declines the next one herself.
+    const inv2 = await request(h.app).post(`/v1/identity/${enc(ORG)}/members/invite`).send(signedInvite(h, ALICE, "editor"));
+    expect(inv2.status).toBe(202);
+    h.commitProposed();
+    const decline = await request(h.app).post(`/v1/identity/${enc(ALICE)}/members/cancel-invite`).send(signedCancel(h, ALICE, inv2.body.invite_tx_id, ALICE));
+    expect(decline.status).toBe(202);
+    expect(h.commitProposed()).toMatchObject({ committed: 1 });
+    expect((await request(h.app).get(`/v1/identity/${enc(ORG)}/members?include=removed`)).body.cancelled).toHaveLength(2);
   });
 });

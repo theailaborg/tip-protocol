@@ -27,8 +27,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`?include=removed`), `GET /v1/identity/:member/invites`,
   `GET /v1/identity/:member/memberships`; `GET /v1/identity/:id` adds
   `members {active, limit}` for organizations and `member_of` for people.
+- `ORG_MEMBER_INVITE_CANCELLED`: the organization cancels an open invite or
+  the invitee declines it (`POST /v1/identity/:signer/members/cancel-invite`);
+  the row becomes `cancelled`, can no longer be accepted and no longer counts
+  as an open invite.
 - Content registration: an organization may list as `authors[]` only itself
-  or its active members; any other author is refused with `412 invalid_author`
+  or its active members, and an organization can appear as an author only on
+  content it signs itself (nobody attributes content to another org); any
+  other author is refused with `412 invalid_author`
   at the API and dropped at commit. `authors[]` is capped at
   `MAX_AUTHORS_PER_POST` (10, the spec value). The author checks (on-DAG,
   type match, roster) now also run at commit, where previously no author

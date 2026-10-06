@@ -43,6 +43,7 @@ const interestRegisteredSchema = require("../schemas/interest-registered");
 const linkPlatformSchema = require("../schemas/link-platform");
 const unlinkPlatformSchema = require("../schemas/unlink-platform");
 const orgMemberInvitedSchema = require("../schemas/org-member-invited");
+const orgMemberInviteCancelledSchema = require("../schemas/org-member-invite-cancelled");
 const orgMemberAddedSchema = require("../schemas/org-member-added");
 const orgMemberRemovedSchema = require("../schemas/org-member-removed");
 const orgRoster = require("../schemas/_org-members");
@@ -168,6 +169,7 @@ function _actorTipId(tx) {
       return d.org_tip_id ?? null;
     case TX_TYPES.ORG_MEMBER_ADDED:
       return d.member_tip_id ?? null;
+    case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
     case TX_TYPES.ORG_MEMBER_REMOVED:
       return d.signer_tip_id ?? null;
     // Content actions — actor field name varies by role.
@@ -637,6 +639,17 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.ORG_MEMBER_REMOVED && t.data?.add_tx_id === d.add_tx_id);
         if (inBatch) return { valid: false, error: `duplicate ORG_MEMBER_REMOVED in batch for ${d.add_tx_id}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED: {
+        // One outcome per invite per batch: a cancel and an accept of the
+        // same invite cannot both land.
+        if (!d.invite_tx_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          (t.tx_type === TX_TYPES.ORG_MEMBER_INVITE_CANCELLED || t.tx_type === TX_TYPES.ORG_MEMBER_ADDED)
+          && t.data?.invite_tx_id === d.invite_tx_id);
+        if (inBatch) return { valid: false, error: `invite ${d.invite_tx_id} already closed in this batch` };
         return { valid: true };
       }
 
@@ -1185,6 +1198,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
+      case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED: {
+        const r = orgMemberInviteCancelledSchema.verifyTx(tx, dag, _orgMemberOpts());
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
       case TX_TYPES.ORG_MEMBER_ADDED: {
         const r = orgMemberAddedSchema.verifyTx(tx, dag, _orgMemberOpts());
         return r.ok ? { valid: true } : { valid: false, error: r.error };
@@ -1605,6 +1623,17 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           accepted_at: null, add_tx_id: null,
           removed_at: null, remove_tx_id: null, removed_by: null,
         });
+        break;
+      }
+
+      case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED: {
+        const row = dag.getOrgMember(d.invite_tx_id);
+        if (row) {
+          dag.saveOrgMember({
+            ...row, status: ORG_MEMBER_STATUS.CANCELLED,
+            removed_at: tx.timestamp, remove_tx_id: tx.tx_id, removed_by: d.signer_tip_id,
+          });
+        }
         break;
       }
 
