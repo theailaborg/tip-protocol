@@ -315,6 +315,9 @@ const CNA_VERSIONS = Object.freeze({
 const CNA22_AUTHOR_KEYS = Object.freeze([
   "key_mode", "role", "signed", "tip_id", "tip_id_type",
 ]);
+// Spec MAX_AUTHORS_PER_POST. Enforced behind ORG_MEMBERS.ACTIVATION_MS (a new
+// commit-time reject rule), never inside the signed-payload builder.
+const MAX_AUTHORS_PER_POST = 10;
 
 // Canonical `attribution_mode` values per docs/CONTENT_SIGNING.md §2.
 // Locks the enum so any non-listed value is rejected at canonical-builder
@@ -1154,6 +1157,7 @@ module.exports = {
   DISPUTE_REASONS,
   CNA_VERSIONS,
   CNA22_AUTHOR_KEYS,
+  MAX_AUTHORS_PER_POST,
   ATTRIBUTION_MODES,
   ATTRIBUTION_MODE_VALUES,
   PERCEPTUAL_FINGERPRINT_KINDS,

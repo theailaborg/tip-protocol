@@ -27,9 +27,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`?include=removed`), `GET /v1/identity/:member/invites`,
   `GET /v1/identity/:member/memberships`; `GET /v1/identity/:id` adds
   `members {active, limit}` for organizations and `member_of` for people.
-- Rollout: the three tx types are new commit rules, so every node rejects them
-  before `ORG_MEMBERS.ACTIVATION_MS` (`TIP_ORG_MEMBERS_ACTIVATION_MS` overrides
-  it on an isolated cluster). Upgrade the whole fleet before that epoch.
+- Content registration: an organization may list as `authors[]` only itself
+  or its active members; any other author is refused with `412 invalid_author`
+  at the API and dropped at commit. `authors[]` is capped at
+  `MAX_AUTHORS_PER_POST` (10, the spec value). The author checks (on-DAG,
+  type match, roster) now also run at commit, where previously no author
+  check ran at all. Nothing in the signed CNA-2.2 payload changes.
+- Rollout: the three tx types and the author rules are new commit rules, so
+  every node applies them only from `ORG_MEMBERS.ACTIVATION_MS`
+  (`TIP_ORG_MEMBERS_ACTIVATION_MS` overrides it on an isolated cluster).
+  Upgrade the whole fleet before that epoch.
 
 ### Fixed
 

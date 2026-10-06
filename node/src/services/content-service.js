@@ -253,7 +253,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   }
 
   async function register(body) {
-    contentRegisterSchema.validateRequest(body, { mediaLimits: config.mediaLimits, dag });
+    contentRegisterSchema.validateRequest(body, {
+      mediaLimits: config.mediaLimits, dag, activationMs: config.orgMembersActivationMs,
+    });
 
     const {
       signer_tip_id, origin_code, content, signature,

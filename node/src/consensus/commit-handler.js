@@ -994,7 +994,10 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           signer_tip_id: d.signer_tip_id, ctid: d.ctid, origin_code: d.origin_code,
           registered_urls: d.registered_urls,
         });
-        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+        if (!r.valid) return { valid: false, error: r.error.message };
+        // Authors: DAG presence, type and org roster, activation-gated.
+        const a = contentRegisterSchema.verifyAuthors(tx, dag, _orgMemberOpts());
+        return a.ok ? { valid: true } : { valid: false, error: a.error };
       }
 
       case TX_TYPES.CONTENT_VERIFIED: {
