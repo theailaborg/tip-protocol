@@ -85,13 +85,13 @@ const removeBody = (ctx, org, member, addTxId, by, at) =>
   signed(removedSchema, { org_tip_id: org, member_tip_id: member, add_tx_id: addTxId, claimed_at: at, signer_tip_id: by }, ctx.keys[by]);
 
 let seq = 0;
-function contentBody(ctx, signer, authors, mode = "employed") {
+function contentBody(ctx, signer, authors, mode = "employed", authorExtra = {}) {
   const text = `edge ${++seq}`;
   const hash = shake256(tipNormalize(text));
   const b = {
     signer_tip_id: signer, origin_code: "OH", content: text, media_canonical_hash: null, content_type_hint: null,
     cna_version: contentSchema.CURRENT_CNA_VERSION, attribution_mode: mode, extras: {}, registered_urls: [],
-    authors: authors.map(a => ({ tip_id: a, tip_id_type: [ORG, ORG2].includes(a) ? "organization" : "personal", role: "byline" })),
+    authors: authors.map(a => ({ tip_id: a, tip_id_type: [ORG, ORG2].includes(a) ? "organization" : "personal", role: "byline", ...authorExtra })),
   };
   b.signature = contentSchema.sign(contentSchema.buildSigningPayload(b, hash), ctx.keys[signer].privateKey);
   return { body: b, hash };
@@ -124,8 +124,8 @@ function acceptedEverywhere(ctx, schema, txType, body, urlTipId, at) {
   expect(commit(ctx, tx)).toMatchObject({ committed: 1, dropped: 0 });
   return tx;
 }
-function contentRejected(ctx, signer, authors, code, mode) {
-  const c = contentBody(ctx, signer, authors, mode);
+function contentRejected(ctx, signer, authors, code, mode, authorExtra) {
+  const c = contentBody(ctx, signer, authors, mode, authorExtra);
   expect(api(contentSchema, c.body, ctx, undefined, next())).toMatchObject({ ok: false, code });
   expect(commit(ctx, contentTx(ctx, c, next()))).toMatchObject({ committed: 0, dropped: 1 });
 }
@@ -383,5 +383,23 @@ describe("9. review follow-ups: batch ordering, claim freshness at commit, in-ba
     ctx.dag.addRevocation(ALICE, "REVOKE_VOLUNTARY", next(), "rev-1");
     contentRejected(ctx, ORG, [ALICE], "invalid_author");
     contentRejected(ctx, BOB, [BOB, ALICE], "invalid_author");
+  });
+});
+
+describe("10. an author cannot claim a co-signature that is not in the envelope", () => {
+  test("signed:true or key_mode:co_signed is refused at API and DAG for every signer type", () => {
+    const ctx = setup();
+    contentRejected(ctx, ALICE, [ALICE], "author_cosignature_missing", "self", { signed: true });
+    contentRejected(ctx, ALICE, [ALICE], "author_cosignature_missing", "self", { key_mode: "co_signed" });
+    contentRejected(ctx, ORG, [ORG], "author_cosignature_missing", "self", { signed: true });
+    joined(ctx, ORG, ALICE);
+    contentRejected(ctx, ORG, [ALICE], "author_cosignature_missing", "employed", { signed: true });
+    contentAccepted(ctx, ORG, [ALICE]);
+    contentAccepted(ctx, ALICE, [ALICE], "self");
+  });
+  test("before the activation epoch the claim is still recorded as before", () => {
+    const ctxGate = (() => { const c = setup(); c.handler = createCommitHandler({ dag: c.dag, scoring: initScoring(c.dag, { nodeId: NODE_ID, nodeRegisteredId: NODE_ID }), config: { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, orgMembersActivationMs: Number.MAX_SAFE_INTEGER } }); return c; })();
+    const c = contentBody(ctxGate, ALICE, [ALICE], "self", { signed: true });
+    expect(commit(ctxGate, contentTx(ctxGate, c, next()))).toMatchObject({ committed: 1, dropped: 0 });
   });
 });

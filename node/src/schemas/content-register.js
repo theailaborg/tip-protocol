@@ -122,6 +122,11 @@ function _checkAuthorRoster(signerTipId, authors, dag, atMs, opts) {
   // revoked identity cannot be attributed either (a revoked member keeps
   // its roster row, so this is what retires it as an author).
   for (const a of authors) {
+    // `signed` / `co_signed` claim a co-signature in the envelope; none can
+    // be supplied yet, so the claim is always false and must not be recorded.
+    if (a.signed === true || a.key_mode === "co_signed") {
+      throw schemaError(400, `Author ${a.tip_id} claims a co-signature but none is present`, "author_cosignature_missing");
+    }
     if (typeof dag.isRevoked === "function" && dag.isRevoked(a.tip_id)) {
       throw schemaError(412, `Author ${a.tip_id} is revoked`, "invalid_author");
     }

@@ -37,7 +37,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and is stored on the row (`invited_claim`, migration 013); the same signed
   invite is refused a second time (`invite_replayed`). Invites per
   organization are capped per rolling 24 h, any status (`invite_rate_limited`),
-  so invite/cancel loops cannot grow the table. The signed `accepted_at` /
+  so invite/cancel loops cannot grow the table. An `authors[]` entry that
+  claims a co-signature (`signed: true` or `key_mode: "co_signed"`) without one
+  in the envelope is refused (`author_cosignature_missing`); co-signatures are
+  not implemented, so the chain no longer records the false claim. The signed `accepted_at` /
   `claimed_at` of acceptances, removals and cancellations are held to the same
   window at commit, so a relayer cannot re-wrap a rejected acceptance later or
   backdate `tx.timestamp` past an invite's TTL. Open and daily invite caps
