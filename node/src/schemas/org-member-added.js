@@ -24,7 +24,7 @@
 
 const { signPayload, verifyPayload, schemaError, canonicalJson } = require("./_common");
 const {
-  TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS, CLAIM_MAX_AGE_MS, ORG_MEMBER_STATUS,
+  TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS, ORG_MEMBER_STATUS,
 } = require("../../../shared/constants");
 const { isValidMs, nowMs } = require("../../../shared/time");
 const roster = require("./_org-members");
@@ -36,6 +36,10 @@ const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.MEMBER_TIP_ID;
 
 /** State predicate shared by the API gate and consensus replay. */
 function checkAccept(d, dag, atMs) {
+  // A rejected acceptance's signature is public; without this a relayer could
+  // re-wrap it once a seat frees, or backdate tx.timestamp past the TTL.
+  const fresh = roster.checkClaimFresh(d.accepted_at, atMs, "Acceptance");
+  if (!fresh.ok) return fresh;
   const row = dag.getOrgMember(d.invite_tx_id);
   if (!row) return roster.fail(412, `Invite not found: ${d.invite_tx_id}`, "invite_not_found");
   if (row.org_tip_id !== d.org_tip_id || row.member_tip_id !== d.member_tip_id) {
@@ -84,9 +88,7 @@ function validateRequest(body, deps) {
 
   const now = deps && typeof deps.now === "number" ? deps.now : nowMs();
   roster.throwIfFailed(roster.checkActive(now, deps));
-  if (now - body.accepted_at > CLAIM_MAX_AGE_MS) {
-    throw schemaError(400, "Acceptance signature has expired (max 15 minutes)", "claim_expired");
-  }
+  roster.throwIfFailed(roster.checkClaimFresh(body.accepted_at, now, "Acceptance"));
 
   if (!deps || !deps.dag) return;
   const { dag } = deps;

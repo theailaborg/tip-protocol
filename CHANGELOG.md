@@ -31,6 +31,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the invitee declines it (`POST /v1/identity/:signer/members/cancel-invite`);
   the row becomes `cancelled`, can no longer be accepted and no longer counts
   as an open invite.
+- Invite replay guard: a committed invite's body signature is public, so the
+  signed `invited_at` must lie within the claim window of the tx at commit
+  and is stored on the row (`invited_claim`, migration 013); the same signed
+  invite is refused a second time (`invite_replayed`). Invites per
+  organization are capped per rolling 24 h, any status (`invite_rate_limited`),
+  so invite/cancel loops cannot grow the table. The signed `accepted_at` /
+  `claimed_at` of acceptances, removals and cancellations are held to the same
+  window at commit, so a relayer cannot re-wrap a rejected acceptance later or
+  backdate `tx.timestamp` past an invite's TTL. Open and daily invite caps
+  are also counted inside a single batch, a cancel ordered before an accept of
+  the same invite wins, and a revoked identity can no longer be listed as an
+  author. A malformed `TIP_ORG_MEMBERS_ACTIVATION_MS` refuses to boot instead
+  of silently using the default.
 - Content registration: an organization may list as `authors[]` only itself
   or its active members, and an organization can appear as an author only on
   content it signs itself (nobody attributes content to another org); any

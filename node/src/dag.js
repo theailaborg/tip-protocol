@@ -245,8 +245,10 @@ function _canonPlatformLink(r) {
   };
 }
 // Org members: every column participates in state_merkle_root. One row per
-// invite (pk = invite_tx_id); status walks invited -> active -> removed.
-// Signatures are reachable through the three tx ids, not duplicated here.
+// invite (pk = invite_tx_id); status walks invited -> active -> removed, or
+// invited -> cancelled (removed_* then hold the cancel). Signatures are
+// reachable through the tx ids, not duplicated here. invited_claim is
+// strip-when-absent so rows written before the column keep their hash.
 function _canonOrgMember(r) {
   return {
     invite_tx_id: r.invite_tx_id,
@@ -255,6 +257,7 @@ function _canonOrgMember(r) {
     role: r.role,
     status: r.status,
     invited_at: r.invited_at,
+    ...(r.invited_claim != null ? { invited_claim: r.invited_claim } : {}),
     accepted_at: r.accepted_at ?? null,
     add_tx_id: r.add_tx_id ?? null,
     removed_at: r.removed_at ?? null,
@@ -2671,9 +2674,9 @@ class SQLiteStore {
 
       saveOrgMember: this.db.prepare(
         `INSERT OR REPLACE INTO org_members
-         (invite_tx_id, org_tip_id, member_tip_id, role, status, invited_at,
+         (invite_tx_id, org_tip_id, member_tip_id, role, status, invited_at, invited_claim,
           accepted_at, add_tx_id, removed_at, remove_tx_id, removed_by)
-         VALUES (@invite_tx_id, @org_tip_id, @member_tip_id, @role, @status, @invited_at,
+         VALUES (@invite_tx_id, @org_tip_id, @member_tip_id, @role, @status, @invited_at, @invited_claim,
                  @accepted_at, @add_tx_id, @removed_at, @remove_tx_id, @removed_by)`
       ),
       getOrgMember: this.db.prepare("SELECT * FROM org_members WHERE invite_tx_id=?"),
@@ -3583,7 +3586,7 @@ class SQLiteStore {
   }
 
   // ── Org members (canonical) ──────────────────────────────────────────────
-  saveOrgMember(rec) { this._stmts.saveOrgMember.run(_canonOrgMember(rec)); }
+  saveOrgMember(rec) { this._stmts.saveOrgMember.run({ invited_claim: null, ..._canonOrgMember(rec) }); }
   getOrgMember(inviteTxId) { return this._stmts.getOrgMember.get(inviteTxId) || null; }
   getOrgMemberByAddTxId(addTxId) { return this._stmts.getOrgMemberByAddTxId.get(addTxId) || null; }
   getOrgMembersByOrg(orgTipId) { return this._stmts.getOrgMembersByOrg.all(orgTipId); }

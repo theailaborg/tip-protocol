@@ -118,8 +118,13 @@ function _checkAuthorRoster(signerTipId, authors, dag, atMs, opts) {
     throw schemaError(400, `authors[] may have at most ${MAX_AUTHORS_PER_POST} entries`, "authors_too_many");
   }
   // An organization is an author only of what it signs itself: nobody
-  // attributes content to another org, and an org never lists one.
+  // attributes content to another org, and an org never lists one. A
+  // revoked identity cannot be attributed either (a revoked member keeps
+  // its roster row, so this is what retires it as an author).
   for (const a of authors) {
+    if (typeof dag.isRevoked === "function" && dag.isRevoked(a.tip_id)) {
+      throw schemaError(412, `Author ${a.tip_id} is revoked`, "invalid_author");
+    }
     if (a.tip_id === signerTipId) continue;
     const author = dag.getIdentity(a.tip_id);
     if ((author?.tip_id_type || TIP_ID_TYPES.PERSONAL) === TIP_ID_TYPES.ORGANIZATION) {

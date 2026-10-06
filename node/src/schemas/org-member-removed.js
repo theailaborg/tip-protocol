@@ -24,7 +24,7 @@
 
 const { signPayload, verifyPayload, schemaError, canonicalJson } = require("./_common");
 const {
-  TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS, CLAIM_MAX_AGE_MS, ORG_MEMBER_STATUS,
+  TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS, ORG_MEMBER_STATUS,
 } = require("../../../shared/constants");
 const { isValidMs, nowMs } = require("../../../shared/time");
 const roster = require("./_org-members");
@@ -35,7 +35,9 @@ const SIGNED_BY = SIGNED_BY_KIND.SUBJECT;
 const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.SIGNER_TIP_ID;
 
 /** State predicate shared by the API gate and consensus replay. */
-function checkRemove(d, dag) {
+function checkRemove(d, dag, atMs) {
+  const fresh = roster.checkClaimFresh(d.claimed_at, atMs, "Removal");
+  if (!fresh.ok) return fresh;
   if (d.signer_tip_id !== d.org_tip_id && d.signer_tip_id !== d.member_tip_id) {
     return roster.fail(403, "Only the organization or the member can end a membership", "not_party");
   }
@@ -88,13 +90,10 @@ function validateRequest(body, deps) {
 
   const now = deps && typeof deps.now === "number" ? deps.now : nowMs();
   roster.throwIfFailed(roster.checkActive(now, deps));
-  if (now - body.claimed_at > CLAIM_MAX_AGE_MS) {
-    throw schemaError(400, "Claim has expired (max 15 minutes)", "claim_expired");
-  }
 
   if (!deps || !deps.dag) return;
   const { dag } = deps;
-  roster.throwIfFailed(checkRemove(body, dag));
+  roster.throwIfFailed(checkRemove(body, dag, now));
 
   const identity = dag.getIdentity(body.signer_tip_id);
   if (!verifyPayload(buildSigningPayload(body), body.signature, identity.public_key)) {
@@ -148,7 +147,7 @@ function verifyTx(tx, dag, opts) {
     if (err && err.status) return roster.fail(err.status, err.error || err.message, err.code);
     throw err;
   }
-  return checkRemove(d, dag);
+  return checkRemove(d, dag, tx.timestamp);
 }
 
 module.exports = {

@@ -163,9 +163,12 @@ describe("ORG_MEMBER_ADDED state machine", () => {
     expect(added.verifyTx(tx({ ...data(), member_tip_id: OTHER }), fakeDag({ identities: ids, rows: [inviteRow()] }), ACTIVE).code).toBe("invite_mismatch");
     expect(added.verifyTx(tx(), fakeDag({ identities: ids, rows: [activeRow()] }), ACTIVE).code).toBe("invite_not_open");
     expect(added.verifyTx(tx(), fakeDag({ identities: ids, rows: [inviteRow({ status: "removed" })] }), ACTIVE).code).toBe("invite_not_open");
-    const late = tx(data(), T + ORG_MEMBERS.INVITE_TTL_MS + 1);
+    // accepted_at must track the tx timestamp (claim freshness runs first).
+    const lateTs = T + ORG_MEMBERS.INVITE_TTL_MS + 1;
+    const late = tx({ ...data(), accepted_at: lateTs }, lateTs);
     expect(added.verifyTx(late, fakeDag({ identities: ids, rows: [inviteRow()] }), ACTIVE).code).toBe("invite_expired");
-    expect(added.verifyTx(tx(data(), T + ORG_MEMBERS.INVITE_TTL_MS), fakeDag({ identities: ids, rows: [inviteRow()] }), ACTIVE)).toEqual({ ok: true });
+    const edgeTs = T + ORG_MEMBERS.INVITE_TTL_MS;
+    expect(added.verifyTx(tx({ ...data(), accepted_at: edgeTs }, edgeTs), fakeDag({ identities: ids, rows: [inviteRow()] }), ACTIVE)).toEqual({ ok: true });
   });
 
   test("the seat limit is enforced at acceptance: an invite sent while free fails once the seat is gone", () => {

@@ -1069,6 +1069,15 @@ const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15
 const ORG_MEMBERS = Object.freeze({
   FREE_MEMBER_LIMIT: 1,
   OPEN_INVITE_MULTIPLIER: 3,
+  // Invites an org may create per rolling 24 h, any status: limit x this.
+  // Cancelling frees an open slot at once, so without it an org could grow
+  // the table without bound through invite/cancel loops.
+  INVITES_PER_DAY_MULTIPLIER: 10,
+  // Commit-time freshness of the signed invited_at against tx.timestamp
+  // (CLAIM_MAX_AGE_MS behind, this much ahead for client clock skew). A
+  // committed invite's body signature is public, so without this a
+  // cancelled invite could be resubmitted by anyone as a new tx.
+  INVITE_CLAIM_SKEW_MS: 60 * 1000,
   INVITE_TTL_MS: 7 * 24 * 60 * 60 * 1000,
   ROLE_MAX_LENGTH: 64,
   ROLE_PATTERN: /^[a-z][a-z0-9_-]{0,63}$/,

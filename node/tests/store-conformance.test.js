@@ -666,10 +666,11 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
 
     dag.saveOrgMember({
       invite_tx_id: inviteTxId, org_tip_id: org, member_tip_id: member, role: "author",
-      status: "invited", invited_at: T0, accepted_at: null, add_tx_id: null,
+      status: "invited", invited_at: T0, invited_claim: T0 - 5, accepted_at: null, add_tx_id: null,
       removed_at: null, remove_tx_id: null, removed_by: null,
     });
     expect(dag.getOrgMember(inviteTxId)).toEqual(expect.objectContaining({ status: "invited", role: "author" }));
+    expect(Number(dag.getOrgMember(inviteTxId).invited_claim)).toBe(T0 - 5);
     expect(dag.getOrgMembersByOrg(org).map(r => r.member_tip_id)).toEqual([member]);
     expect(dag.getOrgMembersByMember(member).map(r => r.org_tip_id)).toEqual([org]);
     expect(dag.getOrgMemberByAddTxId(addTxId)).toBeNull();
