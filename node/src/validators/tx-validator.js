@@ -97,6 +97,13 @@ const SCHEMA = {
     required: ["org_tip_id", "member_tip_id", "role", "invited_at"],
     types: { org_tip_id: "string", member_tip_id: "string", role: "string", invited_at: "number" },
   },
+  [TX_TYPES.ORG_MEMBER_INVITE_CANCELLED]: {
+    required: ["org_tip_id", "member_tip_id", "invite_tx_id", "claimed_at", "signer_tip_id"],
+    types: {
+      org_tip_id: "string", member_tip_id: "string", invite_tx_id: "string",
+      claimed_at: "number", signer_tip_id: "string",
+    },
+  },
   [TX_TYPES.ORG_MEMBER_ADDED]: {
     required: ["org_tip_id", "member_tip_id", "invite_tx_id", "accepted_at"],
     types: { org_tip_id: "string", member_tip_id: "string", invite_tx_id: "string", accepted_at: "number" },
@@ -568,6 +575,7 @@ function validateBusinessRules(tx, dag = null) {
     }
 
     case TX_TYPES.ORG_MEMBER_INVITED:
+    case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
     case TX_TYPES.ORG_MEMBER_ADDED:
     case TX_TYPES.ORG_MEMBER_REMOVED: {
       // Shape only: the schema's buildSigningPayload rejects a malformed
@@ -762,6 +770,7 @@ function validateState(tx, dag) {
       break;
     }
 
+    case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
     case TX_TYPES.ORG_MEMBER_REMOVED: {
       if (d.signer_tip_id && dag.isRevoked(d.signer_tip_id)) errors.push(`TIP-ID is revoked: ${d.signer_tip_id}`);
       break;

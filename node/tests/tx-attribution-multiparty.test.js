@@ -160,6 +160,7 @@ describe("subjectTipIds — completeness guard (every tx_type classified)", () =
     [TX_TYPES.ORG_MEMBER_INVITED]: ["org_tip_id", "member_tip_id"],
     [TX_TYPES.ORG_MEMBER_ADDED]: ["member_tip_id", "org_tip_id"],
     [TX_TYPES.ORG_MEMBER_REMOVED]: ["signer_tip_id", "org_tip_id", "member_tip_id"],
+    [TX_TYPES.ORG_MEMBER_INVITE_CANCELLED]: ["signer_tip_id", "org_tip_id", "member_tip_id"],
     [TX_TYPES.VP_REGISTERED]: [],
     [TX_TYPES.VP_SUSPENDED]: [],
     [TX_TYPES.NODE_REGISTERED]: [],

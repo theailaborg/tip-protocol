@@ -242,6 +242,17 @@
     },
     "canonical": "{\"invited_at\":1767225600000,\"member_tip_id\":\"tip://id/IN-member\",\"org_tip_id\":\"tip://id/GB-org\",\"role\":\"author\"}"
   },
+  "ORG_MEMBER_INVITE_CANCELLED:base": {
+    "tx_type": "ORG_MEMBER_INVITE_CANCELLED",
+    "data": {
+      "org_tip_id": "tip://id/GB-org",
+      "member_tip_id": "tip://id/IN-member",
+      "invite_tx_id": "invite-deadbeef",
+      "claimed_at": 1767225600000,
+      "signer_tip_id": "tip://id/IN-member"
+    },
+    "canonical": "{\"claimed_at\":1767225600000,\"invite_tx_id\":\"invite-deadbeef\",\"member_tip_id\":\"tip://id/IN-member\",\"org_tip_id\":\"tip://id/GB-org\",\"signer_tip_id\":\"tip://id/IN-member\"}"
+  },
   "ORG_MEMBER_ADDED:base": {
     "tx_type": "ORG_MEMBER_ADDED",
     "data": {

@@ -117,6 +117,15 @@ function _checkAuthorRoster(signerTipId, authors, dag, atMs, opts) {
   if (authors.length > MAX_AUTHORS_PER_POST) {
     throw schemaError(400, `authors[] may have at most ${MAX_AUTHORS_PER_POST} entries`, "authors_too_many");
   }
+  // An organization is an author only of what it signs itself: nobody
+  // attributes content to another org, and an org never lists one.
+  for (const a of authors) {
+    if (a.tip_id === signerTipId) continue;
+    const author = dag.getIdentity(a.tip_id);
+    if ((author?.tip_id_type || TIP_ID_TYPES.PERSONAL) === TIP_ID_TYPES.ORGANIZATION) {
+      throw schemaError(412, `Author ${a.tip_id} is an organization and not the signer`, "invalid_author");
+    }
+  }
   const signer = dag.getIdentity(signerTipId);
   if ((signer?.tip_id_type || TIP_ID_TYPES.PERSONAL) !== TIP_ID_TYPES.ORGANIZATION) return;
   if (typeof dag.getOrgMembersByOrg !== "function") return;

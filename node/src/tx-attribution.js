@@ -75,6 +75,7 @@ function subjectTipIds(tx) {
       return _clean([d.org_tip_id, d.member_tip_id]);
     case TX_TYPES.ORG_MEMBER_ADDED:
       return _clean([d.member_tip_id, d.org_tip_id]);
+    case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
     case TX_TYPES.ORG_MEMBER_REMOVED:
       return _clean([d.signer_tip_id, d.org_tip_id, d.member_tip_id]);
 

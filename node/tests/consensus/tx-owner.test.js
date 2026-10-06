@@ -29,6 +29,7 @@ const OWNER_SPEC = {
   [TX_TYPES.ORG_MEMBER_INVITED]: [{ org_tip_id: ID }, "identity", ID],
   [TX_TYPES.ORG_MEMBER_ADDED]: [{ member_tip_id: ID }, "identity", ID],
   [TX_TYPES.ORG_MEMBER_REMOVED]: [{ signer_tip_id: ID }, "identity", ID],
+  [TX_TYPES.ORG_MEMBER_INVITE_CANCELLED]: [{ signer_tip_id: ID }, "identity", ID],
   [TX_TYPES.KEY_ROTATED]: [{ tip_id: ID }, "identity", ID],
   [TX_TYPES.KEY_RECOVERY]: [{ vp_id: VP }, "vp", VP],
   [TX_TYPES.PRESCAN_REVIEW_TRIGGERED]: [{ node_id: NODE }, "node", NODE],

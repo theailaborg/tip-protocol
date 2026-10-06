@@ -624,6 +624,7 @@ const TX_TYPES = Object.freeze({
   // invited person (consent on both sides is on chain), REMOVED by either
   // party. Rows live in org_members (canonical); see schemas/_org-members.js.
   ORG_MEMBER_INVITED: "ORG_MEMBER_INVITED",
+  ORG_MEMBER_INVITE_CANCELLED: "ORG_MEMBER_INVITE_CANCELLED",
   ORG_MEMBER_ADDED: "ORG_MEMBER_ADDED",
   ORG_MEMBER_REMOVED: "ORG_MEMBER_REMOVED",
   // GH #60 — key rotation + recovery. Both append a new entity_keys row
@@ -1075,6 +1076,7 @@ const ORG_MEMBERS = Object.freeze({
 });
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",
+  CANCELLED: "cancelled",
   ACTIVE: "active",
   REMOVED: "removed",
 });
