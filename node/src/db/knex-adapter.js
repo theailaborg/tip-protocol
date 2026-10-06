@@ -1524,6 +1524,7 @@ class KnexAdapter {
       role: rec.role,
       status: rec.status,
       invited_at: rec.invited_at,
+      invited_claim: rec.invited_claim ?? null,
       accepted_at: rec.accepted_at ?? null,
       add_tx_id: rec.add_tx_id ?? null,
       removed_at: rec.removed_at ?? null,

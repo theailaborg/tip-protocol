@@ -288,3 +288,100 @@ describe("7. an open invite can be cancelled by the org or declined by the invit
     expect(ctx.dag.getOrgMember(inv.tx_id).status).toBe(ORG_MEMBER_STATUS.ACTIVE);
   });
 });
+
+describe("8. a committed invite signature cannot be replayed; invites per day are capped", () => {
+  test("after cancellation the identical signed invite is refused at API and DAG", () => {
+    const ctx = setup();
+    const body = inviteBody(ctx, ORG, ALICE, next());
+    const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, body, ORG, ts);
+    acceptedEverywhere(ctx, cancelledSchema, TX_TYPES.ORG_MEMBER_INVITE_CANCELLED, cancelBody(ctx, ORG, ALICE, inv.tx_id, ORG, next()), ORG, ts);
+    // Same body, same signature, new envelope: the attacker's replay.
+    const at = next();
+    rejectedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, body, ORG, at, "invite_replayed");
+    expect(ctx.service.listInvites(ALICE).invites).toHaveLength(0);
+    // A genuinely new invite (fresh signed time) still works.
+    acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
+  });
+  test("a signed invite older than the claim window is dropped at commit even without a prior row", () => {
+    const ctx = setup();
+    const at = next();
+    // Signed 16 minutes before the tx is built: outside CLAIM_MAX_AGE_MS.
+    const body = inviteBody(ctx, ORG, ALICE, at - 16 * 60 * 1000);
+    expect(api(invitedSchema, body, ctx, ORG, at)).toMatchObject({ ok: false, code: "claim_expired" });
+    expect(commit(ctx, txOf(ctx, TX_TYPES.ORG_MEMBER_INVITED, body, at))).toMatchObject({ committed: 0, dropped: 1 });
+  });
+  test("the per-day invite cap counts cancelled invites too", () => {
+    const ctx = setup();
+    const dayCap = ORG_MEMBERS.FREE_MEMBER_LIMIT * ORG_MEMBERS.INVITES_PER_DAY_MULTIPLIER;
+    for (let i = 0; i < dayCap; i++) {
+      const who = i % 2 ? BOB : ALICE;
+      const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, who, next()), ORG, ts);
+      acceptedEverywhere(ctx, cancelledSchema, TX_TYPES.ORG_MEMBER_INVITE_CANCELLED, cancelBody(ctx, ORG, who, inv.tx_id, ORG, next()), ORG, ts);
+    }
+    const at = next();
+    rejectedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, at), ORG, at, "invite_rate_limited");
+    expect(ctx.dag.getOrgMembersByOrg(ORG)).toHaveLength(dayCap);
+  });
+});
+
+describe("9. review follow-ups: batch ordering, claim freshness at commit, in-batch invite caps, revoked members", () => {
+  test("cancel then accept of the same invite in one batch: the cancel wins", () => {
+    const ctx = setup();
+    const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
+    const can = txOf(ctx, TX_TYPES.ORG_MEMBER_INVITE_CANCELLED, cancelBody(ctx, ORG, ALICE, inv.tx_id, ORG, next()), ts);
+    const acc = txOf(ctx, TX_TYPES.ORG_MEMBER_ADDED, acceptBody(ctx, ORG, ALICE, inv.tx_id, next()), ts);
+    expect(ctx.handler.commitOrderedTxs([can, acc], ++round)).toMatchObject({ committed: 1, dropped: 1 });
+    expect(ctx.dag.getOrgMember(inv.tx_id)).toMatchObject({ status: ORG_MEMBER_STATUS.CANCELLED, removed_by: ORG, add_tx_id: null });
+  });
+
+  test("a stale signed acceptance, removal or cancellation is dropped at commit (relayer cannot re-wrap or backdate)", () => {
+    const ctx = setup();
+    const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
+    // Bob's invite is created while the seat is still free; it stays open for the cancel probe below.
+    const inv2 = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, BOB, next()), ORG, ts);
+    let at = next();
+    const oldAccept = acceptBody(ctx, ORG, ALICE, inv.tx_id, at - 16 * 60 * 1000);
+    expect(api(addedSchema, oldAccept, ctx, ALICE, at)).toMatchObject({ ok: false, code: "claim_expired" });
+    expect(commit(ctx, txOf(ctx, TX_TYPES.ORG_MEMBER_ADDED, oldAccept, at))).toMatchObject({ committed: 0, dropped: 1 });
+    // Backdating tx.timestamp to the claim does not help: the relayed envelope must still be inside the window of the claim.
+    const futureClaim = acceptBody(ctx, ORG, ALICE, inv.tx_id, at + 2 * 60 * 1000);
+    expect(commit(ctx, txOf(ctx, TX_TYPES.ORG_MEMBER_ADDED, futureClaim, at))).toMatchObject({ committed: 0, dropped: 1 });
+    const acc = acceptedEverywhere(ctx, addedSchema, TX_TYPES.ORG_MEMBER_ADDED, acceptBody(ctx, ORG, ALICE, inv.tx_id, next()), ALICE, ts);
+    at = next();
+    const oldRemove = removeBody(ctx, ORG, ALICE, acc.tx_id, ORG, at - 16 * 60 * 1000);
+    rejectedEverywhere(ctx, removedSchema, TX_TYPES.ORG_MEMBER_REMOVED, oldRemove, ORG, at, "claim_expired");
+    expect(ctx.dag.getOrgMember(inv.tx_id).status).toBe(ORG_MEMBER_STATUS.ACTIVE);
+    at = next();
+    const oldCancel = cancelBody(ctx, ORG, BOB, inv2.tx_id, ORG, at - 16 * 60 * 1000);
+    rejectedEverywhere(ctx, cancelledSchema, TX_TYPES.ORG_MEMBER_INVITE_CANCELLED, oldCancel, ORG, at, "claim_expired");
+    expect(ctx.dag.getOrgMember(inv2.tx_id).status).toBe(ORG_MEMBER_STATUS.INVITED);
+  });
+
+  test("the open-invite cap holds inside one batch", () => {
+    const ctx = setup();
+    const extra = ["tip://id/CA-acbdbe5b9f09edb7", "tip://id/US-9350d182f5f8e573"];
+    for (const id of extra) {
+      ctx.keys[id] = generateMLDSAKeypair();
+      ctx.dag.saveIdentity({
+        tip_id: id, region: id.slice(9, 11), public_key: ctx.keys[id].publicKey, root_public_key: "00",
+        vp_id: "tip://vp/v1", verification_tier: "T1", founding: false, status: "active",
+        tip_id_type: "personal", registered_at: BASE_TS, tx_id: seedAnchorTx(ctx.dag, "REGISTER_IDENTITY", { tip_id: id }),
+      });
+    }
+    const cap = ORG_MEMBERS.FREE_MEMBER_LIMIT * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
+    const people = [ALICE, BOB, ...extra];
+    expect(people.length).toBe(cap + 1);
+    const txs = people.map(p => txOf(ctx, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, p, next()), ts));
+    expect(ctx.handler.commitOrderedTxs(txs, ++round)).toMatchObject({ committed: cap, dropped: 1 });
+    expect(ctx.service.listMembers(ORG).pending_invites).toHaveLength(cap);
+  });
+
+  test("a revoked member cannot be an author at API or DAG", () => {
+    const ctx = setup();
+    joined(ctx, ORG, ALICE);
+    contentAccepted(ctx, ORG, [ALICE]);
+    ctx.dag.addRevocation(ALICE, "REVOKE_VOLUNTARY", next(), "rev-1");
+    contentRejected(ctx, ORG, [ALICE], "invalid_author");
+    contentRejected(ctx, BOB, [BOB, ALICE], "invalid_author");
+  });
+});

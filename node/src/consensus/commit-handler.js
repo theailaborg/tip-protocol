@@ -623,7 +623,27 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           && t.data?.org_tip_id === d.org_tip_id
           && t.data?.member_tip_id === d.member_tip_id);
         if (inBatch) return { valid: false, error: `duplicate roster change in batch for (${d.org_tip_id}, ${d.member_tip_id})` };
+        if (tx.tx_type === TX_TYPES.ORG_MEMBER_INVITED) {
+          // Earlier invites in this batch count against the open and daily
+          // caps the committed-row check cannot see.
+          const inBatchInvites = validated.filter(t =>
+            t.tx_type === TX_TYPES.ORG_MEMBER_INVITED && t.data?.org_tip_id === d.org_tip_id).length;
+          const openNow = orgRoster.openInvites(dag, d.org_tip_id, tx.timestamp).length;
+          if (openNow + inBatchInvites >= orgRoster.openInviteLimit(dag, d.org_tip_id)) {
+            return { valid: false, error: `open invite cap reached for ${d.org_tip_id} in this batch` };
+          }
+          const dayNow = orgRoster.invitesInLastDay(dag, d.org_tip_id, tx.timestamp).length;
+          if (dayNow + inBatchInvites >= orgRoster.dayInviteLimit(dag, d.org_tip_id)) {
+            return { valid: false, error: `daily invite cap reached for ${d.org_tip_id} in this batch` };
+          }
+        }
         if (tx.tx_type === TX_TYPES.ORG_MEMBER_ADDED) {
+          // One outcome per invite per batch: an earlier cancel (or accept)
+          // of this invite wins.
+          const closed = validated.find(t =>
+            (t.tx_type === TX_TYPES.ORG_MEMBER_INVITE_CANCELLED || t.tx_type === TX_TYPES.ORG_MEMBER_ADDED)
+            && t.data?.invite_tx_id === d.invite_tx_id);
+          if (closed) return { valid: false, error: `invite ${d.invite_tx_id} already closed in this batch` };
           // Earlier acceptances in this batch already hold seats the
           // committed-row limit check cannot see.
           const inBatchSeats = validated.filter(t =>
@@ -1621,6 +1641,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           role: d.role,
           status: ORG_MEMBER_STATUS.INVITED,
           invited_at: tx.timestamp,
+          invited_claim: d.invited_at,
           accepted_at: null, add_tx_id: null,
           removed_at: null, remove_tx_id: null, removed_by: null,
         });

@@ -21,7 +21,7 @@
 
 const { schemaError, assertBounded } = require("./_common");
 const {
-  ORG_MEMBERS, ORG_MEMBER_STATUS, TIP_ID_TYPES,
+  ORG_MEMBERS, ORG_MEMBER_STATUS, TIP_ID_TYPES, CLAIM_MAX_AGE_MS,
 } = require("../../../shared/constants");
 
 const ROLE_SPEC = Object.freeze({
@@ -59,6 +59,26 @@ function checkActive(atMs, opts) {
     return fail(403, "Organization roster is not active on this network yet", "org_members_not_active");
   }
   return { ok: true };
+}
+
+// A signed claim time must sit inside the window of the tx that carries it,
+// at commit as well as at the API: body signatures are public once gossiped
+// or committed, and a relayer picks tx.timestamp.
+function checkClaimFresh(claimMs, atMs, label) {
+  if (atMs - claimMs > CLAIM_MAX_AGE_MS || claimMs - atMs > ORG_MEMBERS.INVITE_CLAIM_SKEW_MS) {
+    return fail(400, `${label} signature has expired (max 15 minutes)`, "claim_expired");
+  }
+  return { ok: true };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function invitesInLastDay(dag, orgTipId, atMs) {
+  return (dag.getOrgMembersByOrg(orgTipId) || []).filter(r => atMs - Number(r.invited_at) < DAY_MS);
+}
+
+function dayInviteLimit(dag, orgTipId) {
+  return memberLimit(dag, orgTipId) * ORG_MEMBERS.INVITES_PER_DAY_MULTIPLIER;
 }
 
 function isInviteExpired(row, atMs) {
@@ -136,6 +156,9 @@ module.exports = {
   isTipId,
   activationMs,
   checkActive,
+  checkClaimFresh,
+  invitesInLastDay,
+  dayInviteLimit,
   isInviteExpired,
   isOpenInvite,
   activeMembers,

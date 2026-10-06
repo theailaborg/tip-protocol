@@ -23,7 +23,7 @@
 
 const { signPayload, verifyPayload, schemaError, canonicalJson } = require("./_common");
 const {
-  TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS, CLAIM_MAX_AGE_MS,
+  TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
 } = require("../../../shared/constants");
 const { isValidMs, nowMs } = require("../../../shared/time");
 const roster = require("./_org-members");
@@ -38,8 +38,20 @@ const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.ORG_TIP_ID;
  * the API clock at submit and the frozen tx.timestamp at commit.
  */
 function checkInvite(d, dag, atMs) {
+  // The signed invited_at may be used once per pair, or a cancelled invite
+  // could be resubmitted by anyone from the public chain data.
+  const fresh = roster.checkClaimFresh(d.invited_at, atMs, "Invite");
+  if (!fresh.ok) return fresh;
   const parties = roster.resolveParties(dag, d.org_tip_id, d.member_tip_id);
   if (!parties.ok) return parties;
+  const rows = dag.getOrgMembersByOrg(d.org_tip_id) || [];
+  if (rows.some(r => r.member_tip_id === d.member_tip_id && Number(r.invited_claim) === d.invited_at)) {
+    return roster.fail(409, "This invite signature was already used", "invite_replayed");
+  }
+  const dayLimit = roster.dayInviteLimit(dag, d.org_tip_id);
+  if (roster.invitesInLastDay(dag, d.org_tip_id, atMs).length >= dayLimit) {
+    return roster.fail(409, `Organization has sent too many invites in 24 hours (limit ${dayLimit})`, "invite_rate_limited");
+  }
   if (roster.activeMembership(dag, d.org_tip_id, d.member_tip_id)) {
     return roster.fail(409, `${d.member_tip_id} is already a member of ${d.org_tip_id}`, "already_member");
   }
@@ -82,9 +94,7 @@ function validateRequest(body, deps) {
 
   const now = deps && typeof deps.now === "number" ? deps.now : nowMs();
   roster.throwIfFailed(roster.checkActive(now, deps));
-  if (now - body.invited_at > CLAIM_MAX_AGE_MS) {
-    throw schemaError(400, "Invite signature has expired (max 15 minutes)", "claim_expired");
-  }
+  roster.throwIfFailed(roster.checkClaimFresh(body.invited_at, now, "Invite"));
 
   if (!deps || !deps.dag) return;
   const { dag } = deps;

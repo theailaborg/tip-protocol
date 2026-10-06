@@ -56,7 +56,7 @@ function createOrgMemberService({ dag, config, submitTx }) {
     log.info(`Org member invited: ${body.org_tip_id} -> ${body.member_tip_id} (${body.role})`);
     return {
       org_tip_id: body.org_tip_id, member_tip_id: body.member_tip_id, role: body.role,
-      invite_tx_id: tx.tx_id, invited_at: tx.timestamp, confirmation: "proposed",
+      invite_tx_id: tx.tx_id, invited_at: body.invited_at, proposed_at: tx.timestamp, confirmation: "proposed",
     };
   }
 
@@ -72,7 +72,7 @@ function createOrgMemberService({ dag, config, submitTx }) {
     log.info(`Org member invite cancelled: ${body.org_tip_id} -> ${body.member_tip_id} by ${body.signer_tip_id}`);
     return {
       org_tip_id: body.org_tip_id, member_tip_id: body.member_tip_id,
-      invite_tx_id: body.invite_tx_id, cancel_tx_id: tx.tx_id, cancelled_at: tx.timestamp,
+      invite_tx_id: body.invite_tx_id, cancel_tx_id: tx.tx_id, claimed_at: body.claimed_at, proposed_at: tx.timestamp,
       confirmation: "proposed",
     };
   }
@@ -88,7 +88,7 @@ function createOrgMemberService({ dag, config, submitTx }) {
     log.info(`Org member accepted: ${body.member_tip_id} joined ${body.org_tip_id}`);
     return {
       org_tip_id: body.org_tip_id, member_tip_id: body.member_tip_id,
-      invite_tx_id: body.invite_tx_id, add_tx_id: tx.tx_id, accepted_at: tx.timestamp,
+      invite_tx_id: body.invite_tx_id, add_tx_id: tx.tx_id, accepted_at: body.accepted_at, proposed_at: tx.timestamp,
       confirmation: "proposed",
     };
   }
@@ -105,7 +105,7 @@ function createOrgMemberService({ dag, config, submitTx }) {
     log.info(`Org member removed: ${body.member_tip_id} from ${body.org_tip_id} by ${body.signer_tip_id}`);
     return {
       org_tip_id: body.org_tip_id, member_tip_id: body.member_tip_id,
-      add_tx_id: body.add_tx_id, remove_tx_id: tx.tx_id, removed_at: tx.timestamp,
+      add_tx_id: body.add_tx_id, remove_tx_id: tx.tx_id, claimed_at: body.claimed_at, proposed_at: tx.timestamp,
       confirmation: "proposed",
     };
   }

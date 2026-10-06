@@ -49,6 +49,18 @@ function loadNodeKeypair() {
   };
 }
 
+// Consensus-gate override (epoch ms). A set-but-unparseable value must not
+// fall back silently: the node would then disagree with the fleet.
+function _epochMsOverride(name) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return undefined;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || String(n) !== raw.trim()) {
+    throw new Error(`${name} must be an integer epoch-ms value, got "${raw}"`);
+  }
+  return n;
+}
+
 function loadConfig() {
   const nodeKeys = loadNodeKeypair();
 
@@ -127,8 +139,7 @@ function loadConfig() {
       ? parseInt(process.env.TIP_REG_CREDIT_CAP_ACTIVATION_MS, 10) : undefined,
     // Org roster activation override (epoch-ms). Same consensus-gate rule as
     // above: identical on every node, or an isolated test cluster only.
-    orgMembersActivationMs: process.env.TIP_ORG_MEMBERS_ACTIVATION_MS
-      ? parseInt(process.env.TIP_ORG_MEMBERS_ACTIVATION_MS, 10) : undefined,
+    orgMembersActivationMs: _epochMsOverride("TIP_ORG_MEMBERS_ACTIVATION_MS"),
 
     // ── Pre-scan (v2 FIX-03) ──────────────────────────────────────────────────
     preScanEnabled: true,
