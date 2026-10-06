@@ -23,6 +23,8 @@ const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
 const { computeStateMerkleRoot } = require(path.join(SRC, "consensus", "state-root"));
+const contentRegisterSchema = require(path.join(SRC, "schemas", "content-register"));
+const { shake256 } = require(path.join(SHARED, "crypto"));
 const invitedSchema = require(path.join(SRC, "schemas", "org-member-invited"));
 const addedSchema = require(path.join(SRC, "schemas", "org-member-added"));
 const removedSchema = require(path.join(SRC, "schemas", "org-member-removed"));
@@ -85,6 +87,67 @@ function removeTx(ctx, member, addTxId, signer, ts) {
 
 let round = 0;
 function commit(ctx, txs) { return ctx.handler.commitOrderedTxs(txs, ++round); }
+
+// REGISTER_CONTENT signed by `signer`, attributing the post to `authors`.
+let seq = 0;
+function contentTx(ctx, signer, authors, ts, mode = "employed") {
+  const hash = shake256(`post-${++seq}`);
+  const data = {
+    signer_tip_id: signer, origin_code: "OH", content_hash: hash,
+    ctid: `tip://c/OH-${hash.slice(0, 14)}-${hash.slice(14, 18)}`,
+    attribution_mode: mode, extras: {}, registered_urls: [],
+    cna_version: contentRegisterSchema.CURRENT_CNA_VERSION,
+    authors: authors.map(a => ({
+      key_mode: "attribution", role: "byline", signed: false, tip_id: a,
+      tip_id_type: a === ORG ? "organization" : "personal",
+    })),
+  };
+  data.signature = contentRegisterSchema.sign(contentRegisterSchema.buildSigningPayload(data, hash), ctx.keys[signer].privateKey);
+  const body = { tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: ts, signature: data.signature, prev: [], data };
+  body.prev = ctx.dag.prevFor(body.tx_type, body.data);
+  body.tx_id = computeTxId(body);
+  return body;
+}
+
+describe("org-signed content is attributed only to the org itself or its active members", () => {
+  test("non-member author is dropped; after invite + accept it commits; after removal it is dropped again", () => {
+    const ctx = _setup();
+    expect(commit(ctx, [contentTx(ctx, ORG, [ALICE], BASE_TS + 100)])).toMatchObject({ committed: 0, dropped: 1 });
+    // Institutional speech: the org is its own author.
+    expect(commit(ctx, [contentTx(ctx, ORG, [ORG], BASE_TS + 200, "self")])).toMatchObject({ committed: 1 });
+
+    const inv = inviteTx(ctx, ALICE, BASE_TS + 1000);
+    commit(ctx, [inv]);
+    const acc = acceptTx(ctx, ALICE, inv.tx_id, BASE_TS + 2000);
+    commit(ctx, [acc]);
+    expect(commit(ctx, [contentTx(ctx, ORG, [ALICE], BASE_TS + 2100)])).toMatchObject({ committed: 1 });
+    expect(commit(ctx, [contentTx(ctx, ORG, [ORG, ALICE], BASE_TS + 2200)])).toMatchObject({ committed: 1 });
+    // Bob never joined.
+    expect(commit(ctx, [contentTx(ctx, ORG, [ALICE, BOB], BASE_TS + 2300)])).toMatchObject({ committed: 0, dropped: 1 });
+
+    commit(ctx, [removeTx(ctx, ALICE, acc.tx_id, ORG, BASE_TS + 3000)]);
+    expect(commit(ctx, [contentTx(ctx, ORG, [ALICE], BASE_TS + 3100)])).toMatchObject({ committed: 0, dropped: 1 });
+    // Already-committed content is untouched by the removal (author_tip_id is authors[0]).
+    expect(ctx.dag.getContentByAuthor(ALICE)).toHaveLength(1);
+    expect(ctx.dag.getContentByAuthor(ORG)).toHaveLength(2);
+  });
+
+  test("personal signers are not gated by the roster; the author count cap applies to everyone", () => {
+    const ctx = _setup();
+    expect(commit(ctx, [contentTx(ctx, ALICE, [ALICE], BASE_TS + 100, "self")])).toMatchObject({ committed: 1 });
+    expect(commit(ctx, [contentTx(ctx, ALICE, [ALICE, BOB], BASE_TS + 200)])).toMatchObject({ committed: 1 });
+    const eleven = Array.from({ length: 11 }, () => ALICE);
+    expect(commit(ctx, [contentTx(ctx, ALICE, eleven, BASE_TS + 300)])).toMatchObject({ committed: 0, dropped: 1 });
+    const ten = Array.from({ length: 10 }, () => ALICE);
+    expect(commit(ctx, [contentTx(ctx, ALICE, ten, BASE_TS + 400)])).toMatchObject({ committed: 1 });
+  });
+
+  test("before the activation epoch the old rules apply: an org may list anyone", () => {
+    const ctx = _setup({ activationMs: BASE_TS + 5000 });
+    expect(commit(ctx, [contentTx(ctx, ORG, [ALICE], BASE_TS + 100)])).toMatchObject({ committed: 1 });
+    expect(commit(ctx, [contentTx(ctx, ORG, [ALICE], BASE_TS + 5000)])).toMatchObject({ committed: 0, dropped: 1 });
+  });
+});
 
 describe("org roster lifecycle through the commit handler", () => {
   test("invite -> accept -> remove writes one row through invited, active, removed; each step moves the state root", () => {
