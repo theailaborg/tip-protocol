@@ -109,6 +109,7 @@ function identityRec(tipId, overrides = {}) {
     region: "US",
     public_key: `pk-${tipId}`,
     algorithm: "ml-dsa-65",
+    biometric_commit: "a".repeat(64),
     ...overrides,
   };
 }
@@ -238,9 +239,22 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(got.verification_tier).toBe("VERIFIED");
     expect(got.public_key).toBe(`pk-${tipId}`);
     expect(got.algorithm).toBe("ml-dsa-65");
+    expect(got.biometric_commit).toBe("a".repeat(64));
 
     const active = dag.getActiveKey("identity", tipId);
     expect(active).toEqual(expect.objectContaining({ public_key: `pk-${tipId}`, algorithm: "ml-dsa-65" }));
+  });
+
+  test("identity saved without biometric_commit round-trips as nullish (both stores)", async () => {
+    const dag = await makeDag();
+    const tipId = uniq("US-id-nobc");
+    const rec = identityRec(tipId);
+    delete rec.biometric_commit;
+    dag.saveIdentity(rec);
+    // Absent on input: MemoryStore yields undefined, SQLite/Knex yield null.
+    // _canonIdentity normalizes both to null, so state_merkle_root stays in
+    // parity across stores — pin the nullish contract here.
+    expect(dag.getIdentity(tipId).biometric_commit ?? null).toBe(null);
   });
 
   test("key rotation closes the prior key and getKeyValidAt selects by timestamp", async () => {
