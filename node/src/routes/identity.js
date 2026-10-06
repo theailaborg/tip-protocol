@@ -11,6 +11,12 @@ function createRouter({ identityService, profileService, keyService, orgMemberSe
     res.status(202).json(result);
   }));
 
+  // Type-ahead for the roster invite box. Same segment count as
+  // /identity/:tipId, so it must be mounted first.
+  router.get("/identity/search", asyncHandler((req, res) => {
+    res.json(identityService.search(req.query));
+  }));
+
   router.get("/identity/:tipId", asyncHandler((req, res) => {
     res.json(identityService.resolve(req.params.tipId));
   }));

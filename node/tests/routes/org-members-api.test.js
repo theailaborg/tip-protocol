@@ -229,3 +229,43 @@ describe("org roster API: cancel-invite", () => {
     expect((await request(h.app).get(`/v1/identity/${enc(ORG)}/members?include=removed`)).body.cancelled).toHaveLength(2);
   });
 });
+
+describe("GET /v1/identity/search (invite box type-ahead)", () => {
+  test("matches TIP-ID prefix or name, personal and active only, bounded", async () => {
+    const h = harness();
+    const named = "tip://id/US-9350d182f5f8e573";
+    h.keys[named] = generateMLDSAKeypair();
+    h.dag.saveIdentity({
+      tip_id: named, region: "US", public_key: h.keys[named].publicKey, root_public_key: "00",
+      vp_id: "tip://vp/v1", verification_tier: "T1", founding: false, status: "active",
+      tip_id_type: "personal", creator_name: "Alice Example", registered_at: BASE_TS,
+      tx_id: seedAnchorTx(h.dag, "REGISTER_IDENTITY", { tip_id: named }),
+    });
+    h.dag.setScore(named, 500, 0, BASE_TS);
+
+    const byName = await request(h.app).get("/v1/identity/search?q=alice");
+    expect(byName.status).toBe(200);
+    expect(byName.body.results.map(r => r.tip_id)).toEqual([named]);
+    expect(byName.body.results[0]).toMatchObject({ creator_name: "Alice Example", tip_id_type: "personal", region: "US" });
+
+    const byId = await request(h.app).get(`/v1/identity/search?q=${encodeURIComponent("IN-cbcd")}`);
+    expect(byId.body.results.map(r => r.tip_id)).toEqual([ALICE]);
+    const byFullId = await request(h.app).get(`/v1/identity/search?q=${encodeURIComponent(ALICE)}`);
+    expect(byFullId.body.results.map(r => r.tip_id)).toEqual([ALICE]);
+
+    // Organizations are not offered by default; type=any includes them.
+    const orgDefault = await request(h.app).get(`/v1/identity/search?q=${encodeURIComponent("GB-400d")}`);
+    expect(orgDefault.body.results).toEqual([]);
+    const orgAny = await request(h.app).get(`/v1/identity/search?q=${encodeURIComponent("GB-400d")}&type=any`);
+    expect(orgAny.body.results.map(r => r.tip_id)).toEqual([ORG]);
+
+    const short = await request(h.app).get("/v1/identity/search?q=a");
+    expect(short.status).toBe(400);
+    expect(short.body.error.code).toBe("query_too_short");
+    const tooMany = await request(h.app).get("/v1/identity/search?q=al&limit=50");
+    expect(tooMany.status).toBe(400);
+
+    h.dag.addRevocation(named, "REVOKE_VOLUNTARY", BASE_TS + 1, "rev-1");
+    expect((await request(h.app).get("/v1/identity/search?q=alice")).body.results).toEqual([]);
+  });
+});
