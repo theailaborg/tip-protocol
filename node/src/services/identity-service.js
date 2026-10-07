@@ -5,11 +5,12 @@ const {
 } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { verifyDedupProof } = require("../../../shared/zk");
-const { TX_TYPES, TX_TYPE_SET, SIGNED_BY_KIND, TIP_ID_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, TX_TYPE_SET, SIGNED_BY_KIND, TIP_ID_TYPES, TIP_ID_TYPE_VALUES } = require("../../../shared/constants");
 const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
 const linkPlatformSchema = require("../schemas/link-platform");
 const unlinkPlatformSchema = require("../schemas/unlink-platform");
+const roster = require("../schemas/_org-members");
 const bioFetcher = require("./bio-fetcher");
 const { schemaError, verifyPayload, sortCosignatures } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
@@ -20,6 +21,9 @@ const { log } = require("../logger");
 
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_MAX_LIMIT = 200;
+const SEARCH_MIN_QUERY = 2;
+const SEARCH_DEFAULT_LIMIT = 10;
+const SEARCH_MAX_LIMIT = 20;
 
 // Statuses the activity feed can include. Default is "committed" only —
 // preserves back-compat for clients that pre-date the no-loss work.
@@ -208,6 +212,60 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
+  // Type-ahead for the roster invite box: active identities whose TIP-ID
+  // starts with, or whose creator_name contains, the query. Bounded result,
+  // public fields only (creator_name is on-chain data).
+  function search(query = {}) {
+    const q = String(query.q || "").trim();
+    if (q.length < SEARCH_MIN_QUERY) {
+      throw { status: 400, error: `q must be at least ${SEARCH_MIN_QUERY} characters`, code: "query_too_short" };
+    }
+    const type = query.type ? String(query.type) : TIP_ID_TYPES.PERSONAL;
+    if (type !== "any" && !TIP_ID_TYPE_VALUES.includes(type)) {
+      throw { status: 400, error: `type must be one of ${[...TIP_ID_TYPE_VALUES, "any"].join(", ")}`, code: "type_invalid" };
+    }
+    let limit = SEARCH_DEFAULT_LIMIT;
+    if (query.limit !== undefined) {
+      const n = Number(query.limit);
+      if (!Number.isInteger(n) || n < 1 || n > SEARCH_MAX_LIMIT) {
+        throw { status: 400, error: `limit must be an integer between 1 and ${SEARCH_MAX_LIMIT}`, code: "limit_invalid" };
+      }
+      limit = n;
+    }
+    const needle = q.toLowerCase();
+    const idNeedle = needle.replace(/^tip:\/\/id\//, "");
+    const ranked = [];
+    for (const rec of dag.getAllIdentities()) {
+      if (rec.status !== "active" || dag.isRevoked(rec.tip_id)) continue;
+      const recType = rec.tip_id_type || TIP_ID_TYPES.PERSONAL;
+      if (type !== "any" && recType !== type) continue;
+      const id = rec.tip_id.replace(/^tip:\/\/id\//, "").toLowerCase();
+      const name = (rec.creator_name || "").toLowerCase();
+      let rank;
+      if (id === idNeedle) rank = 0;
+      else if (id.startsWith(idNeedle)) rank = 1;
+      else if (name.startsWith(needle)) rank = 2;
+      else if (name.includes(needle)) rank = 3;
+      else continue;
+      ranked.push({ rank, rec });
+    }
+    ranked.sort((a, b) => a.rank - b.rank || a.rec.tip_id.localeCompare(b.rec.tip_id));
+    return {
+      query: q,
+      results: ranked.slice(0, limit).map(({ rec }) => {
+        const scoreData = scoring.getScore(rec.tip_id);
+        return {
+          tip_id: rec.tip_id,
+          creator_name: rec.creator_name || null,
+          tip_id_type: rec.tip_id_type || TIP_ID_TYPES.PERSONAL,
+          region: rec.region,
+          score: scoreData.score,
+          tier: scoreData.tier.name,
+        };
+      }),
+    };
+  }
+
   function resolve(tipId) {
     const rec = dag.getIdentity(tipId);
     if (!rec) throw { status: 404, error: "TIP-ID not found" };
@@ -223,12 +281,28 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       vp_id: rec.vp_id, verification_tier: rec.verification_tier, founding: rec.founding,
       status: revoked ? "revoked" : rec.status, score: scoreData.score,
       tier: scoreData.tier.name, tier_color: scoreData.tier.color,
-      content_count: content.length, registered_at: rec.registered_at,
+      content_count: content.length, bylined_count: dag.getContentBylined(tipId).length,
+      registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
       tip_id_type: rec.tip_id_type || TIP_ID_TYPES.PERSONAL,
       org_type: rec.org_type || null,
+      ..._rosterSummary(rec),
       verification: { tx_exists: !!tx, tx_id_valid: txValid, on_dag: true },
     };
+  }
+
+  // Orgs report seat usage; people report the orgs they are active in.
+  function _rosterSummary(rec) {
+    const type = rec.tip_id_type || TIP_ID_TYPES.PERSONAL;
+    if (type === TIP_ID_TYPES.ORGANIZATION) {
+      return {
+        members: {
+          active: roster.activeMembers(dag, rec.tip_id).length,
+          limit: roster.memberLimit(dag, rec.tip_id),
+        },
+      };
+    }
+    return { member_of: roster.activeMemberships(dag, rec.tip_id).map(r => r.org_tip_id) };
   }
 
   // Ownership-proof: client signs the canonical payload { challenge, tip_id }
@@ -555,7 +629,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
-  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity, findByDedupHash, linkPlatform, unlinkPlatform, getPlatformLinks };
+  return { register, resolve, search, verifyOwnership, getScore, getHistory, getActivity, findByDedupHash, linkPlatform, unlinkPlatform, getPlatformLinks };
 }
 
 module.exports = { createIdentityService };

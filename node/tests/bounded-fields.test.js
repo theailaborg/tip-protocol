@@ -30,6 +30,7 @@ const { assertBounded } = require(path.resolve(__dirname, "../src/schemas/_commo
 const contentRegister = require(path.resolve(__dirname, "../src/schemas/content-register"));
 const registerIdentity = require(path.resolve(__dirname, "../src/schemas/register-identity"));
 const bindDomain = require(path.resolve(__dirname, "../src/schemas/bind-domain"));
+const orgMemberInvited = require(path.resolve(__dirname, "../src/schemas/org-member-invited"));
 
 const SCHEMA_SQL = fs.readFileSync(path.resolve(__dirname, "../src/db/schema.sql"), "utf8");
 
@@ -125,6 +126,20 @@ describe("client-fillable bounded columns reject over-length values", () => {
     )).toThrow(expect.objectContaining({ code: "region_too_long" }));
   });
 
+  test("org_members.role", () => {
+    const max = columnsOf("org_members").role;
+    expect(max).toBe(64);
+    // buildSigningPayload runs on both the API and verifyTx paths.
+    expect(() => orgMemberInvited.buildSigningPayload({
+      org_tip_id: "tip://id/US-1", member_tip_id: "tip://id/US-2",
+      role: "a".repeat(max + 1), invited_at: 1767225600000,
+    })).toThrow(expect.objectContaining({ code: "role_too_long" }));
+    expect(() => orgMemberInvited.buildSigningPayload({
+      org_tip_id: "tip://id/US-1", member_tip_id: "tip://id/US-2",
+      role: "Author", invited_at: 1767225600000,
+    })).toThrow(expect.objectContaining({ code: "role_invalid" }));
+  });
+
   test("domain_bindings.domain", () => {
     const max = columnsOf("domain_bindings").domain;
     expect(max).toBe(253);
@@ -161,6 +176,11 @@ describe("no unreviewed bounded columns", () => {
       domain: "assertBounded, both paths", tip_id: "DAG-resolved",
       binding_state: "server-set", method: "enum", node_id: "DAG-resolved",
       tx_id: "server-derived",
+    },
+    org_members: {
+      invite_tx_id: "server-derived", org_tip_id: "DAG-resolved", member_tip_id: "DAG-resolved",
+      role: "assertBounded, both paths", status: "server-set", add_tx_id: "server-derived",
+      remove_tx_id: "server-derived", removed_by: "DAG-resolved",
     },
     nodes: { node_id: "server-derived", status: "server-set", operated_by: "DAG-resolved" },
     transactions: { tx_id: "server-derived", tx_type: "enum", subject_tip_id: "DAG-resolved" },

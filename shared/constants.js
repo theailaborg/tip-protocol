@@ -315,6 +315,9 @@ const CNA_VERSIONS = Object.freeze({
 const CNA22_AUTHOR_KEYS = Object.freeze([
   "key_mode", "role", "signed", "tip_id", "tip_id_type",
 ]);
+// Spec MAX_AUTHORS_PER_POST. Enforced behind ORG_MEMBERS.ACTIVATION_MS (a new
+// commit-time reject rule), never inside the signed-payload builder.
+const MAX_AUTHORS_PER_POST = 10;
 
 // Canonical `attribution_mode` values per docs/CONTENT_SIGNING.md §2.
 // Locks the enum so any non-listed value is rejected at canonical-builder
@@ -617,6 +620,13 @@ const TX_TYPES = Object.freeze({
   UPDATE_PROFILE: "UPDATE_PROFILE",
   LINK_PLATFORM: "LINK_PLATFORM",
   UNLINK_PLATFORM: "UNLINK_PLATFORM",
+  // Organization roster. INVITED is org-signed, ADDED is signed by the
+  // invited person (consent on both sides is on chain), REMOVED by either
+  // party. Rows live in org_members (canonical); see schemas/_org-members.js.
+  ORG_MEMBER_INVITED: "ORG_MEMBER_INVITED",
+  ORG_MEMBER_INVITE_CANCELLED: "ORG_MEMBER_INVITE_CANCELLED",
+  ORG_MEMBER_ADDED: "ORG_MEMBER_ADDED",
+  ORG_MEMBER_REMOVED: "ORG_MEMBER_REMOVED",
   // GH #60 — key rotation + recovery. Both append a new entity_keys row
   // and close the prior active one atomically at commit. KEY_ROTATED is
   // signed by the OLD key (user proves possession); KEY_RECOVERY is
@@ -950,6 +960,8 @@ const TIP_ID_FIELDS = Object.freeze({
   APPELLANT_TIP_ID: "appellant_tip_id",   // appeal filed
   VERIFIER_TIP_ID: "verifier_tip_id",     // content-verified
   DISPUTER_TIP_ID: "disputer_tip_id",     // content-disputed (user-mode)
+  ORG_TIP_ID: "org_tip_id",               // org-member-invited (the inviting organization)
+  MEMBER_TIP_ID: "member_tip_id",         // org-member-added (the accepting person)
 });
 const TIP_ID_FIELD_VALUES = Object.freeze(new Set(Object.values(TIP_ID_FIELDS)));
 
@@ -1044,6 +1056,43 @@ const REGISTER_CREDIT = Object.freeze({
 // rule, so gated on tx.timestamp to keep a mixed fleet from forking.
 const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15:00:00 UTC
 
+// Organization roster (org_members). An org invites a registered personal
+// TIP-ID; the invite is usable for INVITE_TTL_MS after its tx.timestamp and
+// never consumes a seat; acceptance does. FREE_MEMBER_LIMIT is the only tier
+// today; a paid plan lands as a per-org lookup in _org-members.memberLimit.
+// Open (unexpired, unaccepted) invites per org are capped at limit x
+// OPEN_INVITE_MULTIPLIER so the table cannot be flooded. Lives in code (not
+// genesis) like REGISTER_CREDIT. ACTIVATION_MS: the three tx types are new
+// commit rules, so an un-upgraded node would fork on them; nodes reject them
+// before this epoch-ms and the fleet upgrades first (TIP_ORG_MEMBERS_ACTIVATION_MS
+// overrides it on an isolated cluster).
+const ORG_MEMBERS = Object.freeze({
+  FREE_MEMBER_LIMIT: 1,
+  OPEN_INVITE_MULTIPLIER: 3,
+  // Invites an org may create per rolling 24 h, any status: limit x this.
+  // Cancelling frees an open slot at once, so without it an org could grow
+  // the table without bound through invite/cancel loops.
+  INVITES_PER_DAY_MULTIPLIER: 10,
+  // Commit-time freshness of the signed invited_at against tx.timestamp
+  // (CLAIM_MAX_AGE_MS behind, this much ahead for client clock skew). A
+  // committed invite's body signature is public, so without this a
+  // cancelled invite could be resubmitted by anyone as a new tx.
+  INVITE_CLAIM_SKEW_MS: 60 * 1000,
+  INVITE_TTL_MS: 7 * 24 * 60 * 60 * 1000,
+  ROLE_MAX_LENGTH: 64,
+  ROLE_PATTERN: /^[a-z][a-z0-9_-]{0,63}$/,
+  ACTIVATION_MS: 1792368000000, // 2026-10-19 00:00:00 UTC
+});
+// Roster roles are labels only (no permission is attached yet); locked so the
+// chain never carries variants of the same word.
+const ORG_MEMBER_ROLES = Object.freeze(["author", "editor", "contributor", "reviewer", "correspondent"]);
+const ORG_MEMBER_STATUS = Object.freeze({
+  INVITED: "invited",
+  CANCELLED: "cancelled",
+  ACTIVE: "active",
+  REMOVED: "removed",
+});
+
 // GET /v1/content?parent_url= read gating. parent_url is an unverified
 // assertion (any content may claim any parent) and is never exclusivity-checked,
 // so the lookup caps the scan, drops sub-VERIFIED authors, and returns one entry
@@ -1078,6 +1127,9 @@ module.exports = {
   STATS_SCORING_CACHE_MS,
   REGISTER_CREDIT,
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
+  ORG_MEMBERS,
+  ORG_MEMBER_ROLES,
+  ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   PRESCAN_PERMANENT_MEDIA_ERRORS,
@@ -1120,6 +1172,7 @@ module.exports = {
   DISPUTE_REASONS,
   CNA_VERSIONS,
   CNA22_AUTHOR_KEYS,
+  MAX_AUTHORS_PER_POST,
   ATTRIBUTION_MODES,
   ATTRIBUTION_MODE_VALUES,
   PERCEPTUAL_FINGERPRINT_KINDS,

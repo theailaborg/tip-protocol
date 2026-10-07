@@ -9,6 +9,73 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+**Node 2.7.0: organization roster (`ORG_MEMBER_INVITED` / `ORG_MEMBER_ADDED` / `ORG_MEMBER_REMOVED`)**
+- An organization can invite a registered personal TIP-ID onto its roster;
+  the person accepts by signing their own tx that references the invite, so
+  both consents are on chain and any node can list a person's open invites,
+  whichever VP issued either identity. Either party ends a membership alone.
+- Rows live in the new canonical `org_members` table (migration 012, in the
+  state root). An invite is usable for 7 days after its tx and never takes a
+  seat; the seat limit (`ORG_MEMBERS.FREE_MEMBER_LIMIT`, 1) is enforced when
+  the acceptance commits, so an invite sent while a seat was free fails with
+  `member_limit_reached` if the seat is gone by then. Open invites per org are
+  capped at three times the seat limit. Roster changes are score-neutral.
+- `GET /v1/identity/search?q=&limit=&type=`: type-ahead for the invite box, TIP-ID prefix or name substring, active personal identities by default.
+- Byline read model: `GET /v1/content/:ctid` adds `publisher` (the signer) and
+  `authors_resolved` (every author with name, type, tier, `member_role` from
+  the signer org's roster, and `relationship`: `signer` | `member` | `listed`); `GET /v1/content?bylined=<tip_id>` lists
+  posts that credit an identity without being its `author_tip_id`, and list
+  rows carry `signer_tip_id`, `attribution_mode`, `publisher_name`;
+  `GET /v1/identity/:id` adds `bylined_count`. The `author`/`bylined` filters
+  now accept three-letter region codes.
+- A member author's signed `authors[].role` is what they did for that post,
+  chosen at publish time from the roster vocabulary (`412 author_role_invalid`
+  otherwise); it need not match their team title, which `authors_resolved`
+  reports as `member_role`. The signer's own entry and co-authors on personal
+  posts keep a free `role`.
+- Roster roles are a locked set (`author`, `editor`, `contributor`, `reviewer`,
+  `correspondent`; labels only, no permission attached); any other value is
+  `role_invalid`. `GET /v1/identity/:org/members` returns the allowed `roles`.
+- API: `POST /v1/identity/:org/members/invite`, `POST /v1/identity/:member/members/accept`,
+  `POST /v1/identity/:signer/members/remove`, `GET /v1/identity/:org/members`
+  (`?include=removed`), `GET /v1/identity/:member/invites`,
+  `GET /v1/identity/:member/memberships`; `GET /v1/identity/:id` adds
+  `members {active, limit}` for organizations and `member_of` for people.
+- `ORG_MEMBER_INVITE_CANCELLED`: the organization cancels an open invite or
+  the invitee declines it (`POST /v1/identity/:signer/members/cancel-invite`);
+  the row becomes `cancelled`, can no longer be accepted and no longer counts
+  as an open invite.
+- Invite replay guard: a committed invite's body signature is public, so the
+  signed `invited_at` must lie within the claim window of the tx at commit
+  and is stored on the row (`invited_claim`, migration 013); the same signed
+  invite is refused a second time (`invite_replayed`). Invites per
+  organization are capped per rolling 24 h, any status (`invite_rate_limited`),
+  so invite/cancel loops cannot grow the table. An `authors[]` entry that
+  claims a co-signature (`signed: true` or `key_mode: "co_signed"`) without one
+  in the envelope is refused (`author_cosignature_missing`); co-signatures are
+  not implemented, so the chain no longer records the false claim. The signed `accepted_at` /
+  `claimed_at` of acceptances, removals and cancellations are held to the same
+  window at commit, so a relayer cannot re-wrap a rejected acceptance later or
+  backdate `tx.timestamp` past an invite's TTL. Open and daily invite caps
+  are also counted inside a single batch, a cancel ordered before an accept of
+  the same invite wins, and a revoked identity can no longer be listed as an
+  author. A malformed `TIP_ORG_MEMBERS_ACTIVATION_MS` refuses to boot instead
+  of silently using the default.
+- Content registration: an organization may list as `authors[]` only itself
+  or its active members, and an organization can appear as an author only on
+  content it signs itself (nobody attributes content to another org); any
+  other author is refused with `412 invalid_author`
+  at the API and dropped at commit. `authors[]` is capped at
+  `MAX_AUTHORS_PER_POST` (10, the spec value). The author checks (on-DAG,
+  type match, roster) now also run at commit, where previously no author
+  check ran at all. Nothing in the signed CNA-2.2 payload changes.
+- Rollout: the three tx types and the author rules are new commit rules, so
+  every node applies them only from `ORG_MEMBERS.ACTIVATION_MS`
+  (`TIP_ORG_MEMBERS_ACTIVATION_MS` overrides it on an isolated cluster).
+  Upgrade the whole fleet before that epoch.
+
 ### Fixed
 
 **Node 2.6.6: gossip queued for one peer is bounded; a stalled reader is redialed**

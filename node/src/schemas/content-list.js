@@ -26,7 +26,7 @@ const { schemaError } = require("./_common");
 const { CONTENT_STATUS } = require("../../../shared/constants");
 const { ORIGIN_CODES } = require("./content-register");
 
-const TIP_ID_RE = /^tip:\/\/id\/[A-Z]{2}-[0-9a-f]{16}$/;
+const TIP_ID_RE = /^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/;
 const CTID_RE = /^tip:\/\/c\/[A-Z]{2}-[0-9a-f]{14}-[0-9a-f]{4}$/;
 const STATUSES = Object.values(CONTENT_STATUS);
 
@@ -59,6 +59,7 @@ function validateRequest(query = {}) {
     limit: LIMIT_DEFAULT,
     cursor: null,
     author: null,
+    bylined: null,
     origin: null,
     status: null,
     hasMedia: null,
@@ -81,6 +82,15 @@ function validateRequest(query = {}) {
       throw schemaError(400, "author must be a tip://id/ URI", "author_invalid");
     }
     out.author = String(query.author);
+  }
+  // Posts that credit this identity in authors[] without owning them (an org
+  // post with the person on the byline). Mutually exclusive with author.
+  if (query.bylined !== undefined && query.bylined !== "") {
+    if (!TIP_ID_RE.test(String(query.bylined))) {
+      throw schemaError(400, "bylined must be a tip://id/ URI", "bylined_invalid");
+    }
+    if (out.author) throw schemaError(400, "author and bylined cannot be combined", "bylined_invalid");
+    out.bylined = String(query.bylined);
   }
   if (query.origin !== undefined && query.origin !== "") {
     const o = String(query.origin).toUpperCase();

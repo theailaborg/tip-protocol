@@ -657,6 +657,58 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(updated.handle).toBe("@x");
   });
 
+  test("org members round-trip; a re-save merges the status change; lookups by org, member and add_tx_id", async () => {
+    const dag = await makeDag();
+    const org = uniq("GB-org");
+    const member = uniq("IN-member");
+    const inviteTxId = uniq("tx");
+    const addTxId = uniq("tx");
+
+    dag.saveOrgMember({
+      invite_tx_id: inviteTxId, org_tip_id: org, member_tip_id: member, role: "author",
+      status: "invited", invited_at: T0, invited_claim: T0 - 5, accepted_at: null, add_tx_id: null,
+      removed_at: null, remove_tx_id: null, removed_by: null,
+    });
+    expect(dag.getOrgMember(inviteTxId)).toEqual(expect.objectContaining({ status: "invited", role: "author" }));
+    expect(Number(dag.getOrgMember(inviteTxId).invited_claim)).toBe(T0 - 5);
+    expect(dag.getOrgMembersByOrg(org).map(r => r.member_tip_id)).toEqual([member]);
+    expect(dag.getOrgMembersByMember(member).map(r => r.org_tip_id)).toEqual([org]);
+    expect(dag.getOrgMemberByAddTxId(addTxId)).toBeNull();
+
+    dag.saveOrgMember({ ...dag.getOrgMember(inviteTxId), status: "active", accepted_at: T0 + 5, add_tx_id: addTxId });
+    const active = dag.getOrgMemberByAddTxId(addTxId);
+    expect(active).toEqual(expect.objectContaining({ invite_tx_id: inviteTxId, status: "active", role: "author" }));
+    expect(Number(active.accepted_at)).toBe(T0 + 5);
+
+    dag.saveOrgMember({ ...active, status: "removed", removed_at: T0 + 9, remove_tx_id: uniq("tx"), removed_by: member });
+    expect(dag.getOrgMember(inviteTxId).status).toBe("removed");
+    expect([...dag.iterateCanonicalState()].filter(r => r.table === "org_members")).toHaveLength(1);
+    expect(dag.deleteCanonicalRow("org_members", { invite_tx_id: inviteTxId })).toBe(true);
+    expect(dag.getOrgMember(inviteTxId)).toBeNull();
+  });
+
+  test("bylined content: credited in authors[] without being author_tip_id, in both the lookup and the list filter", async () => {
+    const dag = await makeDag();
+    const org = uniq("GB-org");
+    const member = uniq("IN-member");
+    const byline = (ct) => ({ ...contentRec(ct, org), authors: [
+      { key_mode: "attribution", role: "byline", signed: false, tip_id: org, tip_id_type: "organization" },
+      { key_mode: "attribution", role: "byline", signed: false, tip_id: member, tip_id_type: "personal" },
+    ] });
+    const own = uniq("ct"), bylined = uniq("ct"), solo = uniq("ct");
+    dag.saveContent({ ...contentRec(own, member), authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: member, tip_id_type: "personal" }] });
+    dag.saveContent(byline(bylined));
+    dag.saveContent({ ...contentRec(solo, org), authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: org, tip_id_type: "organization" }] });
+
+    expect(dag.getContentBylined(member).map(c => c.ctid)).toEqual([bylined]);
+    expect(dag.getContentBylined(org)).toEqual([]);
+    expect(dag.getContentByAuthor(member).map(c => c.ctid)).toEqual([own]);
+    expect(dag.listContent({ bylined: member, limit: 10 }).map(c => c.ctid)).toEqual([bylined]);
+    expect(dag.listContent({ author: member, limit: 10 }).map(c => c.ctid)).toEqual([own]);
+    // A prefix of the id must not match (exact JSON element match).
+    expect(dag.getContentBylined(member.slice(0, -2))).toEqual([]);
+  });
+
   // ── 12. Canonical state ──────────────────────────────────────────────────
 
   test("clearCanonicalState leaves zero canonical rows", async () => {

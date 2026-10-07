@@ -160,6 +160,22 @@ function _seedCanonicalState(dag) {
     tx_id: "tx-canontest-bind",
   });
 
+  // Org roster (one row per invite; strip-when-absent invited_claim set here)
+  dag.saveOrgMember({
+    invite_tx_id: "tx-canontest-invite",
+    org_tip_id: "tip://id/US-canontest-owner",
+    member_tip_id: "tip://id/US-canontest-member",
+    role: "editor",
+    status: "active",
+    invited_at: T,
+    invited_claim: T - 1000,
+    accepted_at: T + 1,
+    add_tx_id: "tx-canontest-accept",
+    removed_at: null,
+    remove_tx_id: null,
+    removed_by: null,
+  });
+
   // Prescan reviews
   dag.savePrescanReview({
     review_id: "rv_canontest_001",

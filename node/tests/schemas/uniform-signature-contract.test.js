@@ -43,6 +43,9 @@ const keyRecoverySchema = require(path.join(SRC, "schemas", "key-recovery"));
 const interestRegisteredSchema = require(path.join(SRC, "schemas", "interest-registered"));
 const linkPlatformSchema = require(path.join(SRC, "schemas", "link-platform"));
 const unlinkPlatformSchema = require(path.join(SRC, "schemas", "unlink-platform"));
+const orgMemberInvitedSchema = require(path.join(SRC, "schemas", "org-member-invited"));
+const orgMemberAddedSchema = require(path.join(SRC, "schemas", "org-member-added"));
+const orgMemberRemovedSchema = require(path.join(SRC, "schemas", "org-member-removed"));
 
 const SCHEMA_FOR_TX_TYPE = {
   [TX_TYPES.REGISTER_CONTENT]: contentRegisterSchema,
@@ -58,6 +61,10 @@ const SCHEMA_FOR_TX_TYPE = {
   [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,
   [TX_TYPES.LINK_PLATFORM]: linkPlatformSchema,
   [TX_TYPES.UNLINK_PLATFORM]: unlinkPlatformSchema,
+  [TX_TYPES.ORG_MEMBER_INVITED]: orgMemberInvitedSchema,
+  [TX_TYPES.ORG_MEMBER_ADDED]: orgMemberAddedSchema,
+  [TX_TYPES.ORG_MEMBER_REMOVED]: orgMemberRemovedSchema,
+  [TX_TYPES.ORG_MEMBER_INVITE_CANCELLED]: require(path.join(SRC, "schemas", "org-member-invite-cancelled")),
 };
 
 // Tx types intentionally not yet on the unified contract — accounted for

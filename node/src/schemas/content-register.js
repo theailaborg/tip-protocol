@@ -49,13 +49,15 @@ const MCH_SPEC = Object.freeze({
   pattern: /^[0-9a-f]{64}$/, describe: "a 64-char lowercase hex string",
 });
 const {
-  TX_TYPES, ORIGIN, CNA_VERSIONS, CNA22_AUTHOR_KEYS,
+  TX_TYPES, ORIGIN, CNA_VERSIONS, CNA22_AUTHOR_KEYS, MAX_AUTHORS_PER_POST, TIP_ID_TYPES, ORG_MEMBER_ROLES,
   ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
   PERCEPTUAL_FINGERPRINT_KIND_VALUES, PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
   PERCEPTUAL_FINGERPRINTS_PROFILE, PERCEPTUAL_FINGERPRINTS_ENCODINGS,
 } = require("../../../shared/constants");
 const { shake256 } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
+const roster = require("./_org-members");
 const { validateContentSize } = require("../middleware/validate");
 
 const TX_TYPE = TX_TYPES.REGISTER_CONTENT;
@@ -102,6 +104,74 @@ function _checkAuthorsRegistered(authors, dag) {
       );
     }
   }
+}
+
+/**
+ * Roster gate, behind the same activation epoch as the roster tx types:
+ * at most MAX_AUTHORS_PER_POST authors, and an organization may attribute
+ * content only to itself or to its active members. `atMs` is the API clock
+ * at submit and the frozen tx.timestamp at commit.
+ */
+function _checkAuthorRoster(signerTipId, authors, dag, atMs, opts) {
+  if (!roster.checkActive(atMs, opts).ok) return;
+  if (authors.length > MAX_AUTHORS_PER_POST) {
+    throw schemaError(400, `authors[] may have at most ${MAX_AUTHORS_PER_POST} entries`, "authors_too_many");
+  }
+  // An organization is an author only of what it signs itself: nobody
+  // attributes content to another org, and an org never lists one. A
+  // revoked identity cannot be attributed either (a revoked member keeps
+  // its roster row, so this is what retires it as an author).
+  for (const a of authors) {
+    // `signed` / `co_signed` claim a co-signature in the envelope; none can
+    // be supplied yet, so the claim is always false and must not be recorded.
+    if (a.signed === true || a.key_mode === "co_signed") {
+      throw schemaError(400, `Author ${a.tip_id} claims a co-signature but none is present`, "author_cosignature_missing");
+    }
+    if (typeof dag.isRevoked === "function" && dag.isRevoked(a.tip_id)) {
+      throw schemaError(412, `Author ${a.tip_id} is revoked`, "invalid_author");
+    }
+    if (a.tip_id === signerTipId) continue;
+    const author = dag.getIdentity(a.tip_id);
+    if ((author?.tip_id_type || TIP_ID_TYPES.PERSONAL) === TIP_ID_TYPES.ORGANIZATION) {
+      throw schemaError(412, `Author ${a.tip_id} is an organization and not the signer`, "invalid_author");
+    }
+  }
+  const signer = dag.getIdentity(signerTipId);
+  if ((signer?.tip_id_type || TIP_ID_TYPES.PERSONAL) !== TIP_ID_TYPES.ORGANIZATION) return;
+  if (typeof dag.getOrgMembersByOrg !== "function") return;
+  for (const a of authors) {
+    if (a.tip_id === signerTipId) continue;
+    const membership = roster.activeMembership(dag, signerTipId, a.tip_id);
+    if (!membership) {
+      throw schemaError(412, `Author ${a.tip_id} is not a member of ${signerTipId}`, "invalid_author");
+    }
+    // A member's signed role is what they did for this post, chosen at publish
+    // time from the roster vocabulary; it need not match their team title.
+    const role = typeof a.role === "string" ? a.role : "contributor";
+    if (!ORG_MEMBER_ROLES.includes(role)) {
+      throw schemaError(412, `Author ${a.tip_id} role must be one of ${ORG_MEMBER_ROLES.join(", ")}`, "author_role_invalid");
+    }
+  }
+}
+
+/**
+ * Commit-time author check (consensus replay). The signer's signature is
+ * verified by the unified dispatcher; this re-runs the DAG presence, type
+ * and roster predicates on the frozen tx.timestamp. A gossiped tx never
+ * passes validateRequest, so this is the only place they bind.
+ */
+function verifyAuthors(tx, dag, opts) {
+  const d = tx.data || {};
+  if (!roster.checkActive(tx.timestamp, opts).ok) return { ok: true };
+  try {
+    const authors = (Array.isArray(d.authors) ? d.authors : []).map(_normalizeAuthor);
+    _checkAuthorsRegistered(authors, dag);
+    _checkAuthorRoster(d.signer_tip_id, authors, dag, tx.timestamp, opts);
+  } catch (err) {
+    if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
+    throw err;
+  }
+  return { ok: true };
 }
 
 /**
@@ -257,6 +327,8 @@ function validateRequest(body, deps) {
   // _checkAuthorsRegistered throws 412 on any off-DAG author.
   resolveSigner(body.signer_tip_id, deps.dag);
   _checkAuthorsRegistered(body.authors, deps.dag);
+  const now = typeof deps.now === "number" ? deps.now : nowMs();
+  _checkAuthorRoster(body.signer_tip_id, body.authors, deps.dag, now, deps);
 }
 
 /**
@@ -674,6 +746,7 @@ module.exports = {
   sign,
   verifySignature,
   verifyTx,
+  verifyAuthors,
   // GH #51 — unified signature contract
   SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
   SIGNED_BY,

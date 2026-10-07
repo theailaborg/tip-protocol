@@ -29,6 +29,10 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.INTEREST_REGISTERED]: require("./interest-registered"),
   [TX_TYPES.LINK_PLATFORM]: require("./link-platform"),
   [TX_TYPES.UNLINK_PLATFORM]: require("./unlink-platform"),
+  [TX_TYPES.ORG_MEMBER_INVITED]: require("./org-member-invited"),
+  [TX_TYPES.ORG_MEMBER_INVITE_CANCELLED]: require("./org-member-invite-cancelled"),
+  [TX_TYPES.ORG_MEMBER_ADDED]: require("./org-member-added"),
+  [TX_TYPES.ORG_MEMBER_REMOVED]: require("./org-member-removed"),
 });
 
 module.exports = { SCHEMA_FOR_TX_TYPE };
