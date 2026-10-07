@@ -87,7 +87,7 @@ function post(ctx, signer, authors, mode) {
     signer_tip_id: signer, origin_code: "OH", content_hash: hash,
     ctid: `tip://c/OH-${hash.slice(0, 14)}-${hash.slice(14, 18)}`,
     attribution_mode: mode, extras: {}, registered_urls: [], cna_version: contentSchema.CURRENT_CNA_VERSION,
-    authors: authors.map(a => ({ key_mode: "attribution", role: "byline", signed: false, tip_id: a, tip_id_type: a === ORG ? "organization" : "personal" })),
+    authors: authors.map(a => ({ key_mode: "attribution", role: a === signer ? "byline" : "author", signed: false, tip_id: a, tip_id_type: a === ORG ? "organization" : "personal" })),
   };
   data.signature = contentSchema.sign(contentSchema.buildSigningPayload(data, hash), ctx.keys[signer].privateKey);
   const tx = txOf(ctx, TX_TYPES.REGISTER_CONTENT, data, data.signature, next());
@@ -105,7 +105,7 @@ describe("org posts with a member byline: read model", () => {
     expect(d.publisher).toEqual({ tip_id: ORG, name: "The AI Lab", tip_id_type: "organization" });
     expect(d.authors_resolved).toEqual([
       expect.objectContaining({ tip_id: ORG, name: "The AI Lab", tip_id_type: "organization", relationship: "signer", revoked: false }),
-      expect.objectContaining({ tip_id: ALICE, name: "Alice Example", tip_id_type: "personal", relationship: "member", role: "byline", member_role: "author", revoked: false }),
+      expect.objectContaining({ tip_id: ALICE, name: "Alice Example", tip_id_type: "personal", relationship: "member", role: "author", member_role: "author", revoked: false }),
     ]);
     expect(typeof d.authors_resolved[1].tier).toBe("string");
 

@@ -91,7 +91,7 @@ function contentBody(ctx, signer, authors, mode = "employed", authorExtra = {}) 
   const b = {
     signer_tip_id: signer, origin_code: "OH", content: text, media_canonical_hash: null, content_type_hint: null,
     cna_version: contentSchema.CURRENT_CNA_VERSION, attribution_mode: mode, extras: {}, registered_urls: [],
-    authors: authors.map(a => ({ tip_id: a, tip_id_type: [ORG, ORG2].includes(a) ? "organization" : "personal", role: "byline", ...authorExtra })),
+    authors: authors.map(a => ({ tip_id: a, tip_id_type: [ORG, ORG2].includes(a) ? "organization" : "personal", role: a === signer ? "byline" : "author", ...authorExtra })),
   };
   b.signature = contentSchema.sign(contentSchema.buildSigningPayload(b, hash), ctx.keys[signer].privateKey);
   return { body: b, hash };
@@ -129,8 +129,8 @@ function contentRejected(ctx, signer, authors, code, mode, authorExtra) {
   expect(api(contentSchema, c.body, ctx, undefined, next())).toMatchObject({ ok: false, code });
   expect(commit(ctx, contentTx(ctx, c, next()))).toMatchObject({ committed: 0, dropped: 1 });
 }
-function contentAccepted(ctx, signer, authors, mode) {
-  const c = contentBody(ctx, signer, authors, mode);
+function contentAccepted(ctx, signer, authors, mode, authorExtra) {
+  const c = contentBody(ctx, signer, authors, mode, authorExtra);
   expect(api(contentSchema, c.body, ctx, undefined, next())).toEqual({ ok: true });
   expect(commit(ctx, contentTx(ctx, c, next()))).toMatchObject({ committed: 1, dropped: 0 });
 }
@@ -401,5 +401,18 @@ describe("10. an author cannot claim a co-signature that is not in the envelope"
     const ctxGate = (() => { const c = setup(); c.handler = createCommitHandler({ dag: c.dag, scoring: initScoring(c.dag, { nodeId: NODE_ID, nodeRegisteredId: NODE_ID }), config: { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, orgMembersActivationMs: Number.MAX_SAFE_INTEGER } }); return c; })();
     const c = contentBody(ctxGate, ALICE, [ALICE], "self", { signed: true });
     expect(commit(ctxGate, contentTx(ctxGate, c, next()))).toMatchObject({ committed: 1, dropped: 0 });
+  });
+});
+
+describe("11. a member author's signed role is the roster role at publish time", () => {
+  test("role byline (or any other) for a member is refused at API and DAG; the roster role is accepted; the org's own entry is free", () => {
+    const ctx = setup();
+    joined(ctx, ORG, ALICE);   // roster role: author
+    contentRejected(ctx, ORG, [ALICE], "author_role_mismatch", "employed", { role: "byline" });
+    contentRejected(ctx, ORG, [ALICE], "author_role_mismatch", "employed", { role: "editor" });
+    contentAccepted(ctx, ORG, [ALICE]);                 // helper writes the roster role for members
+    contentAccepted(ctx, ORG, [ORG], "self", { role: "publisher" });
+    // Personal co-authors are not roster members: any role is fine.
+    contentAccepted(ctx, ALICE, [ALICE, BOB], "self", { role: "byline" });
   });
 });
