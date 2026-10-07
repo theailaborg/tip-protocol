@@ -30,11 +30,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rows carry `signer_tip_id`, `attribution_mode`, `publisher_name`;
   `GET /v1/identity/:id` adds `bylined_count`. The `author`/`bylined` filters
   now accept three-letter region codes.
-- A member author's signed `authors[].role` must equal their roster role at
-  commit (`412 author_role_mismatch`), so the record keeps proving the role
-  the org vouched for even after the roster changes; `member_role` on
-  `authors_resolved` is the role now. The signer's own entry and co-authors on
-  personal posts keep a free `role`.
+- A member author's signed `authors[].role` is what they did for that post,
+  chosen at publish time from the roster vocabulary (`412 author_role_invalid`
+  otherwise); it need not match their team title, which `authors_resolved`
+  reports as `member_role`. The signer's own entry and co-authors on personal
+  posts keep a free `role`.
 - Roster roles are a locked set (`author`, `editor`, `contributor`, `reviewer`,
   `correspondent`; labels only, no permission attached); any other value is
   `role_invalid`. `GET /v1/identity/:org/members` returns the allowed `roles`.

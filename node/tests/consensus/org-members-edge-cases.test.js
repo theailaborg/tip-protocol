@@ -404,13 +404,14 @@ describe("10. an author cannot claim a co-signature that is not in the envelope"
   });
 });
 
-describe("11. a member author's signed role is the roster role at publish time", () => {
-  test("role byline (or any other) for a member is refused at API and DAG; the roster role is accepted; the org's own entry is free", () => {
+describe("11. a member author's signed role is what they did for this post, from the roster vocabulary", () => {
+  test("byline or a made-up role for a member is refused at API and DAG; any of the five is accepted regardless of team title; the org's own entry is free", () => {
     const ctx = setup();
-    joined(ctx, ORG, ALICE);   // roster role: author
-    contentRejected(ctx, ORG, [ALICE], "author_role_mismatch", "employed", { role: "byline" });
-    contentRejected(ctx, ORG, [ALICE], "author_role_mismatch", "employed", { role: "editor" });
-    contentAccepted(ctx, ORG, [ALICE]);                 // helper writes the roster role for members
+    joined(ctx, ORG, ALICE);   // team title: author
+    contentRejected(ctx, ORG, [ALICE], "author_role_invalid", "employed", { role: "byline" });
+    contentRejected(ctx, ORG, [ALICE], "author_role_invalid", "employed", { role: "senior-editor" });
+    contentAccepted(ctx, ORG, [ALICE], "employed", { role: "editor" });   // differs from the title, allowed
+    contentAccepted(ctx, ORG, [ALICE]);                                    // helper writes "author"
     contentAccepted(ctx, ORG, [ORG], "self", { role: "publisher" });
     // Personal co-authors are not roster members: any role is fine.
     contentAccepted(ctx, ALICE, [ALICE, BOB], "self", { role: "byline" });
