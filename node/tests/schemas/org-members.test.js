@@ -15,7 +15,7 @@ const SRC = path.resolve(__dirname, "../../src");
 const SHARED = path.resolve(__dirname, "../../../shared");
 
 const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
-const { ORG_MEMBERS, ORG_MEMBER_STATUS, CLAIM_MAX_AGE_MS } = require(path.join(SHARED, "constants"));
+const { ORG_MEMBERS, ORG_MEMBER_ROLES, ORG_MEMBER_STATUS, CLAIM_MAX_AGE_MS } = require(path.join(SHARED, "constants"));
 const invited = require(path.join(SRC, "schemas", "org-member-invited"));
 const added = require(path.join(SRC, "schemas", "org-member-added"));
 const removed = require(path.join(SRC, "schemas", "org-member-removed"));
@@ -78,12 +78,14 @@ describe("canonical payloads", () => {
     expect(Object.keys(p)).toEqual(["add_tx_id", "claimed_at", "member_tip_id", "org_tip_id", "signer_tip_id"]);
   });
 
-  test("role is a bounded lowercase token", () => {
+  test("role is one of the locked roster roles", () => {
     const base = { org_tip_id: ORG, member_tip_id: MEMBER, invited_at: T };
     expect(() => invited.buildSigningPayload({ ...base, role: "Editor" })).toThrow(expect.objectContaining({ code: "role_invalid" }));
     expect(() => invited.buildSigningPayload({ ...base, role: "a".repeat(ORG_MEMBERS.ROLE_MAX_LENGTH + 1) })).toThrow(expect.objectContaining({ code: "role_too_long" }));
     expect(() => invited.buildSigningPayload({ ...base })).toThrow(expect.objectContaining({ code: "role_required" }));
-    expect(invited.buildSigningPayload({ ...base, role: "senior-editor_2" }).role).toBe("senior-editor_2");
+    expect(() => invited.buildSigningPayload({ ...base, role: "senior-editor_2" })).toThrow(expect.objectContaining({ code: "role_invalid" }));
+    expect(() => invited.buildSigningPayload({ ...base, role: "autor" })).toThrow(expect.objectContaining({ code: "role_invalid" }));
+    for (const r of ORG_MEMBER_ROLES) expect(invited.buildSigningPayload({ ...base, role: r }).role).toBe(r);
   });
 });
 

@@ -1083,6 +1083,9 @@ const ORG_MEMBERS = Object.freeze({
   ROLE_PATTERN: /^[a-z][a-z0-9_-]{0,63}$/,
   ACTIVATION_MS: 1792368000000, // 2026-10-19 00:00:00 UTC
 });
+// Roster roles are labels only (no permission is attached yet); locked so the
+// chain never carries variants of the same word.
+const ORG_MEMBER_ROLES = Object.freeze(["author", "editor", "contributor", "reviewer", "correspondent"]);
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",
   CANCELLED: "cancelled",
@@ -1125,6 +1128,7 @@ module.exports = {
   REGISTER_CREDIT,
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
   ORG_MEMBERS,
+  ORG_MEMBER_ROLES,
   ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,

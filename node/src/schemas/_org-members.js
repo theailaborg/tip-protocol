@@ -21,7 +21,7 @@
 
 const { schemaError, assertBounded } = require("./_common");
 const {
-  ORG_MEMBERS, ORG_MEMBER_STATUS, TIP_ID_TYPES, CLAIM_MAX_AGE_MS,
+  ORG_MEMBERS, ORG_MEMBER_ROLES, ORG_MEMBER_STATUS, TIP_ID_TYPES, CLAIM_MAX_AGE_MS,
 } = require("../../../shared/constants");
 
 const ROLE_SPEC = Object.freeze({
@@ -43,6 +43,9 @@ function throwIfFailed(r) {
 
 function assertRole(role) {
   assertBounded(role, ROLE_SPEC);
+  if (!ORG_MEMBER_ROLES.includes(role)) {
+    throw schemaError(400, `role must be one of ${ORG_MEMBER_ROLES.join(", ")}`, "role_invalid");
+  }
 }
 
 function isTipId(v) {

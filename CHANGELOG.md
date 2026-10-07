@@ -30,6 +30,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rows carry `signer_tip_id`, `attribution_mode`, `publisher_name`;
   `GET /v1/identity/:id` adds `bylined_count`. The `author`/`bylined` filters
   now accept three-letter region codes.
+- Roster roles are a locked set (`author`, `editor`, `contributor`, `reviewer`,
+  `correspondent`; labels only, no permission attached); any other value is
+  `role_invalid`. `GET /v1/identity/:org/members` returns the allowed `roles`.
 - API: `POST /v1/identity/:org/members/invite`, `POST /v1/identity/:member/members/accept`,
   `POST /v1/identity/:signer/members/remove`, `GET /v1/identity/:org/members`
   (`?include=removed`), `GET /v1/identity/:member/invites`,
