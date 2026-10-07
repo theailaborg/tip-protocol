@@ -269,3 +269,15 @@ describe("GET /v1/identity/search (invite box type-ahead)", () => {
     expect((await request(h.app).get("/v1/identity/search?q=alice")).body.results).toEqual([]);
   });
 });
+
+describe("GET /v1/identity/:tipId/members on a person", () => {
+  test("answers 200 with the limit, the roles and empty lists instead of an error", async () => {
+    const h = harness();
+    const r = await request(h.app).get(`/v1/identity/${enc(ALICE)}/members`);
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ org_tip_id: ALICE, limit: ORG_MEMBERS.FREE_MEMBER_LIMIT, members: [], pending_invites: [] });
+    expect(Array.isArray(r.body.roles)).toBe(true);
+    const missing = await request(h.app).get(`/v1/identity/${enc("tip://id/US-0000000000000000")}/members`);
+    expect(missing.status).toBe(404);
+  });
+});

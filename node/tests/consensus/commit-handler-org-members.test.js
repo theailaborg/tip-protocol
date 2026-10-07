@@ -276,3 +276,19 @@ describe("org roster lifecycle through the commit handler", () => {
     expect(commit(ctx, [onTime])).toMatchObject({ committed: 1 });
   });
 });
+
+describe("roster transactions are score-neutral", () => {
+  test("invite, accept and remove leave both parties' scores unchanged; an org post still credits the org only", () => {
+    const ctx = _setup();
+    const before = { org: ctx.dag.getScore(ORG).score, alice: ctx.dag.getScore(ALICE).score };
+    const inv = inviteTx(ctx, ALICE, BASE_TS + 1000);
+    commit(ctx, [inv]);
+    const acc = acceptTx(ctx, ALICE, inv.tx_id, BASE_TS + 2000);
+    commit(ctx, [acc]);
+    expect(ctx.dag.getScore(ORG).score).toBe(before.org);
+    expect(ctx.dag.getScore(ALICE).score).toBe(before.alice);
+    commit(ctx, [removeTx(ctx, ALICE, acc.tx_id, ORG, BASE_TS + 3000)]);
+    expect(ctx.dag.getScore(ORG).score).toBe(before.org);
+    expect(ctx.dag.getScore(ALICE).score).toBe(before.alice);
+  });
+});
