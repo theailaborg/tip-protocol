@@ -9,6 +9,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+**Node 2.7.1: organization roster activation pinned to 2026-10-07 16:50:00 UTC**
+- `ORG_MEMBERS.ACTIVATION_MS` now carries the mainnet activation epoch, so a node
+  needs no `TIP_ORG_MEMBERS_ACTIVATION_MS` override to agree with the fleet.
+
 ### Added
 
 **Node 2.7.0: organization roster (`ORG_MEMBER_INVITED` / `ORG_MEMBER_ADDED` / `ORG_MEMBER_REMOVED`)**
