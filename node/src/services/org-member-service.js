@@ -1,7 +1,7 @@
 "use strict";
 
 const { nowMs } = require("../../../shared/time");
-const { TX_TYPES, ORG_MEMBER_STATUS } = require("../../../shared/constants");
+const { TX_TYPES, ORG_MEMBER_STATUS, ORG_MEMBER_ROLES } = require("../../../shared/constants");
 const invitedSchema = require("../schemas/org-member-invited");
 const cancelledSchema = require("../schemas/org-member-invite-cancelled");
 const addedSchema = require("../schemas/org-member-added");
@@ -119,6 +119,7 @@ function createOrgMemberService({ dag, config, submitTx }) {
     return {
       org_tip_id: orgTipId,
       limit: roster.memberLimit(dag, orgTipId),
+      roles: ORG_MEMBER_ROLES,
       members: rows.filter(r => r.status === ORG_MEMBER_STATUS.ACTIVE).map(_view),
       pending_invites: rows.filter(r => roster.isOpenInvite(r, now)).map(_view),
       ...(includeRemoved ? {
