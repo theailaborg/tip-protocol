@@ -149,3 +149,43 @@ describe("org posts with a member byline: read model", () => {
     expect(org).toMatchObject({ content_count: 2, bylined_count: 0 });
   });
 });
+
+describe("ownership of an org post stays with the org", () => {
+  const rules = require(path.join(SRC, "validators", "business-rules"));
+  test("the org can retract / update origin; the credited member cannot; the member cannot dispute it", () => {
+    const ctx = setup();
+    joined(ctx, ORG, ALICE);
+    const ctid = post(ctx, ORG, [ORG, ALICE], "employed");
+    const now = nowMs();
+    expect(rules.canRetract(ctx.dag, { ctid, author_tip_id: ORG }).valid).toBe(true);
+    expect(rules.canRetract(ctx.dag, { ctid, author_tip_id: ALICE })).toMatchObject({ valid: false, error: expect.objectContaining({ status: 403 }) });
+    expect(rules.canUpdateOrigin(ctx.dag, { ctid, author_tip_id: ALICE, new_origin_code: "AA" }, { now })).toMatchObject({ valid: false });
+    expect(rules.canUpdateRegisteredUrls(ctx.dag, { ctid, author_tip_id: ALICE, registered_urls: ["https://example.com/x/"] })).toMatchObject({ valid: false });
+    // Listed authors are barred from disputing their own post, exactly like the signer.
+    const scoring = initScoring(ctx.dag, { nodeId: NODE_ID, nodeRegisteredId: NODE_ID });
+    const dispute = (who) => rules.canDispute(ctx.dag, scoring, { ctid, disputer_tip_id: who, reason: "origin_mismatch", claimed_origin: "AA", evidence_hash: "e".repeat(64) }, { now });
+    expect(dispute(ALICE).valid).toBe(false);
+    expect(dispute(ORG).valid).toBe(false);
+  });
+});
+
+describe("bylined list pagination", () => {
+  test("pages through more than one page without duplicates and never overlaps the person's own posts", () => {
+    const ctx = setup();
+    joined(ctx, ORG, ALICE);
+    const own = post(ctx, ALICE, [ALICE], "self");
+    const orgPosts = [];
+    for (let i = 0; i < 23; i++) orgPosts.push(post(ctx, ORG, [ORG, ALICE], "employed"));
+    const p1 = ctx.contentService.list({ bylined: ALICE, limit: 20 });
+    expect(p1.items).toHaveLength(20);
+    expect(p1.next_cursor).toBeTruthy();
+    const p2 = ctx.contentService.list({ bylined: ALICE, limit: 20, cursor: p1.next_cursor });
+    expect(p2.items).toHaveLength(3);
+    expect(p2.next_cursor).toBeNull();
+    const seen = [...p1.items, ...p2.items].map(i => i.ctid);
+    expect(new Set(seen).size).toBe(23);
+    expect(seen.sort()).toEqual([...orgPosts].sort());
+    expect(seen).not.toContain(own);
+    expect(ctx.identityService.resolve(ALICE)).toMatchObject({ content_count: 1, bylined_count: 23 });
+  });
+});
