@@ -141,8 +141,15 @@ function _checkAuthorRoster(signerTipId, authors, dag, atMs, opts) {
   if (typeof dag.getOrgMembersByOrg !== "function") return;
   for (const a of authors) {
     if (a.tip_id === signerTipId) continue;
-    if (!roster.activeMembership(dag, signerTipId, a.tip_id)) {
+    const membership = roster.activeMembership(dag, signerTipId, a.tip_id);
+    if (!membership) {
       throw schemaError(412, `Author ${a.tip_id} is not a member of ${signerTipId}`, "invalid_author");
+    }
+    // The signed author role is the roster role at publish time, so the
+    // record keeps proving what the org vouched for even after the roster changes.
+    const role = typeof a.role === "string" ? a.role : "contributor";
+    if (role !== membership.role) {
+      throw schemaError(412, `Author ${a.tip_id} is "${membership.role}" on the roster, not "${role}"`, "author_role_mismatch");
     }
   }
 }

@@ -98,7 +98,7 @@ function contentTx(ctx, signer, authors, ts, mode = "employed") {
     attribution_mode: mode, extras: {}, registered_urls: [],
     cna_version: contentRegisterSchema.CURRENT_CNA_VERSION,
     authors: authors.map(a => ({
-      key_mode: "attribution", role: "byline", signed: false, tip_id: a,
+      key_mode: "attribution", role: a === signer ? "byline" : "author", signed: false, tip_id: a,
       tip_id_type: a === ORG ? "organization" : "personal",
     })),
   };
