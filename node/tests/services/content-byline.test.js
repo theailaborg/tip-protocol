@@ -105,7 +105,7 @@ describe("org posts with a member byline: read model", () => {
     expect(d.publisher).toEqual({ tip_id: ORG, name: "The AI Lab", tip_id_type: "organization" });
     expect(d.authors_resolved).toEqual([
       expect.objectContaining({ tip_id: ORG, name: "The AI Lab", tip_id_type: "organization", relationship: "signer", revoked: false }),
-      expect.objectContaining({ tip_id: ALICE, name: "Alice Example", tip_id_type: "personal", relationship: "member", role: "byline", revoked: false }),
+      expect.objectContaining({ tip_id: ALICE, name: "Alice Example", tip_id_type: "personal", relationship: "member", role: "byline", member_role: "author", revoked: false }),
     ]);
     expect(typeof d.authors_resolved[1].tier).toBe("string");
 
@@ -113,6 +113,8 @@ describe("org posts with a member byline: read model", () => {
     const s = await ctx.contentService.resolve(soloPost);
     expect(s.publisher.tip_id).toBe(ALICE);
     expect(s.authors_resolved.map(a => a.relationship)).toEqual(["signer", "listed"]);
+    expect(s.authors_resolved.map(a => a.member_role)).toEqual([null, null]);
+    expect(d.authors_resolved[0].member_role).toBeNull();
   });
 
   test("list?bylined= returns org posts crediting the person, never their own; list rows carry the publisher", () => {

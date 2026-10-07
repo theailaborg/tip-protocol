@@ -644,13 +644,16 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       const id = dag.getIdentity(a.tip_id);
       const sc = id ? scoring.getScore(a.tip_id) : null;
       let relationship = "listed";
+      let membership = null;
       if (a.tip_id === signerTipId) relationship = "signer";
-      else if (signerIsOrg && roster.activeMembership(dag, signerTipId, a.tip_id)) relationship = "member";
+      else if (signerIsOrg && (membership = roster.activeMembership(dag, signerTipId, a.tip_id))) relationship = "member";
       return {
         tip_id: a.tip_id,
         name: id ? (id.creator_name || null) : null,
         tip_id_type: a.tip_id_type || (id ? id.tip_id_type : null) || TIP_ID_TYPES.PERSONAL,
         role: a.role || null,
+        // Roster role on the signer org (editor, author, ...) when the author is an active member.
+        member_role: membership ? membership.role : null,
         tier: sc ? sc.tier.name : null,
         revoked: dag.isRevoked(a.tip_id),
         relationship,
