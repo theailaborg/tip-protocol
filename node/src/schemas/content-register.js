@@ -49,7 +49,7 @@ const MCH_SPEC = Object.freeze({
   pattern: /^[0-9a-f]{64}$/, describe: "a 64-char lowercase hex string",
 });
 const {
-  TX_TYPES, ORIGIN, CNA_VERSIONS, CNA22_AUTHOR_KEYS, MAX_AUTHORS_PER_POST, TIP_ID_TYPES,
+  TX_TYPES, ORIGIN, CNA_VERSIONS, CNA22_AUTHOR_KEYS, MAX_AUTHORS_PER_POST, TIP_ID_TYPES, ORG_MEMBER_ROLES,
   ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
   PERCEPTUAL_FINGERPRINT_KIND_VALUES, PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
@@ -145,11 +145,11 @@ function _checkAuthorRoster(signerTipId, authors, dag, atMs, opts) {
     if (!membership) {
       throw schemaError(412, `Author ${a.tip_id} is not a member of ${signerTipId}`, "invalid_author");
     }
-    // The signed author role is the roster role at publish time, so the
-    // record keeps proving what the org vouched for even after the roster changes.
+    // A member's signed role is what they did for this post, chosen at publish
+    // time from the roster vocabulary; it need not match their team title.
     const role = typeof a.role === "string" ? a.role : "contributor";
-    if (role !== membership.role) {
-      throw schemaError(412, `Author ${a.tip_id} is "${membership.role}" on the roster, not "${role}"`, "author_role_mismatch");
+    if (!ORG_MEMBER_ROLES.includes(role)) {
+      throw schemaError(412, `Author ${a.tip_id} role must be one of ${ORG_MEMBER_ROLES.join(", ")}`, "author_role_invalid");
     }
   }
 }
