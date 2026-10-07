@@ -132,7 +132,7 @@ Expected response:
 ```json
 {
   "status": "ok",
-  "version": "2.7.0",
+  "version": "2.7.1",
   "node_id": "tip://node/<id>",
   "dag_count": 0
 }

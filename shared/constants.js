@@ -1081,7 +1081,7 @@ const ORG_MEMBERS = Object.freeze({
   INVITE_TTL_MS: 7 * 24 * 60 * 60 * 1000,
   ROLE_MAX_LENGTH: 64,
   ROLE_PATTERN: /^[a-z][a-z0-9_-]{0,63}$/,
-  ACTIVATION_MS: 1792368000000, // 2026-10-19 00:00:00 UTC
+  ACTIVATION_MS: 1791391800000, // 2026-10-07 16:50:00 UTC mainnet activation
 });
 // Roster roles are labels only (no permission is attached yet); locked so the
 // chain never carries variants of the same word.
