@@ -324,6 +324,18 @@ describe("checkSignerKeysCurrent", () => {
     expect(r.error).toContain(NODE_A);
   });
 
+  test("a key closed by a recovery gets no grace at all", () => {
+    const dag = {
+      getKeyValidAt: (_et, id, ts) => (id === TIP_A && ts >= T_ROT)
+        ? { public_key: "11", algorithm: "ml-dsa-65", valid_to_ts: null, source_tx_id: "rec-1" }
+        : { public_key: "00", algorithm: "ml-dsa-65", valid_to_ts: id === TIP_A ? T_ROT : null, source_tx_id: "reg" },
+      getTx: (id) => (id === "rec-1" ? { tx_type: "KEY_RECOVERY" } : { tx_type: "KEY_ROTATED" }),
+    };
+    expect(checkSignerKeysCurrent(tx, invitedSchema, cosigs, dag, T_ROT + 1, GRACE)).toMatchObject({ ok: false, code: "signer_key_retired" });
+    const rotated = { ...dag, getTx: () => ({ tx_type: "KEY_ROTATED" }) };
+    expect(checkSignerKeysCurrent(tx, invitedSchema, cosigs, rotated, T_ROT + 1, GRACE).ok).toBe(true);
+  });
+
   test("retired inside the grace is still ok (in-flight rotation)", () => {
     expect(checkSignerKeysCurrent(tx, invitedSchema, cosigs, dagWith({ [TIP_A]: T_ROT }), T_ROT + GRACE, GRACE).ok).toBe(true);
   });

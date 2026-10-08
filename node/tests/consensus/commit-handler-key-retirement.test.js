@@ -203,6 +203,21 @@ describe("retired signing keys at commit", () => {
     expect(ctx.dag.getTxRejection(backdated.tx_id).reason).toBe(TX_REJECTION_REASON.SIGNER_KEY_RETIRED);
   });
 
+  test("after a recovery the old key gets no grace: a tx signed with it is rejected from the very next round", () => {
+    const ctx = setup();
+    const recoveredAt = nowMs() - 5000;
+    const { tx: recovery, newKp } = recoveryTx(ctx, ctx.newKey.publicKey, recoveredAt);
+    expect(ctx.handler.commitOrderedTxs([recovery], ++round, { certTimestamp: recoveredAt + 1000 })).toMatchObject({ committed: 1 });
+
+    const stolen = inviteTx(ctx, ctx.newKey, recoveredAt - 1000, ALICE);
+    const r = ctx.handler.commitOrderedTxs([stolen], ++round, { certTimestamp: recoveredAt + 2000 });
+    expect(r).toMatchObject({ committed: 0, dropped: 1 });
+    expect(ctx.dag.getTxRejection(stolen.tx_id).reason).toBe(TX_REJECTION_REASON.SIGNER_KEY_RETIRED);
+
+    const honest = inviteTx(ctx, newKp, recoveredAt + 1500, ALICE);
+    expect(ctx.handler.commitOrderedTxs([honest], ++round, { certTimestamp: recoveredAt + 3000 })).toMatchObject({ committed: 1, dropped: 0 });
+  });
+
   test("before the activation epoch a recovery closes only the open row, as before", () => {
     const ctx = setup({ keyRetirementActivationMs: Number.MAX_SAFE_INTEGER });
     const parkedUntil = nowMs() + 365 * 24 * HOUR;

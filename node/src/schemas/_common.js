@@ -25,7 +25,7 @@
 "use strict";
 
 const { canonicalJson, shake256, mldsaSign, mldsaVerify, canonicalTx, signTransaction, verifyWithAlgorithm, signWithAlgorithm } = require("../../../shared/crypto");
-const { SIGNED_BY_KIND, SIGNED_BY_KIND_VALUES, SIGNATURE_SCOPE, SIGNATURE_ALGORITHM_DEFAULT } = require("../../../shared/constants");
+const { SIGNED_BY_KIND, SIGNED_BY_KIND_VALUES, SIGNATURE_SCOPE, SIGNATURE_ALGORITHM_DEFAULT, TX_TYPES } = require("../../../shared/constants");
 
 // Cosignatures normalisation — see SIGNATURES.md "Cosignatures" section.
 // Maps cosignature kind discriminator to entity_type used by
@@ -268,10 +268,12 @@ function resolveSignerRecord(tx, schema, dag) {
 
 /**
  * Commit-time rule: every key the dispatcher resolved at tx.timestamp
- * (primary signer plus each cosigner) must not have been retired more than
- * `graceMs` before `atMs`, the round's certificate time. The API never sees
- * this case (it checks the active key); the commit path must, or a
- * backdated tx signed with a rotated-away key verifies forever.
+ * (primary signer plus each cosigner) must still be usable at `atMs`, the
+ * round's certificate time. A key closed by a planned rotation keeps
+ * `graceMs` for in-flight transactions; one closed by a recovery was lost or
+ * stolen, so nothing signed with it may land once the recovery is in. The
+ * API never sees this case (it checks the active key); the commit path
+ * must, or a backdated tx signed with a retired key verifies forever.
  */
 function checkSignerKeysCurrent(tx, schema, cosigContracts, dag, atMs, graceMs) {
   const timestamp = Number(tx?.timestamp);
@@ -286,15 +288,24 @@ function checkSignerKeysCurrent(tx, schema, cosigContracts, dag, atMs, graceMs) 
   for (const { entityType, entityId } of signers) {
     const key = dag.getKeyValidAt(entityType, entityId, timestamp);
     if (!key || key.valid_to_ts == null) continue;
-    if (atMs - Number(key.valid_to_ts) > graceMs) {
+    const retiredAt = Number(key.valid_to_ts);
+    const allowance = _retiredByRecovery(dag, entityType, entityId, retiredAt) ? 0 : graceMs;
+    if (atMs - retiredAt > allowance) {
       return {
         ok: false,
         code: "signer_key_retired",
-        error: `${entityType} ${entityId} signing key retired at ${key.valid_to_ts}, round certified at ${atMs}`,
+        error: `${entityType} ${entityId} signing key retired at ${retiredAt}, round certified at ${atMs}`,
       };
     }
   }
   return { ok: true };
+}
+
+// The key that took over at `retiredAt` records the tx that installed it.
+function _retiredByRecovery(dag, entityType, entityId, retiredAt) {
+  const successor = dag.getKeyValidAt(entityType, entityId, retiredAt);
+  if (!successor || !successor.source_tx_id || typeof dag.getTx !== "function") return false;
+  return dag.getTx(successor.source_tx_id)?.tx_type === TX_TYPES.KEY_RECOVERY;
 }
 
 /**

@@ -21,8 +21,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   signer and every cosigner must not have been retired more than
   `KEY_RETIREMENT_GRACE_MS` (6 min, mempool TTL plus a round) before the
   round's certificate time; otherwise the transaction is rejected as
-  `signer_key_retired`. Honest transactions are not age-bounded: one that
-  waited out an outage still commits unless its key was retired meanwhile.
+  `signer_key_retired`. A key closed by `KEY_RECOVERY` gets no grace at all
+  (it was lost or stolen), the grace applies only to a planned `KEY_ROTATED`.
+  Honest transactions are not age-bounded: one that waited out an outage
+  still commits unless its key was retired meanwhile.
   New reject rule, so gated on `KEY_RETIREMENT_ACTIVATION_MS`
   (`TIP_KEY_RETIREMENT_ACTIVATION_MS` overrides it).
 - Closing the loophole around that rule: a `KEY_ROTATED` could park
