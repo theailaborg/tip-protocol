@@ -122,9 +122,11 @@ function _checkAuthorRoster(signerTipId, authors, dag, atMs, opts) {
   // revoked identity cannot be attributed either (a revoked member keeps
   // its roster row, so this is what retires it as an author).
   for (const a of authors) {
-    // `signed` / `co_signed` claim a co-signature in the envelope; none can
-    // be supplied yet, so the claim is always false and must not be recorded.
-    if (a.signed === true || a.key_mode === "co_signed") {
+    // `co_signed` claims a co-signature in the envelope; none can be supplied
+    // yet. `signed: true` is NOT refused: the released extension sets it on
+    // its passkey path with no co-signature, and the flag sits inside the
+    // client-signed bytes, so it is kept as sent until that client is gone.
+    if (a.key_mode === "co_signed") {
       throw schemaError(400, `Author ${a.tip_id} claims a co-signature but none is present`, "author_cosignature_missing");
     }
     if (typeof dag.isRevoked === "function" && dag.isRevoked(a.tip_id)) {
