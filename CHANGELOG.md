@@ -26,7 +26,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Honest transactions are not age-bounded: one that waited out an outage
   still commits unless its key was retired meanwhile.
   New reject rule, so gated on `KEY_RETIREMENT_ACTIVATION_MS`, pinned to the
-  mainnet activation 2026-10-15 00:00:00 UTC (`TIP_KEY_RETIREMENT_ACTIVATION_MS`
+  mainnet activation 2026-10-09 00:00:00 UTC (`TIP_KEY_RETIREMENT_ACTIVATION_MS`
   overrides it on an isolated cluster). Every node, partner nodes included,
   must run 2.7.2 before that epoch.
 - Closing the loophole around that rule: a `KEY_ROTATED` could park

@@ -1097,7 +1097,7 @@ const ORG_MEMBER_ROLES = Object.freeze(["author", "editor", "contributor", "revi
 // signed just before a rotation can take to certify; every extra minute is a
 // minute a stolen key still works after recovery. New reject rule, so gated.
 const KEY_RETIREMENT_GRACE_MS = 6 * 60 * 1000;
-const KEY_RETIREMENT_ACTIVATION_MS = 1792022400000; // 2026-10-15 00:00:00 UTC mainnet activation
+const KEY_RETIREMENT_ACTIVATION_MS = 1791504000000; // 2026-10-09 00:00:00 UTC mainnet activation
 // A rotation may be scheduled ahead but not parked years out: a thief holding
 // the current key could otherwise keep its window open past the owner's
 // recovery. API-enforced always; commit-enforced from the activation above.
