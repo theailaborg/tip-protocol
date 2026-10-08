@@ -125,7 +125,7 @@ function _checkAuthorRoster(signerTipId, authors, dag, atMs, opts) {
     // `signed` / `co_signed` claim a co-signature in the envelope; none can
     // be supplied yet, so the claim is always false and must not be recorded.
     if (a.signed === true || a.key_mode === "co_signed") {
-      throw schemaError(400, `Author ${a.tip_id} claims a co-signature but none is present`, "author_cosignature_missing");
+      throw schemaError(400, `Author ${a.tip_id} is marked as co-signed but no co-signature is attached. Update the TIP extension to the latest version and try again.`, "author_cosignature_missing");
     }
     if (typeof dag.isRevoked === "function" && dag.isRevoked(a.tip_id)) {
       throw schemaError(412, `Author ${a.tip_id} is revoked`, "invalid_author");

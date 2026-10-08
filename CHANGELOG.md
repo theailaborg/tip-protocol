@@ -11,6 +11,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+**Node 2.7.2: actionable error for the released extension's passkey path**
+- Browser extensions up to v2.9.41 mark authors `signed: true` on the passkey
+  path without attaching a co-signature, which the roster release refuses
+  (`author_cosignature_missing`). The refusal stays, since the flag is a
+  false claim inside the signed bytes; the message now tells the user to
+  update the extension instead of quoting the raw check.
+
 **Node 2.7.2: a retired signing key can no longer sign through a backdated transaction**
 - Signing keys resolve at `tx.timestamp` so that history keeps verifying after
   a rotation or recovery. Nothing checked whether that key was still current
