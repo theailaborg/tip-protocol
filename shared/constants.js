@@ -791,6 +791,9 @@ const TX_REJECTION_REASON = Object.freeze({
   // lifetime cap (a burst raced past the emitter's stale headroom read).
   REG_CREDIT_CAP_REACHED: "reg_credit_cap_reached",
   REVALIDATION_FAILED: "revalidation_failed",
+  // Signer (or cosigner) key already retired by a rotation / recovery when the
+  // round certified; see KEY_RETIREMENT_GRACE_MS.
+  SIGNER_KEY_RETIRED: "signer_key_retired",
   // Site 5 — generic fallback for unexpected drops; always logs detail.
   TX_DECODE_FAILED: "tx_decode_failed",
 });
@@ -1081,11 +1084,25 @@ const ORG_MEMBERS = Object.freeze({
   INVITE_TTL_MS: 7 * 24 * 60 * 60 * 1000,
   ROLE_MAX_LENGTH: 64,
   ROLE_PATTERN: /^[a-z][a-z0-9_-]{0,63}$/,
-  ACTIVATION_MS: 1792368000000, // 2026-10-19 00:00:00 UTC
+  ACTIVATION_MS: 1791391800000, // 2026-10-07 16:50:00 UTC mainnet activation
 });
 // Roster roles are labels only (no permission is attached yet); locked so the
 // chain never carries variants of the same word.
 const ORG_MEMBER_ROLES = Object.freeze(["author", "editor", "contributor", "reviewer", "correspondent"]);
+// Signing keys resolve at tx.timestamp so history keeps verifying after a
+// rotation or recovery, which would also let a retired key sign forever via a
+// backdated tx. At commit the resolved key must not have been retired more
+// than the grace before the round's certificate time (BFT median, identical
+// on every node). Grace = mempool TTL + a round, the longest an honest tx
+// signed just before a rotation can take to certify; every extra minute is a
+// minute a stolen key still works after recovery. New reject rule, so gated.
+const KEY_RETIREMENT_GRACE_MS = 6 * 60 * 1000;
+const KEY_RETIREMENT_ACTIVATION_MS = 1791504000000; // 2026-10-09 00:00:00 UTC
+// A rotation may be scheduled ahead but not parked years out: a thief holding
+// the current key could otherwise keep its window open past the owner's
+// recovery. API-enforced always; commit-enforced from the activation above.
+const KEY_ROTATION_MAX_LEAD_MS = 24 * 60 * 60 * 1000;
+
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",
   CANCELLED: "cancelled",
@@ -1128,6 +1145,9 @@ module.exports = {
   REGISTER_CREDIT,
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
   ORG_MEMBERS,
+  KEY_RETIREMENT_GRACE_MS,
+  KEY_RETIREMENT_ACTIVATION_MS,
+  KEY_ROTATION_MAX_LEAD_MS,
   ORG_MEMBER_ROLES,
   ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,

@@ -266,6 +266,9 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getActiveKey("identity", tipId).public_key).toBe(`pk2-${tipId}`);
     expect(dag.getKeyValidAt("identity", tipId, T0 + 500).public_key).toBe(`pk-${tipId}`);
     expect(dag.getKeyValidAt("identity", tipId, T0 + 1500).public_key).toBe(`pk2-${tipId}`);
+    // The commit-time retirement rule reads valid_to_ts off the resolved record.
+    expect(Number(dag.getKeyValidAt("identity", tipId, T0 + 500).valid_to_ts)).toBe(T0 + 1000);
+    expect(dag.getKeyValidAt("identity", tipId, T0 + 1500).valid_to_ts == null).toBe(true);
 
     // Re-saving the same active key must not append a duplicate history row
     const rowsBefore = [...dag.iterateEntityKeys()].filter(r => r.entity_id === tipId).length;
