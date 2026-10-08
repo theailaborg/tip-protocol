@@ -291,3 +291,45 @@ describe("signCosignature", () => {
     expect(verifyCosignatures(tx, contract, dag)).toEqual({ ok: true });
   });
 });
+
+// ─── checkSignerKeysCurrent: the commit-time retirement rule ──────────────
+
+describe("checkSignerKeysCurrent", () => {
+  const { checkSignerKeysCurrent } = require("../../src/schemas/_common");
+  const invitedSchema = require("../../src/schemas/org-member-invited");
+  const T_ROT = TIMESTAMP + 60_000;
+  const GRACE = 6 * 60_000;
+  const tx = { tx_type: "ORG_MEMBER_INVITED", timestamp: TIMESTAMP, data: { org_tip_id: TIP_A, member_tip_id: TIP_B } };
+  const cosigs = [{ kind: "subject", ref: TIP_B, body: {} }, { kind: "node", ref: NODE_A, body: {} }];
+
+  function dagWith(retired) {
+    return {
+      getKeyValidAt: (_et, id) => ({ public_key: "00", algorithm: "ml-dsa-65", valid_to_ts: retired[id] ?? null }),
+    };
+  }
+
+  test("ok when no resolved key is retired", () => {
+    expect(checkSignerKeysCurrent(tx, invitedSchema, cosigs, dagWith({}), T_ROT + GRACE * 10, GRACE).ok).toBe(true);
+  });
+
+  test("primary signer retired beyond the grace fails with signer_key_retired", () => {
+    const r = checkSignerKeysCurrent(tx, invitedSchema, cosigs, dagWith({ [TIP_A]: T_ROT }), T_ROT + GRACE + 1, GRACE);
+    expect(r).toMatchObject({ ok: false, code: "signer_key_retired" });
+    expect(r.error).toContain(TIP_A);
+  });
+
+  test("a cosigner's retired key fails the same way", () => {
+    const r = checkSignerKeysCurrent(tx, invitedSchema, cosigs, dagWith({ [NODE_A]: T_ROT }), T_ROT + GRACE + 1, GRACE);
+    expect(r).toMatchObject({ ok: false, code: "signer_key_retired" });
+    expect(r.error).toContain(NODE_A);
+  });
+
+  test("retired inside the grace is still ok (in-flight rotation)", () => {
+    expect(checkSignerKeysCurrent(tx, invitedSchema, cosigs, dagWith({ [TIP_A]: T_ROT }), T_ROT + GRACE, GRACE).ok).toBe(true);
+  });
+
+  test("no-op without a time-anchored lookup or a usable tx.timestamp", () => {
+    expect(checkSignerKeysCurrent(tx, invitedSchema, cosigs, { getActiveKey: () => null }, T_ROT + GRACE * 10, GRACE).ok).toBe(true);
+    expect(checkSignerKeysCurrent({ ...tx, timestamp: 0 }, invitedSchema, cosigs, dagWith({ [TIP_A]: T_ROT }), T_ROT + GRACE * 10, GRACE).ok).toBe(true);
+  });
+});

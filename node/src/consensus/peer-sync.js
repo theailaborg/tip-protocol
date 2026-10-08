@@ -57,6 +57,12 @@ function replaySyncedTxs(dag, commitHandler, fromRound, toRound) {
   let committed = 0;
   for (let r = fromRound; r <= toRound; r++) {
     try {
+      // The live path judges a whole wave by its anchor cert's BFT time, and
+      // commit-time rules key on it. A round no anchor has committed yet is
+      // left to bullshark; replaying it here would decide it on a clock the
+      // rest of the fleet never used.
+      const certTimestamp = anchorTimestampFor(dag, r);
+      if (!(certTimestamp > 0)) continue;
       const certs = dag.getCertificatesByRound(r);
       for (const cert of certs) {
         const txs = cert.batch?.txs || [];
@@ -66,7 +72,7 @@ function replaySyncedTxs(dag, commitHandler, fromRound, toRound) {
           // so prev references are always resolvable in canonical-order
           // replay (Bullshark's total order guarantees the prev tx is
           // already committed by the time we process its referrer).
-          const res = commitHandler.commitOrderedTxs(txs, r);
+          const res = commitHandler.commitOrderedTxs(txs, r, { certTimestamp });
           committed += res.committed;
         }
       }
@@ -75,6 +81,14 @@ function replaySyncedTxs(dag, commitHandler, fromRound, toRound) {
     }
   }
   return committed;
+}
+
+/** BFT time of the anchor cert whose commit covers `round`, or 0 when none has. */
+function anchorTimestampFor(dag, round) {
+  const commit = dag.getCommitsFromRound(round)[0];
+  if (!commit) return 0;
+  const anchor = dag.getCertificate(commit.anchor_cert_hash);
+  return Number(anchor?.timestamp) || 0;
 }
 
 /**
@@ -350,4 +364,4 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
   }
 }
 
-module.exports = { syncWithRetry, replaySyncedTxs, tryFastSyncSnapshot, shouldSyncFromPeer, onPeerAuthorized };
+module.exports = { syncWithRetry, replaySyncedTxs, anchorTimestampFor, tryFastSyncSnapshot, shouldSyncFromPeer, onPeerAuthorized };

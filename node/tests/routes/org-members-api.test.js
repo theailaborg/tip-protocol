@@ -57,7 +57,9 @@ function harness() {
   saveId(ORG, "organization"); saveId(ALICE, "personal"); saveId(BOB, "personal");
   for (const id of [ORG, ALICE, BOB]) dag.setScore(id, 500, 0, BASE_TS);
 
-  const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey, orgMembersActivationMs: 0 };
+  // The /v1 limiter runs on library defaults without these; this file fires
+  // enough requests to trip it depending on where the window boundary falls.
+  const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey, orgMembersActivationMs: 0, rateLimitWindow: 60_000, rateLimitMax: 10000 };
   const scoring = initScoring(dag, config);
   const handler = createCommitHandler({ dag, scoring, config });
 

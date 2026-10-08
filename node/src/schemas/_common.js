@@ -267,6 +267,37 @@ function resolveSignerRecord(tx, schema, dag) {
 }
 
 /**
+ * Commit-time rule: every key the dispatcher resolved at tx.timestamp
+ * (primary signer plus each cosigner) must not have been retired more than
+ * `graceMs` before `atMs`, the round's certificate time. The API never sees
+ * this case (it checks the active key); the commit path must, or a
+ * backdated tx signed with a rotated-away key verifies forever.
+ */
+function checkSignerKeysCurrent(tx, schema, cosigContracts, dag, atMs, graceMs) {
+  const timestamp = Number(tx?.timestamp);
+  if (typeof dag?.getKeyValidAt !== "function" || !Number.isFinite(timestamp) || timestamp <= 0) return { ok: true };
+  const signers = [];
+  const primary = resolveSignerEntity(tx, schema);
+  if (primary) signers.push(primary);
+  for (const c of Array.isArray(cosigContracts) ? cosigContracts : []) {
+    const entityType = COSIGNER_ENTITY_TYPE[c.kind];
+    if (entityType && c.ref) signers.push({ entityType, entityId: c.ref });
+  }
+  for (const { entityType, entityId } of signers) {
+    const key = dag.getKeyValidAt(entityType, entityId, timestamp);
+    if (!key || key.valid_to_ts == null) continue;
+    if (atMs - Number(key.valid_to_ts) > graceMs) {
+      return {
+        ok: false,
+        code: "signer_key_retired",
+        error: `${entityType} ${entityId} signing key retired at ${key.valid_to_ts}, round certified at ${atMs}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
  * Back-compat alias — older code may call `resolveSignerPubKey`; new
  * code should use `resolveSignerRecord` so the algorithm is available
  * for dispatch.
@@ -565,6 +596,7 @@ module.exports = {
   // GH #51 — unified-storage signature helpers (constants in shared/constants.js)
   resolveSignatureContract,
   resolveSignerEntity,
+  checkSignerKeysCurrent,
   resolveSignerRecord,
   resolveSignerPubKey,
   bodyMessageHex,

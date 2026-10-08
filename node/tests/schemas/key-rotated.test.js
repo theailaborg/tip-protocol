@@ -81,3 +81,38 @@ describe("KEY_ROTATED verifyTx: old_key_fingerprint CAS", () => {
     expect(keyRotatedSchema.verifyTx(tx, dag)).toMatchObject({ ok: false, code: "old_key_fingerprint_missing" });
   });
 });
+
+describe("KEY_ROTATED effective_at lead bound", () => {
+  const { KEY_ROTATION_MAX_LEAD_MS } = require("../../../shared/constants");
+  const ts = 1778580000000;
+
+  test("effectiveAtError: below tx.timestamp, inside the lead, past the lead", () => {
+    expect(keyRotatedSchema.effectiveAtError(ts - 1, ts)).toMatchObject({ code: "effective_at_invalid" });
+    expect(keyRotatedSchema.effectiveAtError(ts + KEY_ROTATION_MAX_LEAD_MS, ts)).toBeNull();
+    expect(keyRotatedSchema.effectiveAtError(ts + KEY_ROTATION_MAX_LEAD_MS + 1, ts)).toMatchObject({ code: "effective_at_too_far" });
+    expect(keyRotatedSchema.effectiveAtError(ts + KEY_ROTATION_MAX_LEAD_MS + 1, ts, { boundLead: false })).toBeNull();
+  });
+
+  test("strict: a rotation signed by a retired key that names the active key's fingerprint is refused", () => {
+    const oldKp = generateMLDSAKeypair(), activeKp = generateMLDSAKeypair(), newKp = generateMLDSAKeypair();
+    const dag = {
+      ...fakeDag({ activePubkey: activeKp.publicKey }),
+      // At tx.timestamp the retired key still resolves (the backdated window).
+      getKeyValidAt: () => ({ public_key: oldKp.publicKey, algorithm: "ml-dsa-65", valid_to_ts: 1 }),
+    };
+    const backdated = rotationTx(oldKp, newKp, { old_key_fingerprint: shake256(activeKp.publicKey).slice(0, 32) });
+    expect(keyRotatedSchema.verifyTx(backdated, dag)).toEqual({ ok: true });
+    expect(keyRotatedSchema.verifyTx(backdated, dag, { strict: true })).toMatchObject({ ok: false, code: "signer_not_active" });
+    const honest = { ...dag, getKeyValidAt: () => ({ public_key: activeKp.publicKey, algorithm: "ml-dsa-65", valid_to_ts: null }) };
+    expect(keyRotatedSchema.verifyTx(rotationTx(activeKp, newKp), honest, { strict: true })).toEqual({ ok: true });
+  });
+
+  test("verifyTx enforces the lead only when asked (commit path gates it on the activation epoch)", () => {
+    const oldKp = generateMLDSAKeypair(), newKp = generateMLDSAKeypair();
+    const dag = fakeDag({ activePubkey: oldKp.publicKey });
+    const parked = rotationTx(oldKp, newKp, { effective_at: ts + 365 * 24 * 3600_000 });
+    expect(keyRotatedSchema.verifyTx(parked, dag)).toEqual({ ok: true });
+    expect(keyRotatedSchema.verifyTx(parked, dag, { strict: true })).toMatchObject({ ok: false, code: "effective_at_too_far" });
+    expect(keyRotatedSchema.verifyTx(rotationTx(oldKp, newKp), dag, { strict: true })).toEqual({ ok: true });
+  });
+});
