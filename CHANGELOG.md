@@ -9,6 +9,50 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+**Node 2.7.2: actionable error for the released extension's passkey path**
+- Browser extensions up to v2.9.41 mark authors `signed: true` on the passkey
+  path without attaching a co-signature, which the roster release refuses
+  (`author_cosignature_missing`). The refusal stays, since the flag is a
+  false claim inside the signed bytes; the message now tells the user to
+  update the extension instead of quoting the raw check.
+
+**Node 2.7.2: a retired signing key can no longer sign through a backdated transaction**
+- Signing keys resolve at `tx.timestamp` so that history keeps verifying after
+  a rotation or recovery. Nothing checked whether that key was still current
+  when the round certified, so a node bypassing the API could commit a
+  transaction signed with a rotated-away or recovered-from key by dating it
+  inside the old key's window (the API path was never affected: it stamps the
+  time itself and checks the active key). At commit, the key resolved for the
+  signer and every cosigner must not have been retired more than
+  `KEY_RETIREMENT_GRACE_MS` (6 min, mempool TTL plus a round) before the
+  round's certificate time; otherwise the transaction is rejected as
+  `signer_key_retired`. A key closed by `KEY_RECOVERY` gets no grace at all
+  (it was lost or stolen), the grace applies only to a planned `KEY_ROTATED`.
+  Honest transactions are not age-bounded: one that waited out an outage
+  still commits unless its key was retired meanwhile.
+  New reject rule, so gated on `KEY_RETIREMENT_ACTIVATION_MS`, pinned to the
+  mainnet activation 2026-10-09 00:00:00 UTC (`TIP_KEY_RETIREMENT_ACTIVATION_MS`
+  overrides it on an isolated cluster). Every node, partner nodes included,
+  must run 2.7.2 before that epoch.
+- Closing the loophole around that rule: a `KEY_ROTATED` could park
+  `effective_at` years ahead, and a later recovery closed only the one open
+  row, leaving the old key's window intact. From the same activation,
+  `KEY_ROTATED` / `KEY_RECOVERY` clamp every window of the identity that is
+  still open past `effective_at`, and a rotation may schedule itself at most
+  `KEY_ROTATION_MAX_LEAD_MS` (24 h) ahead (`effective_at_too_far`; enforced at
+  the API immediately, at commit from the activation). From the same
+  activation a `KEY_ROTATED` must be signed by the active key itself
+  (`signer_not_active`), closing the backdated take-over inside the grace.
+- Catch-up replay (`replaySyncedTxs`) now judges each round by the BFT time of
+  the anchor that committed it, the same clock the live path used, and leaves
+  rounds no anchor has committed to bullshark instead of deciding them early
+  without one.
+- `KEY_ROTATED` / `KEY_RECOVERY` close prior key rows via the identity's key
+  history instead of writing through a live full-table cursor, which failed
+  on SQLite-backed nodes.
+
 ### Changed
 
 **Node 2.7.1: organization roster activation pinned to 2026-10-07 16:50:00 UTC**

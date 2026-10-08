@@ -140,6 +140,7 @@ function loadConfig() {
     // Org roster activation override (epoch-ms). Same consensus-gate rule as
     // above: identical on every node, or an isolated test cluster only.
     orgMembersActivationMs: _epochMsOverride("TIP_ORG_MEMBERS_ACTIVATION_MS"),
+    keyRetirementActivationMs: _epochMsOverride("TIP_KEY_RETIREMENT_ACTIVATION_MS"),
 
     // ── Pre-scan (v2 FIX-03) ──────────────────────────────────────────────────
     preScanEnabled: true,

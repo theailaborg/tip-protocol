@@ -1094,7 +1094,7 @@ class MemoryStore {
       if (r.valid_to_ts != null && r.valid_to_ts <= timestamp) continue;
       if (!best || r.valid_from_ts > best.valid_from_ts) best = r;
     }
-    return best ? { public_key: best.public_key, algorithm: best.algorithm } : null;
+    return best ? { public_key: best.public_key, algorithm: best.algorithm, valid_to_ts: best.valid_to_ts ?? null, source_tx_id: best.source_tx_id ?? null } : null;
   }
   // Full key chain for one entity, oldest first — the raw material a
   // client walks to verify rotations from the tip_id-anchored root key
@@ -3707,7 +3707,7 @@ class SQLiteStore {
   }
   getKeyValidAt(entity_type, entity_id, timestamp) {
     const r = this._stmts.getKeyValidAt.get(entity_type, entity_id, timestamp, timestamp);
-    return r ? { public_key: r.public_key, algorithm: r.algorithm } : null;
+    return r ? { public_key: r.public_key, algorithm: r.algorithm, valid_to_ts: r.valid_to_ts ?? null, source_tx_id: r.source_tx_id ?? null } : null;
   }
   // Full key chain for one entity, oldest first — parity with
   // MemoryStore.getEntityKeyHistory.

@@ -54,9 +54,8 @@ function createKeyService({ dag, submitTx }) {
     }
 
     const timestamp = nowMs();
-    if (canonicalPayload.effective_at < timestamp) {
-      throw schemaError(400, "effective_at must be >= tx.timestamp", "effective_at_invalid");
-    }
+    const effectiveAtErr = keyRotatedSchema.effectiveAtError(canonicalPayload.effective_at, timestamp);
+    if (effectiveAtErr) throw schemaError(effectiveAtErr.status, effectiveAtErr.error, effectiveAtErr.code);
 
     const txBody = {
       tx_type: TX_TYPES.KEY_ROTATED, timestamp,

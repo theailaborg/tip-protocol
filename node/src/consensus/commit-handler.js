@@ -20,7 +20,7 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS, KEY_RETIREMENT_GRACE_MS, KEY_RETIREMENT_ACTIVATION_MS } = require("../../../shared/constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -47,7 +47,7 @@ const orgMemberInviteCancelledSchema = require("../schemas/org-member-invite-can
 const orgMemberAddedSchema = require("../schemas/org-member-added");
 const orgMemberRemovedSchema = require("../schemas/org-member-removed");
 const orgRoster = require("../schemas/_org-members");
-const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures } = require("../schemas/_common");
+const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures, checkSignerKeysCurrent } = require("../schemas/_common");
 const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 
 // GH #51 — tx_type to schema-module map for the unified signature
@@ -296,6 +296,26 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         continue;
       }
 
+      // The key resolved at tx.timestamp may be retired by the time the round
+      // certifies (rotation in flight, or a backdated tx signed with a stolen
+      // old key). Judged against the cert time on every node, including the
+      // one that pre-verified the bytes at its API.
+      if (_keyRetirementActive(certTimestamp)) {
+        let current;
+        try {
+          current = checkSignerKeysCurrent(tx, SCHEMA_FOR_TX_TYPE[tx.tx_type] ?? null, _cosignatureContracts(tx), dag, certTimestamp, KEY_RETIREMENT_GRACE_MS);
+        } catch (err) {
+          current = { ok: false, error: `signer key check failed: ${err.message}` };
+        }
+        if (!current.ok) {
+          log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}): ${current.error}`);
+          _persistRejection(tx, TX_REJECTION_REASON.SIGNER_KEY_RETIRED, current.error, { round });
+          _tombstone(tx.tx_id);
+          dropped++;
+          continue;
+        }
+      }
+
       // Business-rule guard — first-wins dedup for verdict txs and
       // reveal-window enforcement for jury reveals. Closes #15 (and the
       // multi-submitter race in #13: when N nodes' schedulers each
@@ -424,12 +444,9 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     // Phase B — stateful pre-conditions (same predicate as the API service).
     // Time-window rules use `tx.timestamp` (user submit time, frozen in the
     // signed payload) so the accept/reject decision is identical on every
-    // node. `certTimestamp` is plumbed through for rules that need the
-    // round's BFT clock instead — none today, but keep the wire so future
-    // rules can opt in without changing the signature.
-    void certTimestamp;
+    // node; `certTimestamp` only gates rules that activate at an epoch.
     const txMs = tx.timestamp;
-    return _statefulCheck(tx, txMs, round);
+    return _statefulCheck(tx, txMs, round, certTimestamp);
   }
 
   /**
@@ -1003,7 +1020,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
    * between submit and commit (e.g. content disputed or author revoked
    * mid-flight). Closes the silent-divergence gap multi-node #14.
    */
-  function _statefulCheck(tx, now, commitRound = 0) {
+  function _statefulCheck(tx, now, commitRound = 0, certTimestamp = 0) {
     const d = tx.data || {};
     switch (tx.tx_type) {
 
@@ -1181,7 +1198,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       // state-machine invariants (active identity, valid effective_at,
       // VP authorisation, rate limits).
       case TX_TYPES.KEY_ROTATED: {
-        const r = keyRotatedSchema.verifyTx(tx, dag);
+        const r = keyRotatedSchema.verifyTx(tx, dag, { strict: _keyRetirementActive(certTimestamp) });
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
       case TX_TYPES.KEY_RECOVERY: {
@@ -1236,6 +1253,22 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       default:
         return { valid: true };
     }
+  }
+
+  function _cosignatureContracts(tx) {
+    const tt = tx.tx_type;
+    const schema = SCHEMA_FOR_TX_TYPE[tt] ?? null;
+    const source = schema && typeof schema.getCosignatureContract === "function"
+      ? schema
+      : (TX_SIGNATURE_REGISTRY[tt] && typeof TX_SIGNATURE_REGISTRY[tt].getCosignatureContract === "function"
+        ? TX_SIGNATURE_REGISTRY[tt]
+        : null);
+    return source ? (source.getCosignatureContract(tx) || []) : [];
+  }
+
+  function _keyRetirementActive(certTimestamp) {
+    const gate = config && Number.isFinite(config.keyRetirementActivationMs) ? config.keyRetirementActivationMs : KEY_RETIREMENT_ACTIVATION_MS;
+    return certTimestamp > 0 && certTimestamp >= gate;
   }
 
   function _orgMemberOpts() {
@@ -1867,29 +1900,27 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           const prev = dag.getActiveKey("identity", d.tip_id);
           const algorithm = d.algorithm || "ml-dsa-65";
           const effectiveAt = Number(d.effective_at);
-          // Close the prior active row at effective_at.
-          if (prev) {
-            // We don't have a direct closeActiveKey API on the public
-            // dag handle (intentional — auto-router handles new key
-            // rotation transparently). Use saveEntityKey to write a
-            // replacement row with valid_to_ts set. We need the prior
-            // row's valid_from_ts to re-write its primary key — pull
-            // it via iterateEntityKeys.
-            for (const r of dag.iterateEntityKeys()) {
-              if (r.entity_type === "identity"
-                && r.entity_id === d.tip_id
-                && r.valid_to_ts == null) {
-                dag.saveEntityKey({
-                  entity_type: "identity",
-                  entity_id: d.tip_id,
-                  public_key: r.public_key,
-                  algorithm: r.algorithm,
-                  valid_from_ts: r.valid_from_ts,
-                  valid_to_ts: effectiveAt,
-                  source_tx_id: r.source_tx_id,
-                });
-                break;
-              }
+          // Close the prior active row at effective_at (rewrite by its
+          // valid_from_ts primary key). Once the retirement rule is active,
+          // also clamp any window a prior rotation parked beyond effective_at;
+          // otherwise a recovery would leave the stolen key resolvable for
+          // old timestamps. A row clamped before it opens never matches.
+          const clampAll = _keyRetirementActive(_committedCertTimestamp);
+          if (prev || clampAll) {
+            // Per-identity history (an array): writing through a live
+            // full-table cursor is an error on SQLite.
+            for (const r of dag.getEntityKeyHistory("identity", d.tip_id)) {
+              if (r.valid_to_ts != null && !(clampAll && r.valid_to_ts > effectiveAt)) continue;
+              dag.saveEntityKey({
+                entity_type: "identity",
+                entity_id: d.tip_id,
+                public_key: r.public_key,
+                algorithm: r.algorithm,
+                valid_from_ts: r.valid_from_ts,
+                valid_to_ts: effectiveAt,
+                source_tx_id: r.source_tx_id,
+              });
+              if (!clampAll) break;
             }
           }
           // Insert the new active row.
@@ -2100,19 +2131,12 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
 
       // Cosignatures: schema declares the contract (per-tx_type, may be
       // empty). Dispatcher resolves keys and verifies each entry.
-      const cosigSource = schema && typeof schema.getCosignatureContract === "function"
-        ? schema
-        : (TX_SIGNATURE_REGISTRY[tt] && typeof TX_SIGNATURE_REGISTRY[tt].getCosignatureContract === "function"
-          ? TX_SIGNATURE_REGISTRY[tt]
-          : null);
-      if (cosigSource) {
-        const contract = cosigSource.getCosignatureContract(tx) || [];
-        if (contract.length > 0) {
-          const cosigResult = verifyCosignatures(tx, contract, dag);
-          if (!cosigResult.ok) {
-            log.warn(`Cosignature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${cosigResult.error}`);
-            return false;
-          }
+      const contract = _cosignatureContracts(tx);
+      if (contract.length > 0) {
+        const cosigResult = verifyCosignatures(tx, contract, dag);
+        if (!cosigResult.ok) {
+          log.warn(`Cosignature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${cosigResult.error}`);
+          return false;
         }
       }
 

@@ -42,8 +42,7 @@ const { signPayload, verifyPayload, schemaError } = require("./_common");
 const { shake256 } = require("../../../shared/crypto");
 const {
   TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
-  SIGNATURE_ALGORITHM_VALUES, SIGNATURE_ALGORITHM_DEFAULT,
-} = require("../../../shared/constants");
+  SIGNATURE_ALGORITHM_VALUES, SIGNATURE_ALGORITHM_DEFAULT, KEY_ROTATION_MAX_LEAD_MS } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.KEY_ROTATED;
 // Body scope; the OLD key (currently-active for the identity) signs.
@@ -144,7 +143,18 @@ function verifySignature(payload, signatureHex, oldPublicKeyHex) {
  *   3. old_key_fingerprint matches the current active key.
  *   4. NEW key is non-empty + algorithm is in the enum.
  */
-function verifyTx(tx, dag) {
+function effectiveAtError(effectiveAt, timestamp, { boundLead = true } = {}) {
+  if (!Number.isFinite(effectiveAt) || effectiveAt < timestamp) {
+    return { status: 400, error: "effective_at must be >= tx.timestamp", code: "effective_at_invalid" };
+  }
+  if (boundLead && effectiveAt - timestamp > KEY_ROTATION_MAX_LEAD_MS) {
+    return { status: 400, error: `effective_at may be at most ${KEY_ROTATION_MAX_LEAD_MS} ms after tx.timestamp`, code: "effective_at_too_far" };
+  }
+  return null;
+}
+
+function verifyTx(tx, dag, opts = {}) {
+  const strict = opts.strict === true;
   const d = tx.data || {};
   if (!d.tip_id) return { ok: false, status: 400, error: "tip_id missing", code: "tip_id_missing" };
   if (typeof d.new_public_key !== "string" || d.new_public_key.length === 0) {
@@ -162,9 +172,9 @@ function verifyTx(tx, dag) {
   if (identity.status && identity.status !== "active") {
     return { ok: false, status: 403, error: `TIP-ID is not active (status=${identity.status})`, code: "tip_id_inactive" };
   }
-  if (!Number.isFinite(d.effective_at) || d.effective_at < tx.timestamp) {
-    return { ok: false, status: 400, error: "effective_at must be >= tx.timestamp", code: "effective_at_invalid" };
-  }
+  // The lead bound is a newer reject rule than the floor, so it is gated.
+  const effectiveAtErr = effectiveAtError(d.effective_at, tx.timestamp, { boundLead: strict });
+  if (effectiveAtErr) return { ok: false, ...effectiveAtErr };
   if (typeof d.old_key_fingerprint !== "string" || d.old_key_fingerprint.length === 0) {
     return { ok: false, status: 400, error: "old_key_fingerprint missing", code: "old_key_fingerprint_missing" };
   }
@@ -176,12 +186,23 @@ function verifyTx(tx, dag) {
   if (!active || shake256(active.public_key).slice(0, 32) !== d.old_key_fingerprint) {
     return { ok: false, status: 409, error: "old_key_fingerprint does not match current active key (state changed)", code: "state_changed" };
   }
+  // The dispatcher verifies the signature against the key valid at
+  // tx.timestamp. A transition must be signed by the active key itself, or a
+  // retired key could backdate a rotation that names the active key's
+  // fingerprint and take the identity over. Gated like the lead bound.
+  if (strict && typeof dag.getKeyValidAt === "function") {
+    const signer = dag.getKeyValidAt("identity", d.tip_id, tx.timestamp);
+    if (!signer || signer.public_key !== active.public_key) {
+      return { ok: false, status: 409, error: "rotation must be signed by the active key", code: "signer_not_active" };
+    }
+  }
   return { ok: true };
 }
 
 module.exports = {
   TX_TYPE,
   validateRequest,
+  effectiveAtError,
   buildSigningPayload,
   sign,
   verifySignature,
