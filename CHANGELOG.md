@@ -25,8 +25,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (it was lost or stolen), the grace applies only to a planned `KEY_ROTATED`.
   Honest transactions are not age-bounded: one that waited out an outage
   still commits unless its key was retired meanwhile.
-  New reject rule, so gated on `KEY_RETIREMENT_ACTIVATION_MS`
-  (`TIP_KEY_RETIREMENT_ACTIVATION_MS` overrides it).
+  New reject rule, so gated on `KEY_RETIREMENT_ACTIVATION_MS`, pinned to the
+  mainnet activation 2026-10-15 00:00:00 UTC (`TIP_KEY_RETIREMENT_ACTIVATION_MS`
+  overrides it on an isolated cluster). Every node, partner nodes included,
+  must run 2.7.2 before that epoch.
 - Closing the loophole around that rule: a `KEY_ROTATED` could park
   `effective_at` years ahead, and a later recovery closed only the one open
   row, leaving the old key's window intact. From the same activation,
