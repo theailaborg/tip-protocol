@@ -387,14 +387,13 @@ describe("9. review follow-ups: batch ordering, claim freshness at commit, in-ba
 });
 
 describe("10. an author cannot claim a co-signature that is not in the envelope", () => {
-  test("key_mode:co_signed is refused at API and DAG; signed:true alone is accepted and kept as sent (released extension passkey path)", () => {
+  test("signed:true or key_mode:co_signed is refused at API and DAG for every signer type", () => {
     const ctx = setup();
+    contentRejected(ctx, ALICE, [ALICE], "author_cosignature_missing", "self", { signed: true });
     contentRejected(ctx, ALICE, [ALICE], "author_cosignature_missing", "self", { key_mode: "co_signed" });
-    contentRejected(ctx, ORG, [ORG], "author_cosignature_missing", "self", { key_mode: "co_signed" });
-    contentAccepted(ctx, ALICE, [ALICE], "self", { signed: true });
-    contentAccepted(ctx, ORG, [ORG], "self", { signed: true });
+    contentRejected(ctx, ORG, [ORG], "author_cosignature_missing", "self", { signed: true });
     joined(ctx, ORG, ALICE);
-    contentAccepted(ctx, ORG, [ALICE], "employed", { signed: true });
+    contentRejected(ctx, ORG, [ALICE], "author_cosignature_missing", "employed", { signed: true });
     contentAccepted(ctx, ORG, [ALICE]);
     contentAccepted(ctx, ALICE, [ALICE], "self");
   });

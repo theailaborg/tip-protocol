@@ -11,15 +11,6 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-**Node 2.7.2: passkey content registrations refused since the roster release**
-- The roster release refused any author entry carrying `signed: true` without
-  a co-signature. The released browser extension sets that flag on its
-  passkey path and never attaches one, so every passkey registration failed
-  with `author_cosignature_missing` while password registrations kept
-  working. The flag is accepted again and kept as sent (it is inside the
-  client-signed bytes); only an explicit `key_mode: "co_signed"` is refused.
-  The strict check returns once the corrected extension has reached users.
-
 **Node 2.7.2: a retired signing key can no longer sign through a backdated transaction**
 - Signing keys resolve at `tx.timestamp` so that history keeps verifying after
   a rotation or recovery. Nothing checked whether that key was still current
