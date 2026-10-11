@@ -164,6 +164,14 @@ function createChunkedUploadService({
     if (mediaQuota && mediaQuota.enabled) {
       const q = await mediaQuota.check({ tip_id: signerTipId, content_hash: contentHash, size });
       if (q && q.allowed === false) {
+        // The billing service says why: a single file over the plan's limit
+        // (413, like the node's own size cap) or a full month (402).
+        if (q.reason === "file_too_large_for_plan") {
+          throw schemaError(413,
+            "This file is larger than the uploader's plan allows for a single file",
+            "file_too_large_for_plan",
+            { size, max_file_bytes: q.max_file_bytes });
+        }
         throw schemaError(402,
           "This upload would go over your monthly media processing allowance",
           "media_quota_exceeded",

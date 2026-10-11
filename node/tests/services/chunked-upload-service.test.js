@@ -835,6 +835,19 @@ describe("presigned chunked upload: monthly media allowance", () => {
     expect(fx.storage._objects.size).toBe(0);
   });
 
+  test("a file over the plan's single-file limit is refused with 413 file_too_large_for_plan", async () => {
+    const quota = _quota({ allowed: false, reason: "file_too_large_for_plan", max_file_bytes: 512 });
+    const fx = _setup({ mediaQuota: quota });
+    const file = _png(1024);
+    const contentHash = shake256(file);
+    const ts = nowMs();
+    await expect(fx.svc.init({
+      mime: "image/png", size: file.length, content_hash: contentHash, signer_tip_id: TIP, timestamp: ts,
+      signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey),
+    })).rejects.toMatchObject({ status: 413, code: "file_too_large_for_plan", details: { size: 1024, max_file_bytes: 512 } });
+    expect(fx.storage._objects.size).toBe(0);
+  });
+
   test("an allowed upload completes and records the VERIFIED size and media_id", async () => {
     const quota = _quota({ allowed: true, remaining_bytes: 10 ** 9 });
     const fx = _setup({ mediaQuota: quota });
