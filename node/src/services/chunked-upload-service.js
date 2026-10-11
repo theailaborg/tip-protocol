@@ -52,6 +52,7 @@ function createChunkedUploadService({
   mediaLimits = MEDIA_LIMITS,
   completeSyncWaitMs = CHUNKED_COMPLETE_SYNC_WAIT_MS,
   rehashRetryMs = CHUNKED_REHASH_RETRY_MS,
+  mediaQuota = null,    // optional media-quota-client; null or disabled => no allowance check
 }) {
   if (!storage) throw new Error("chunked-upload-service: storage required");
   if (!dag) throw new Error("chunked-upload-service: dag required");
@@ -155,6 +156,20 @@ function createChunkedUploadService({
 
     if (storage.backend !== "s3") {
       throw schemaError(400, "Chunked upload requires s3 media backend", "backend_not_supported");
+    }
+
+    // Monthly media allowance (opt-in, see media-quota-client.js). Checked
+    // with the declared size before any bytes move; the same file counts once
+    // a month, so re-uploading it is always allowed.
+    if (mediaQuota && mediaQuota.enabled) {
+      const q = await mediaQuota.check({ tip_id: signerTipId, content_hash: contentHash, size });
+      if (q && q.allowed === false) {
+        throw schemaError(402,
+          "This upload would go over your monthly media processing allowance",
+          "media_quota_exceeded",
+          { size, used_bytes: q.used_bytes, allowance_bytes: q.allowance_bytes,
+            remaining_bytes: q.remaining_bytes, resets_at: q.resets_at });
+      }
     }
 
     const checksum = mediaUploadSchema.validateChecksumMode(reqChecksum);
@@ -384,6 +399,13 @@ function createChunkedUploadService({
       };
       await dag.updateUploadSession(sessionId, { state: COMPLETE, result, expires_at: nowMs() + CHUNKED_RESULT_TTL_MS });
       log.info?.(`chunked-upload complete: ${session.signer_tip_id} session=${sessionId} media_id=${media_id} size=${actualSize} mime=${detectedMime}`);
+      if (mediaQuota && mediaQuota.enabled) {
+        // Verified bytes only. Not awaited: the client retries in the
+        // background and never throws, so a slow billing service cannot hold
+        // up or fail an upload that already succeeded.
+        mediaQuota.record({ tip_id: session.signer_tip_id, content_hash: session.content_hash, size: actualSize, media_id })
+          .catch(e => log.warn?.(`media-quota record failed: ${e.message}`));
+      }
       return result;
     } catch (err) {
       const failure = { code: err.code || "finalize_failed", status: err.status || 500, message: err.error || err.message || String(err) };

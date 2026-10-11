@@ -806,3 +806,77 @@ describe("presigned chunked upload: per-part crc32 checksums (opt-in)", () => {
       .rejects.toMatchObject({ status: 409, code: "session_not_uploading" });
   });
 });
+
+describe("presigned chunked upload: monthly media allowance", () => {
+  function _quota(answer) {
+    const calls = { check: [], record: [] };
+    return {
+      calls,
+      enabled: true,
+      async check(args) { calls.check.push(args); return typeof answer === "function" ? answer(args) : answer; },
+      async record(args) { calls.record.push(args); return true; },
+    };
+  }
+
+  test("init is refused with 402 media_quota_exceeded before any bytes move", async () => {
+    const quota = _quota({ allowed: false, used_bytes: 5, allowance_bytes: 5, remaining_bytes: 0, resets_at: 1793491200 });
+    const fx = _setup({ mediaQuota: quota });
+    const file = _png(1024);
+    const contentHash = shake256(file);
+    const ts = nowMs();
+    await expect(fx.svc.init({
+      mime: "image/png", size: file.length, content_hash: contentHash, signer_tip_id: TIP, timestamp: ts,
+      signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey),
+    })).rejects.toMatchObject({
+      status: 402, code: "media_quota_exceeded",
+      details: { size: file.length, remaining_bytes: 0, allowance_bytes: 5, resets_at: 1793491200 },
+    });
+    expect(quota.calls.check).toEqual([{ tip_id: TIP, content_hash: contentHash, size: file.length }]);
+    expect(fx.storage._objects.size).toBe(0);
+  });
+
+  test("an allowed upload completes and records the VERIFIED size and media_id", async () => {
+    const quota = _quota({ allowed: true, remaining_bytes: 10 ** 9 });
+    const fx = _setup({ mediaQuota: quota });
+    const file = _png(2048);
+    const { init, contentHash, parts } = await _upload(fx, file, "image/png");
+    const out = await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(out.size).toBe(file.length);
+    await new Promise(r => setImmediate(r));
+    expect(quota.calls.record).toEqual([{ tip_id: TIP, content_hash: contentHash, size: file.length, media_id: contentHash }]);
+  });
+
+  test("a failed verification records nothing", async () => {
+    const quota = _quota({ allowed: true });
+    const fx = _setup({ mediaQuota: quota });
+    const file = _png(2048);
+    const contentHash = shake256(file);
+    const ts = nowMs();
+    const init = await fx.svc.init({
+      mime: "image/png", size: file.length, content_hash: contentHash, signer_tip_id: TIP, timestamp: ts,
+      signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey),
+    });
+    const session = fx.dag.getUploadSession(init.session_id);
+    const parts = [{ part_number: 1, etag: fx.storage._put(session.upload_id, 1, file.subarray(0, 1024)) }];
+    await expect(fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts)))
+      .rejects.toMatchObject({ code: "size_mismatch" });
+    expect(quota.calls.record).toEqual([]);
+  });
+
+  test("an unreachable billing service (null answer) never blocks an upload", async () => {
+    const quota = _quota(null);
+    const fx = _setup({ mediaQuota: quota });
+    const { init } = await _upload(fx, _png(512), "image/png");
+    expect(init.session_id).toBeTruthy();
+  });
+
+  test("a disabled client is never called", async () => {
+    const quota = _quota({ allowed: false });
+    quota.enabled = false;
+    const fx = _setup({ mediaQuota: quota });
+    const { init, parts } = await _upload(fx, _png(512), "image/png");
+    await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(quota.calls.check).toEqual([]);
+    expect(quota.calls.record).toEqual([]);
+  });
+});

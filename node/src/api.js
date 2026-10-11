@@ -40,6 +40,7 @@ const { createStatsService } = require("./services/stats-service");
 const { createMediaService } = require("./services/media-service");
 const { createMediaStorage } = require("./services/media-storage");
 const { createChunkedUploadService } = require("./services/chunked-upload-service");
+const { createMediaQuotaClient } = require("./services/media-quota-client");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -71,12 +72,17 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // ref.current once consensus starts.
   const cryptoPoolRef = { current: null };
 
+  // Monthly media allowance: disabled unless TIP_MEDIA_QUOTA_URL and
+  // TIP_MEDIA_QUOTA_KEY are set (media-quota-client.js).
+  const mediaQuota = createMediaQuotaClient({ log: getLogger("tip.media.quota") });
+
   const chunkedUploadService = createChunkedUploadService({
     storage: mediaStorage,
     dag,
     cryptoPoolRef,
     mediaLimits: config.mediaLimits,
     log: getLogger("tip.media.chunked"),
+    mediaQuota,
   });
 
   const mediaService = createMediaService({
