@@ -831,7 +831,7 @@ describe("presigned chunked upload: monthly media allowance", () => {
       status: 402, code: "media_quota_exceeded",
       details: { size: file.length, remaining_bytes: 0, allowance_bytes: 5, resets_at: 1793491200 },
     });
-    expect(quota.calls.check).toEqual([{ tip_id: TIP, content_hash: contentHash, size: file.length }]);
+    expect(quota.calls.check).toEqual([{ tip_id: TIP, content_hash: contentHash, size: file.length, tip_id_type: "personal" }]);
     expect(fx.storage._objects.size).toBe(0);
   });
 
@@ -845,6 +845,21 @@ describe("presigned chunked upload: monthly media allowance", () => {
       mime: "image/png", size: file.length, content_hash: contentHash, signer_tip_id: TIP, timestamp: ts,
       signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey),
     })).rejects.toMatchObject({ status: 413, code: "file_too_large_for_plan", details: { size: 1024, max_file_bytes: 512 } });
+    expect(fx.storage._objects.size).toBe(0);
+  });
+
+  test("a full monthly upload count is refused with 429 monthly_file_limit_exceeded", async () => {
+    const quota = _quota({ allowed: false, reason: "monthly_file_limit_exceeded", files: 100, files_limit: 100, resets_at: 1793491200 });
+    const fx = _setup({ mediaQuota: quota });
+    const file = _png(1024);
+    const contentHash = shake256(file);
+    const ts = nowMs();
+    await expect(fx.svc.init({
+      mime: "image/png", size: file.length, content_hash: contentHash, signer_tip_id: TIP, timestamp: ts,
+      signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey),
+    })).rejects.toMatchObject({ status: 429, code: "monthly_file_limit_exceeded",
+      details: { files: 100, files_limit: 100, resets_at: 1793491200 } });
+    expect(quota.calls.check[0].tip_id_type).toBe("personal");
     expect(fx.storage._objects.size).toBe(0);
   });
 

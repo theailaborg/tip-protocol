@@ -71,10 +71,12 @@ function createMediaQuotaClient(opts = {}) {
    * or null when the client is disabled or the service could not be reached
    * and nothing is known about this TIP-ID (meaning: let it through).
    */
-  async function check({ tip_id, content_hash, size }) {
+  async function check({ tip_id, content_hash, size, tip_id_type }) {
     if (!enabled) return null;
     try {
-      const answer = await _post("/api/media-quota/check", { tip_id, content_hash, size });
+      const body = { tip_id, content_hash, size };
+      if (tip_id_type) body.tip_id_type = tip_id_type;
+      const answer = await _post("/api/media-quota/check", body);
       if (typeof answer.allowed !== "boolean") throw new Error("malformed answer");
       _remember(tip_id, answer);
       return answer;
