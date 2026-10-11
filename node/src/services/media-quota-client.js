@@ -56,7 +56,11 @@ function createMediaQuotaClient(opts = {}) {
     }
   }
 
+  // Only a numeric remaining allowance is worth remembering. A billing
+  // service with no monthly limit answers remaining_bytes null; remembering
+  // that would make an outage refuse every upload (size <= null is false).
   function _remember(tipId, answer) {
+    if (typeof answer.remaining_bytes !== "number") { lastKnown.delete(tipId); return; }
     if (lastKnown.size >= LAST_KNOWN_MAX) lastKnown.delete(lastKnown.keys().next().value);
     lastKnown.set(tipId, { remaining_bytes: answer.remaining_bytes, at: nowMs() });
   }
@@ -89,7 +93,7 @@ function createMediaQuotaClient(opts = {}) {
     for (let attempt = 0; ; attempt++) {
       try {
         const answer = await _post("/api/media-quota/record", body);
-        if (typeof answer.remaining_bytes === "number") _remember(tip_id, answer);
+        _remember(tip_id, answer);
         return true;
       } catch (err) {
         if (attempt >= RECORD_RETRIES.length) {

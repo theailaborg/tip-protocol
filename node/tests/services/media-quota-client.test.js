@@ -72,6 +72,13 @@ describe("media-quota-client", () => {
     expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 101 })).toMatchObject({ allowed: false, stale: true });
   });
 
+  test("no monthly limit (remaining_bytes null) never turns an outage into a refusal", async () => {
+    const f = _fetch([{ status: 200, body: { allowed: true, remaining_bytes: null, allowance_bytes: null } }, new Error("down")]);
+    const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: f, log: quiet });
+    expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 10 })).toMatchObject({ allowed: true });
+    expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 10 ** 9 })).toBeNull();   // allowed through
+  });
+
   test("record retries in the background and gives up without throwing", async () => {
     const slept = [];
     const sleep = async ms => { slept.push(ms); };
