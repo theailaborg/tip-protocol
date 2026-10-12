@@ -51,6 +51,15 @@ describe("media-quota-client", () => {
     expect(f.calls[0].body).toEqual({ tip_id: TIP, content_hash: HASH, size: 10 });
   });
 
+  test("check forwards tip_id_type when given, and leaves it out when not", async () => {
+    const f = _fetch([{ status: 200, body: { allowed: true } }, { status: 200, body: { allowed: true } }]);
+    const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: f, log: quiet });
+    await c.check({ tip_id: TIP, content_hash: HASH, size: 1, tip_id_type: "organization" });
+    await c.check({ tip_id: TIP, content_hash: HASH, size: 1 });
+    expect(f.calls[0].body.tip_id_type).toBe("organization");
+    expect("tip_id_type" in f.calls[1].body).toBe(false);
+  });
+
   test("fails open: unreachable with nothing known lets the upload through", async () => {
     const f = _fetch([new Error("ECONNREFUSED")]);
     const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: f, log: quiet });

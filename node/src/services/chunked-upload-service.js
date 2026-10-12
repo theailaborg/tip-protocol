@@ -162,7 +162,10 @@ function createChunkedUploadService({
     // with the declared size before any bytes move; the same file counts once
     // a month, so re-uploading it is always allowed.
     if (mediaQuota && mediaQuota.enabled) {
-      const q = await mediaQuota.check({ tip_id: signerTipId, content_hash: contentHash, size });
+      // tip_id_type lets the billing service apply the right monthly upload
+      // count (personal or organization).
+      const q = await mediaQuota.check({ tip_id: signerTipId, content_hash: contentHash, size,
+        tip_id_type: identity.tip_id_type || "personal" });
       if (q && q.allowed === false) {
         // The billing service says why: a single file over the plan's limit
         // (413, like the node's own size cap) or a full month (402).
@@ -171,6 +174,12 @@ function createChunkedUploadService({
             "This file is larger than the uploader's plan allows for a single file",
             "file_too_large_for_plan",
             { size, max_file_bytes: q.max_file_bytes });
+        }
+        if (q.reason === "monthly_file_limit_exceeded") {
+          throw schemaError(429,
+            "The uploader's TIP-ID has reached its monthly upload limit",
+            "monthly_file_limit_exceeded",
+            { files: q.files, files_limit: q.files_limit, resets_at: q.resets_at });
         }
         throw schemaError(402,
           "This upload would go over your monthly media processing allowance",
