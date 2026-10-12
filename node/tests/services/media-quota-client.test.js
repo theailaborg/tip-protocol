@@ -11,6 +11,7 @@
 
 const path = require("path");
 const { createMediaQuotaClient } = require(path.resolve(__dirname, "../../src/services/media-quota-client"));
+const { MEDIA_QUOTA_CLIENT } = require(path.resolve(__dirname, "../../../shared/constants"));
 
 const TIP = "tip://id/US-0123456789abcdef";
 const HASH = "a".repeat(64);
@@ -79,6 +80,29 @@ describe("media-quota-client", () => {
     await c.check({ tip_id: TIP, content_hash: HASH, size: 10 });
     expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 100 })).toMatchObject({ allowed: true, stale: true });
     expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 101 })).toMatchObject({ allowed: false, stale: true });
+  });
+
+  test("a remembered answer stops deciding once its month reset", async () => {
+    let t = 1_000_000;
+    const resetsAt = Math.floor((t + 60_000) / 1000);   // seconds, as the service reports it
+    const f = _fetch([{ status: 200, body: { allowed: true, remaining_bytes: 0, resets_at: resetsAt } }, new Error("down"), new Error("down")]);
+    const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: f, log: quiet, now: () => t });
+    await c.check({ tip_id: TIP, content_hash: HASH, size: 1 });
+    t += 30_000;
+    expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 1 })).toMatchObject({ allowed: false, stale: true });
+    t = resetsAt * 1000;
+    expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 1 })).toBeNull();   // allowed through
+  });
+
+  test("a remembered answer stops deciding once it aged past the TTL", async () => {
+    let t = 1_000_000;
+    const f = _fetch([{ status: 200, body: { allowed: true, remaining_bytes: 0 } }, new Error("down"), new Error("down")]);
+    const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: f, log: quiet, now: () => t });
+    await c.check({ tip_id: TIP, content_hash: HASH, size: 1 });
+    t += MEDIA_QUOTA_CLIENT.LAST_KNOWN_TTL_MS;
+    expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 1 })).toMatchObject({ allowed: false, stale: true });
+    t += 1;
+    expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 1 })).toBeNull();
   });
 
   test("no monthly limit (remaining_bytes null) never turns an outage into a refusal", async () => {

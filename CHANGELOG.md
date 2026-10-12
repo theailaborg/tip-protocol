@@ -9,6 +9,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+**Node 2.7.3: optional monthly media allowance at upload-init**
+- With `TIP_MEDIA_QUOTA_URL` and `TIP_MEDIA_QUOTA_KEY` set, a chunked upload
+  asks the operator's billing service (`POST /api/media-quota/check`) before
+  any bytes move and refuses with `402 media_quota_exceeded` (month's bytes
+  used up), `413 file_too_large_for_plan` (single file over the plan) or
+  `429 monthly_file_limit_exceeded` (new files this month, counted per TIP-ID
+  type). Verified uploads are reported afterwards (`/record`), in the
+  background with retries; the same `content_hash` counts once a month. The
+  node's own per-type size caps still apply first. Unset, nothing changes:
+  other operators are unaffected.
+- The service is called fail-open: unreachable, an upload goes through unless
+  a fresh answer for that TIP-ID was remembered. A remembered answer is dropped
+  once its month reset or it aged past `MEDIA_QUOTA_CLIENT.LAST_KNOWN_TTL_MS`,
+  so last month's zero can never refuse this month's uploads during an outage.
+- Env is read in `config.mediaQuota`; timing constants live in
+  `MEDIA_QUOTA_CLIENT`.
+
 ### Fixed
 
 **Node 2.7.2: actionable error for the released extension's passkey path**

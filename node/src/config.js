@@ -13,7 +13,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { MEDIA_LIMITS, PRESCAN_FAIL_OPEN_AFTER_MS } = require("../../shared/constants");
+const { MEDIA_LIMITS, MEDIA_QUOTA_CLIENT, PRESCAN_FAIL_OPEN_AFTER_MS } = require("../../shared/constants");
 const { CONTENT_LIMITS } = require("../../shared/protocol-constants");
 
 // Fail closed: dev-gated paths check NODE_ENV !== "production", so an unset
@@ -161,6 +161,14 @@ function loadConfig() {
       // (CONTENT_LIMITS.media_items_max), surfaced here so the schema
       // validator gates request size before storage IO.
       media_items_max: CONTENT_LIMITS.MEDIA_ITEMS_MAX,
+    },
+
+    // ── Monthly media allowance (optional billing service) ────────────────────
+    // Off unless both url and key are set; see services/media-quota-client.js.
+    mediaQuota: {
+      url: process.env.TIP_MEDIA_QUOTA_URL || "",
+      key: process.env.TIP_MEDIA_QUOTA_KEY || "",
+      timeoutMs: parseInt(process.env.TIP_MEDIA_QUOTA_TIMEOUT_MS || "", 10) || MEDIA_QUOTA_CLIENT.TIMEOUT_MS,
     },
 
     // Express body-parser cap (genesis content_limits.request_body_max_bytes).
