@@ -72,9 +72,8 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // ref.current once consensus starts.
   const cryptoPoolRef = { current: null };
 
-  // Monthly media allowance: disabled unless TIP_MEDIA_QUOTA_URL and
-  // TIP_MEDIA_QUOTA_KEY are set (media-quota-client.js).
-  const mediaQuota = createMediaQuotaClient({ log: getLogger("tip.media.quota") });
+  // Monthly media allowance: disabled unless config.mediaQuota has url + key.
+  const mediaQuota = createMediaQuotaClient({ ...config.mediaQuota, log: getLogger("tip.media.quota") });
 
   const chunkedUploadService = createChunkedUploadService({
     storage: mediaStorage,

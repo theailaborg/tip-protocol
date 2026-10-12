@@ -1,35 +1,24 @@
 "use strict";
 
-// Monthly media allowance, enforced by asking the operator's billing service.
-//
-// Opt-in. With TIP_MEDIA_QUOTA_URL unset (the default) this client is
-// disabled and uploads behave exactly as before, so other node operators are
-// unaffected. The AI Lab's nodes point it at the Verification Portal, which
-// keeps one ledger for every node host (POST /api/media-quota/check and
-// /api/media-quota/record, authenticated with X-TIP-Quota-Key).
-//
-// It fails open: if the billing service is slow or down, an upload is never
-// blocked by that, the last known answer for the TIP-ID is used, and a
-// verified upload's record is retried a few times in the background.
-//
-// Env: TIP_MEDIA_QUOTA_URL (e.g. https://vp.theailab.org), TIP_MEDIA_QUOTA_KEY,
-//      TIP_MEDIA_QUOTA_TIMEOUT_MS (default 3000).
+// Monthly media allowance, enforced by asking the operator's billing service
+// (POST /api/media-quota/check before bytes move, /record after they verified;
+// X-TIP-Quota-Key auth). Opt-in through config.mediaQuota; disabled, uploads
+// behave exactly as before. Fails open: a slow or down service never blocks an
+// upload, a remembered answer for the TIP-ID decides only while it is fresh.
 
 const { nowMs } = require("../../../shared/time");
-
-const DEFAULT_TIMEOUT_MS = 3000;
-const RECORD_RETRIES = [2000, 10000, 60000];
-const LAST_KNOWN_MAX = 5000;
+const { MEDIA_QUOTA_CLIENT } = require("../../../shared/constants");
 
 function createMediaQuotaClient(opts = {}) {
-  const url = String(opts.url ?? process.env.TIP_MEDIA_QUOTA_URL ?? "").replace(/\/+$/, "");
-  const key = opts.key ?? process.env.TIP_MEDIA_QUOTA_KEY ?? "";
-  const timeoutMs = Number(opts.timeoutMs ?? process.env.TIP_MEDIA_QUOTA_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
+  const url = String(opts.url ?? "").replace(/\/+$/, "");
+  const key = opts.key ?? "";
+  const timeoutMs = Number(opts.timeoutMs) || MEDIA_QUOTA_CLIENT.TIMEOUT_MS;
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   const log = opts.log ?? console;
   const sleep = opts.sleep ?? (ms => new Promise(r => setTimeout(r, ms)));
+  const now = opts.now ?? nowMs;
   const enabled = Boolean(url && key && typeof fetchImpl === "function");
-  const lastKnown = new Map();   // tip_id -> { remaining_bytes, at }
+  const lastKnown = new Map();   // tip_id -> { remaining_bytes, resets_at_ms, at }
 
   async function _post(path, body) {
     const ac = new AbortController();
@@ -61,15 +50,29 @@ function createMediaQuotaClient(opts = {}) {
   // that would make an outage refuse every upload (size <= null is false).
   function _remember(tipId, answer) {
     if (typeof answer.remaining_bytes !== "number") { lastKnown.delete(tipId); return; }
-    if (lastKnown.size >= LAST_KNOWN_MAX) lastKnown.delete(lastKnown.keys().next().value);
-    lastKnown.set(tipId, { remaining_bytes: answer.remaining_bytes, at: nowMs() });
+    if (lastKnown.size >= MEDIA_QUOTA_CLIENT.LAST_KNOWN_MAX) lastKnown.delete(lastKnown.keys().next().value);
+    const resetsAtMs = typeof answer.resets_at === "number" ? answer.resets_at * 1000 : null;
+    lastKnown.set(tipId, { remaining_bytes: answer.remaining_bytes, resets_at_ms: resetsAtMs, at: now() });
+  }
+
+  // A remembered answer is dropped once its month reset or it aged past the
+  // TTL: a zero remaining from last month must not refuse this month's uploads.
+  function _known(tipId) {
+    const k = lastKnown.get(tipId);
+    if (!k) return null;
+    const t = now();
+    if (t - k.at > MEDIA_QUOTA_CLIENT.LAST_KNOWN_TTL_MS || (k.resets_at_ms != null && t >= k.resets_at_ms)) {
+      lastKnown.delete(tipId);
+      return null;
+    }
+    return k;
   }
 
   /**
    * May this upload start? Resolves to the billing service's answer
    * ({allowed, used_bytes, allowance_bytes, remaining_bytes, resets_at, ...}),
    * or null when the client is disabled or the service could not be reached
-   * and nothing is known about this TIP-ID (meaning: let it through).
+   * and nothing fresh is known about this TIP-ID (meaning: let it through).
    */
   async function check({ tip_id, content_hash, size, tip_id_type }) {
     if (!enabled) return null;
@@ -81,7 +84,7 @@ function createMediaQuotaClient(opts = {}) {
       _remember(tip_id, answer);
       return answer;
     } catch (err) {
-      const known = lastKnown.get(tip_id);
+      const known = _known(tip_id);
       log.warn?.(`media-quota check unavailable for ${tip_id}: ${err.message}${known ? " (using last known)" : " (allowing)"}`);
       if (!known) return null;
       return { allowed: size <= known.remaining_bytes, remaining_bytes: known.remaining_bytes, stale: true };
@@ -92,17 +95,18 @@ function createMediaQuotaClient(opts = {}) {
   async function record({ tip_id, content_hash, size, media_id }) {
     if (!enabled) return false;
     const body = { tip_id, content_hash, size, media_id };
+    const retries = MEDIA_QUOTA_CLIENT.RECORD_RETRY_MS;
     for (let attempt = 0; ; attempt++) {
       try {
         const answer = await _post("/api/media-quota/record", body);
         _remember(tip_id, answer);
         return true;
       } catch (err) {
-        if (attempt >= RECORD_RETRIES.length) {
+        if (attempt >= retries.length) {
           log.error?.(`media-quota record lost for ${tip_id} ${content_hash} (${size} bytes): ${err.message}`);
           return false;
         }
-        await sleep(RECORD_RETRIES[attempt]);
+        await sleep(retries[attempt]);
       }
     }
   }

@@ -64,6 +64,17 @@ const CLASSIFIER_CLIENT = Object.freeze({
   FILE_TIMEOUT_MS: 180_000,
 });
 
+// ─── Media quota client (outbound HTTP) ────────────────────────────────────
+// Node-local timing for the optional monthly media allowance check. A
+// remembered answer outlives neither its month nor LAST_KNOWN_TTL_MS, so an
+// outage can never refuse an upload on a stale zero.
+const MEDIA_QUOTA_CLIENT = Object.freeze({
+  TIMEOUT_MS: 3000,
+  RECORD_RETRY_MS: Object.freeze([2000, 10000, 60000]),
+  LAST_KNOWN_MAX: 5000,
+  LAST_KNOWN_TTL_MS: 60 * 60 * 1000,
+});
+
 // Pre-scans the classifier runs as a job (202): the worker polls on a backoff
 // schedule and a signed callback wakes it early. The wait ends at the network's
 // fail-open deadline, never at a duration guessed from file size. Media links
@@ -1168,6 +1179,7 @@ module.exports = {
   VERDICT,
   CONTENT_STATUS,
   CLASSIFIER_CLIENT,
+  MEDIA_QUOTA_CLIENT,
   SNAPSHOT_DOWNLOAD,
   SNAPSHOT_REQUEST,
   SNAPSHOT_SERVE,
