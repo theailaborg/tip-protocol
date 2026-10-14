@@ -56,7 +56,7 @@ function checkAccept(d, dag, atMs) {
   if (roster.activeMembership(dag, d.org_tip_id, d.member_tip_id)) {
     return roster.fail(409, `${d.member_tip_id} is already a member of ${d.org_tip_id}`, "already_member");
   }
-  const limit = roster.memberLimit(dag, d.org_tip_id);
+  const limit = roster.memberLimit(dag, d.org_tip_id, atMs);
   if (roster.activeMembers(dag, d.org_tip_id).length >= limit) {
     return roster.fail(409, `Organization has no free seat (limit ${limit})`, "member_limit_reached");
   }

@@ -11,6 +11,11 @@
 
 "use strict";
 
+// Seat ceiling pinned to the pre-activation rule (1 member) so these tests do
+// not change on 2026-10-19; tests/consensus/org-seats.test.js covers the
+// activated ceiling and paid seats. Must be set before _org-members loads.
+process.env.TIP_ORG_SEATS_ACTIVATION_MS = String(Number.MAX_SAFE_INTEGER);
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -141,13 +146,13 @@ function joined(ctx, org, member) {
 }
 
 describe("1. only an organization can send invites", () => {
-  test("a person signing an invite as the org is refused at API and DAG", () => {
+  test("a person signing an invite as the org is refused at API and DAG", async () => {
     const ctx = setup();
     const at = next();
     rejectedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ALICE, BOB, at), ALICE, at, "org_tip_id_type_invalid");
     expect(ctx.dag.getOrgMembersByOrg(ALICE)).toHaveLength(0);
   });
-  test("an invite signed with someone else's key never passes", () => {
+  test("an invite signed with someone else's key never passes", async () => {
     const ctx = setup();
     const at = next();
     const body = inviteBody(ctx, ORG, ALICE, at);
@@ -157,20 +162,20 @@ describe("1. only an organization can send invites", () => {
 });
 
 describe("2. an invite is pending until accepted; membership exists only after acceptance", () => {
-  test("pending invite: listed as pending, not a member, cannot be an author; after accept all three flip", () => {
+  test("pending invite: listed as pending, not a member, cannot be an author; after accept all three flip", async () => {
     const ctx = setup();
     const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
-    expect(ctx.service.listMembers(ORG)).toMatchObject({ members: [], pending_invites: [expect.objectContaining({ invite_tx_id: inv.tx_id, status: ORG_MEMBER_STATUS.INVITED })] });
+    expect((await ctx.service.listMembers(ORG))).toMatchObject({ members: [], pending_invites: [expect.objectContaining({ invite_tx_id: inv.tx_id, status: ORG_MEMBER_STATUS.INVITED })] });
     expect(ctx.service.listMemberships(ALICE).memberships).toEqual([]);
     contentRejected(ctx, ORG, [ALICE], "invalid_author");
 
     acceptedEverywhere(ctx, addedSchema, TX_TYPES.ORG_MEMBER_ADDED, acceptBody(ctx, ORG, ALICE, inv.tx_id, next()), ALICE, ts);
-    expect(ctx.service.listMembers(ORG).members).toHaveLength(1);
-    expect(ctx.service.listMembers(ORG).pending_invites).toHaveLength(0);
+    expect((await ctx.service.listMembers(ORG)).members).toHaveLength(1);
+    expect((await ctx.service.listMembers(ORG)).pending_invites).toHaveLength(0);
     expect(ctx.service.listMemberships(ALICE).memberships.map(m => m.org_tip_id)).toEqual([ORG]);
     contentAccepted(ctx, ORG, [ALICE]);
   });
-  test("accepting a pending invite that was never sent to you is refused at both layers", () => {
+  test("accepting a pending invite that was never sent to you is refused at both layers", async () => {
     const ctx = setup();
     const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
     const at = next();
@@ -179,7 +184,7 @@ describe("2. an invite is pending until accepted; membership exists only after a
 });
 
 describe("3. only an active member can be an author on org-signed content", () => {
-  test("non-member, pending invitee and removed member are all refused; the org itself and active members pass", () => {
+  test("non-member, pending invitee and removed member are all refused; the org itself and active members pass", async () => {
     const ctx = setup();
     contentRejected(ctx, ORG, [BOB], "invalid_author");
     contentAccepted(ctx, ORG, [ORG], "self");
@@ -193,9 +198,9 @@ describe("3. only an active member can be an author on org-signed content", () =
 });
 
 describe("4. the free plan has one seat, enforced at API and DAG", () => {
-  test("second acceptance refused while the seat is taken; a second invite is refused up front; at most one member can be an author", () => {
+  test("second acceptance refused while the seat is taken; a second invite is refused up front; at most one member can be an author", async () => {
     const ctx = setup();
-    expect(ORG_MEMBERS.FREE_MEMBER_LIMIT).toBe(1);
+    expect(ORG_MEMBERS.LEGACY_MEMBER_LIMIT).toBe(1);
     const invA = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
     const invB = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, BOB, next()), ORG, ts);
     acceptedEverywhere(ctx, addedSchema, TX_TYPES.ORG_MEMBER_ADDED, acceptBody(ctx, ORG, ALICE, invA.tx_id, next()), ALICE, ts);
@@ -206,11 +211,11 @@ describe("4. the free plan has one seat, enforced at API and DAG", () => {
     at = next();
     // Bob's invite is still open, so a fresh one is "invite_pending"; a third person hits the seat limit.
     rejectedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, BOB, at, "editor"), ORG, at, "invite_pending");
-    expect(ctx.service.listMembers(ORG)).toMatchObject({ limit: 1, members: [expect.objectContaining({ member_tip_id: ALICE })] });
+    expect((await ctx.service.listMembers(ORG))).toMatchObject({ limit: 1, members: [expect.objectContaining({ member_tip_id: ALICE })] });
     contentAccepted(ctx, ORG, [ALICE]);
     contentRejected(ctx, ORG, [ALICE, BOB], "invalid_author");
   });
-  test("with the seat taken, the org cannot invite anyone new", () => {
+  test("with the seat taken, the org cannot invite anyone new", async () => {
     const ctx = setup();
     joined(ctx, ORG, ALICE);
     const at = next();
@@ -219,7 +224,7 @@ describe("4. the free plan has one seat, enforced at API and DAG", () => {
 });
 
 describe("5. an invite can only go to a person, never to an organization", () => {
-  test("inviting another org is refused at API and DAG; inviting itself too", () => {
+  test("inviting another org is refused at API and DAG; inviting itself too", async () => {
     const ctx = setup();
     let at = next();
     rejectedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ORG2, at), ORG, at, "member_tip_id_type_invalid");
@@ -230,7 +235,7 @@ describe("5. an invite can only go to a person, never to an organization", () =>
 });
 
 describe("6. no other organization can be an author on registered content", () => {
-  test("an org listing another org, and a person listing an org, are refused at both layers", () => {
+  test("an org listing another org, and a person listing an org, are refused at both layers", async () => {
     const ctx = setup();
     contentRejected(ctx, ORG, [ORG2], "invalid_author");
     contentRejected(ctx, ORG, [ORG, ORG2], "invalid_author");
@@ -244,7 +249,7 @@ describe("6. no other organization can be an author on registered content", () =
 });
 
 describe("7. an open invite can be cancelled by the org or declined by the invitee", () => {
-  test("cancelled invite leaves pending, cannot be accepted, frees the invite cap; a third party cannot cancel", () => {
+  test("cancelled invite leaves pending, cannot be accepted, frees the invite cap; a third party cannot cancel", async () => {
     const ctx = setup();
     const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
     let at = next();
@@ -252,8 +257,8 @@ describe("7. an open invite can be cancelled by the org or declined by the invit
 
     acceptedEverywhere(ctx, cancelledSchema, TX_TYPES.ORG_MEMBER_INVITE_CANCELLED, cancelBody(ctx, ORG, ALICE, inv.tx_id, ORG, next()), ORG, ts);
     expect(ctx.dag.getOrgMember(inv.tx_id)).toMatchObject({ status: ORG_MEMBER_STATUS.CANCELLED, removed_by: ORG });
-    expect(ctx.service.listMembers(ORG).pending_invites).toHaveLength(0);
-    expect(ctx.service.listMembers(ORG, { include: "removed" }).cancelled).toHaveLength(1);
+    expect((await ctx.service.listMembers(ORG)).pending_invites).toHaveLength(0);
+    expect((await ctx.service.listMembers(ORG, { include: "removed" })).cancelled).toHaveLength(1);
     expect(ctx.service.listInvites(ALICE).invites).toHaveLength(0);
 
     at = next();
@@ -267,9 +272,9 @@ describe("7. an open invite can be cancelled by the org or declined by the invit
     expect(ctx.dag.getOrgMember(inv2.tx_id)).toMatchObject({ status: ORG_MEMBER_STATUS.CANCELLED, removed_by: ALICE });
     acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
   });
-  test("cancelled invites do not count toward the open-invite cap", () => {
+  test("cancelled invites do not count toward the open-invite cap", async () => {
     const ctx = setup();
-    const cap = ORG_MEMBERS.FREE_MEMBER_LIMIT * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
+    const cap = ORG_MEMBERS.LEGACY_MEMBER_LIMIT * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
     const people = [ALICE, BOB];
     // Fill the cap with real invitees, cancelling each so the slot frees again.
     for (let i = 0; i < cap + 1; i++) {
@@ -279,7 +284,7 @@ describe("7. an open invite can be cancelled by the org or declined by the invit
     }
     expect(ctx.dag.getOrgMembersByOrg(ORG).filter(r => r.status === ORG_MEMBER_STATUS.CANCELLED)).toHaveLength(cap + 1);
   });
-  test("an accept and a cancel of the same invite in one batch: only the first lands", () => {
+  test("an accept and a cancel of the same invite in one batch: only the first lands", async () => {
     const ctx = setup();
     const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
     const acc = txOf(ctx, TX_TYPES.ORG_MEMBER_ADDED, acceptBody(ctx, ORG, ALICE, inv.tx_id, next()), ts);
@@ -290,7 +295,7 @@ describe("7. an open invite can be cancelled by the org or declined by the invit
 });
 
 describe("8. a committed invite signature cannot be replayed; invites per day are capped", () => {
-  test("after cancellation the identical signed invite is refused at API and DAG", () => {
+  test("after cancellation the identical signed invite is refused at API and DAG", async () => {
     const ctx = setup();
     const body = inviteBody(ctx, ORG, ALICE, next());
     const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, body, ORG, ts);
@@ -302,7 +307,7 @@ describe("8. a committed invite signature cannot be replayed; invites per day ar
     // A genuinely new invite (fresh signed time) still works.
     acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
   });
-  test("a signed invite older than the claim window is dropped at commit even without a prior row", () => {
+  test("a signed invite older than the claim window is dropped at commit even without a prior row", async () => {
     const ctx = setup();
     const at = next();
     // Signed 16 minutes before the tx is built: outside CLAIM_MAX_AGE_MS.
@@ -310,9 +315,9 @@ describe("8. a committed invite signature cannot be replayed; invites per day ar
     expect(api(invitedSchema, body, ctx, ORG, at)).toMatchObject({ ok: false, code: "claim_expired" });
     expect(commit(ctx, txOf(ctx, TX_TYPES.ORG_MEMBER_INVITED, body, at))).toMatchObject({ committed: 0, dropped: 1 });
   });
-  test("the per-day invite cap counts cancelled invites too", () => {
+  test("the per-day invite cap counts cancelled invites too", async () => {
     const ctx = setup();
-    const dayCap = ORG_MEMBERS.FREE_MEMBER_LIMIT * ORG_MEMBERS.INVITES_PER_DAY_MULTIPLIER;
+    const dayCap = ORG_MEMBERS.LEGACY_MEMBER_LIMIT * ORG_MEMBERS.INVITES_PER_DAY_MULTIPLIER;
     for (let i = 0; i < dayCap; i++) {
       const who = i % 2 ? BOB : ALICE;
       const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, who, next()), ORG, ts);
@@ -325,7 +330,7 @@ describe("8. a committed invite signature cannot be replayed; invites per day ar
 });
 
 describe("9. review follow-ups: batch ordering, claim freshness at commit, in-batch invite caps, revoked members", () => {
-  test("cancel then accept of the same invite in one batch: the cancel wins", () => {
+  test("cancel then accept of the same invite in one batch: the cancel wins", async () => {
     const ctx = setup();
     const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
     const can = txOf(ctx, TX_TYPES.ORG_MEMBER_INVITE_CANCELLED, cancelBody(ctx, ORG, ALICE, inv.tx_id, ORG, next()), ts);
@@ -334,7 +339,7 @@ describe("9. review follow-ups: batch ordering, claim freshness at commit, in-ba
     expect(ctx.dag.getOrgMember(inv.tx_id)).toMatchObject({ status: ORG_MEMBER_STATUS.CANCELLED, removed_by: ORG, add_tx_id: null });
   });
 
-  test("a stale signed acceptance, removal or cancellation is dropped at commit (relayer cannot re-wrap or backdate)", () => {
+  test("a stale signed acceptance, removal or cancellation is dropped at commit (relayer cannot re-wrap or backdate)", async () => {
     const ctx = setup();
     const inv = acceptedEverywhere(ctx, invitedSchema, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, ALICE, next()), ORG, ts);
     // Bob's invite is created while the seat is still free; it stays open for the cancel probe below.
@@ -357,7 +362,7 @@ describe("9. review follow-ups: batch ordering, claim freshness at commit, in-ba
     expect(ctx.dag.getOrgMember(inv2.tx_id).status).toBe(ORG_MEMBER_STATUS.INVITED);
   });
 
-  test("the open-invite cap holds inside one batch", () => {
+  test("the open-invite cap holds inside one batch", async () => {
     const ctx = setup();
     const extra = ["tip://id/CA-acbdbe5b9f09edb7", "tip://id/US-9350d182f5f8e573"];
     for (const id of extra) {
@@ -368,15 +373,15 @@ describe("9. review follow-ups: batch ordering, claim freshness at commit, in-ba
         tip_id_type: "personal", registered_at: BASE_TS, tx_id: seedAnchorTx(ctx.dag, "REGISTER_IDENTITY", { tip_id: id }),
       });
     }
-    const cap = ORG_MEMBERS.FREE_MEMBER_LIMIT * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
+    const cap = ORG_MEMBERS.LEGACY_MEMBER_LIMIT * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
     const people = [ALICE, BOB, ...extra];
     expect(people.length).toBe(cap + 1);
     const txs = people.map(p => txOf(ctx, TX_TYPES.ORG_MEMBER_INVITED, inviteBody(ctx, ORG, p, next()), ts));
     expect(ctx.handler.commitOrderedTxs(txs, ++round)).toMatchObject({ committed: cap, dropped: 1 });
-    expect(ctx.service.listMembers(ORG).pending_invites).toHaveLength(cap);
+    expect((await ctx.service.listMembers(ORG)).pending_invites).toHaveLength(cap);
   });
 
-  test("a revoked member cannot be an author at API or DAG", () => {
+  test("a revoked member cannot be an author at API or DAG", async () => {
     const ctx = setup();
     joined(ctx, ORG, ALICE);
     contentAccepted(ctx, ORG, [ALICE]);
@@ -387,7 +392,7 @@ describe("9. review follow-ups: batch ordering, claim freshness at commit, in-ba
 });
 
 describe("10. an author cannot claim a co-signature that is not in the envelope", () => {
-  test("signed:true or key_mode:co_signed is refused at API and DAG for every signer type", () => {
+  test("signed:true or key_mode:co_signed is refused at API and DAG for every signer type", async () => {
     const ctx = setup();
     contentRejected(ctx, ALICE, [ALICE], "author_cosignature_missing", "self", { signed: true });
     contentRejected(ctx, ALICE, [ALICE], "author_cosignature_missing", "self", { key_mode: "co_signed" });
@@ -397,7 +402,7 @@ describe("10. an author cannot claim a co-signature that is not in the envelope"
     contentAccepted(ctx, ORG, [ALICE]);
     contentAccepted(ctx, ALICE, [ALICE], "self");
   });
-  test("before the activation epoch the claim is still recorded as before", () => {
+  test("before the activation epoch the claim is still recorded as before", async () => {
     const ctxGate = (() => { const c = setup(); c.handler = createCommitHandler({ dag: c.dag, scoring: initScoring(c.dag, { nodeId: NODE_ID, nodeRegisteredId: NODE_ID }), config: { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, orgMembersActivationMs: Number.MAX_SAFE_INTEGER } }); return c; })();
     const c = contentBody(ctxGate, ALICE, [ALICE], "self", { signed: true });
     expect(commit(ctxGate, contentTx(ctxGate, c, next()))).toMatchObject({ committed: 1, dropped: 0 });
@@ -405,7 +410,7 @@ describe("10. an author cannot claim a co-signature that is not in the envelope"
 });
 
 describe("11. a member author's signed role is what they did for this post, from the roster vocabulary", () => {
-  test("byline or a made-up role for a member is refused at API and DAG; any of the five is accepted regardless of team title; the org's own entry is free", () => {
+  test("byline or a made-up role for a member is refused at API and DAG; any of the five is accepted regardless of team title; the org's own entry is free", async () => {
     const ctx = setup();
     joined(ctx, ORG, ALICE);   // team title: author
     contentRejected(ctx, ORG, [ALICE], "author_role_invalid", "employed", { role: "byline" });

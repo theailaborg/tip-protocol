@@ -41,6 +41,7 @@ const { createMediaService } = require("./services/media-service");
 const { createMediaStorage } = require("./services/media-storage");
 const { createChunkedUploadService } = require("./services/chunked-upload-service");
 const { createMediaQuotaClient } = require("./services/media-quota-client");
+const { createSeatAllowanceClient } = require("./services/seat-allowance-client");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -92,8 +93,12 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
     chunkedUploadService,
   });
 
+  // Team seats per org: free limit unless config.seats (or the media quota
+  // url + key) points at a billing service.
+  const seatAllowance = createSeatAllowanceClient({ ...config.seats, log: getLogger("tip.org.seats") });
+
   const ctx = {
-    dag, scoring, config, submitTx, submitBatch,
+    dag, scoring, config, submitTx, submitBatch, seatAllowance,
     consensus: consensusRef, network: networkRef, prescanJobs, mediaService,
   };
 

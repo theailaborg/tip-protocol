@@ -12,6 +12,11 @@
 
 "use strict";
 
+// Seat ceiling pinned to the pre-activation rule (1 member) so these tests do
+// not change on 2026-10-19; tests/consensus/org-seats.test.js covers the
+// activated ceiling and paid seats. Must be set before _org-members loads.
+process.env.TIP_ORG_SEATS_ACTIVATION_MS = String(Number.MAX_SAFE_INTEGER);
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -190,7 +195,7 @@ describe("org roster lifecycle through the commit handler", () => {
 
   test("seat limit: the second person's acceptance is dropped once the only seat is taken, and commits after a removal", () => {
     const ctx = _setup();
-    expect(ORG_MEMBERS.FREE_MEMBER_LIMIT).toBe(1);
+    expect(ORG_MEMBERS.LEGACY_MEMBER_LIMIT).toBe(1);
 
     const invA = inviteTx(ctx, ALICE, BASE_TS + 1000);
     const invB = inviteTx(ctx, BOB, BASE_TS + 1001);

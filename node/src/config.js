@@ -171,6 +171,14 @@ function loadConfig() {
       timeoutMs: parseInt(process.env.TIP_MEDIA_QUOTA_TIMEOUT_MS || "", 10) || MEDIA_QUOTA_CLIENT.TIMEOUT_MS,
     },
 
+    // ── Team seats (optional billing service) ─────────────────────────────────
+    // Same channel as mediaQuota; see services/seat-allowance-client.js.
+    seats: {
+      url: process.env.TIP_SEATS_URL || process.env.TIP_MEDIA_QUOTA_URL || "",
+      key: process.env.TIP_SEATS_KEY || process.env.TIP_MEDIA_QUOTA_KEY || "",
+      timeoutMs: parseInt(process.env.TIP_SEATS_TIMEOUT_MS || "", 10) || 3000,
+    },
+
     // Express body-parser cap (genesis content_limits.request_body_max_bytes).
     // Surfaced here so api.js sets the limit from config (resolved after
     // ProtocolConstants init) rather than reaching into the throwing getter at

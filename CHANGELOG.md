@@ -11,6 +11,22 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.7.4: 2 free team seats, paid seats from the operator's billing service**
+- Consensus seat ceiling: 1 member before `ORG_MEMBERS.SEATS_ACTIVATION_MS`
+  (2026-10-19 16:00 UTC), `MAX_MEMBER_LIMIT` (250) from then on, decided by the
+  tx timestamp. A commit-rule change: every node must run 2.7.4 before the
+  activation, or it rejects a second member and forks.
+  `TIP_ORG_SEATS_ACTIVATION_MS` overrides it on an isolated cluster only.
+- Inside the ceiling, seats are operator policy at the API. With a billing
+  service configured (`TIP_SEATS_URL`/`TIP_SEATS_KEY`, defaulting to the media
+  quota url and key) the node asks `POST /api/team-seats/check` and admits
+  invites and acceptances only within the org's allowance; without one every
+  org gets `FREE_MEMBER_LIMIT` (2). Past it: `409 member_limit_reached` with
+  `details: {limit, plan, upgrade_url}`. `GET /identity/:org/members` adds
+  `plan` and `upgrade_url`.
+- An outage never takes seats away (last known answer, else free), and a
+  lapsed plan removes nobody.
+
 **Node 2.7.3: optional monthly media allowance at upload-init**
 - With `TIP_MEDIA_QUOTA_URL` and `TIP_MEDIA_QUOTA_KEY` set, a chunked upload
   asks the operator's billing service (`POST /api/media-quota/check`) before

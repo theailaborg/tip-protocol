@@ -1,7 +1,7 @@
 "use strict";
 
 const { nowMs } = require("../../../shared/time");
-const { TX_TYPES, ORG_MEMBER_STATUS, ORG_MEMBER_ROLES } = require("../../../shared/constants");
+const { TX_TYPES, ORG_MEMBERS, ORG_MEMBER_STATUS, ORG_MEMBER_ROLES } = require("../../../shared/constants");
 const invitedSchema = require("../schemas/org-member-invited");
 const cancelledSchema = require("../schemas/org-member-invite-cancelled");
 const addedSchema = require("../schemas/org-member-added");
@@ -29,8 +29,34 @@ function _view(row) {
   };
 }
 
-function createOrgMemberService({ dag, config, submitTx }) {
+function createOrgMemberService({ dag, config, submitTx, seatAllowance }) {
   const deps = () => ({ dag, activationMs: config && config.orgMembersActivationMs });
+
+  // Seats the org may fill right now: the operator's allowance (free limit
+  // without a plan or a billing service), never above the consensus ceiling.
+  async function _seats(orgTipId) {
+    const allowance = seatAllowance
+      ? await seatAllowance.allowanceFor(orgTipId)
+      : { limit: ORG_MEMBERS.FREE_MEMBER_LIMIT, plan: "free", upgrade_url: null };
+    const limit = Math.min(allowance.limit, roster.memberLimit(dag, orgTipId, nowMs()));
+    return { ...allowance, limit };
+  }
+
+  // Operator policy at the API: consensus would accept up to its ceiling, so
+  // the plan limit is checked here, before the tx is relayed.
+  async function _admit(orgTipId, { opening }) {
+    const seats = await _seats(orgTipId);
+    const details = { limit: seats.limit, plan: seats.plan, upgrade_url: seats.upgrade_url };
+    if (roster.activeMembers(dag, orgTipId).length >= seats.limit) {
+      throw schemaError(409, `Organization has no free seat (limit ${seats.limit})`, "member_limit_reached", details);
+    }
+    if (opening) {
+      const openCap = seats.limit * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
+      if (roster.openInvites(dag, orgTipId, nowMs()).length >= openCap) {
+        throw schemaError(409, `Organization has too many open invites (limit ${openCap})`, "invite_limit_reached", details);
+      }
+    }
+  }
 
   // All three flows are SUBJECT-signed relays: the client signed the
   // canonical body, the signature becomes tx.signature, the node adds
@@ -45,8 +71,9 @@ function createOrgMemberService({ dag, config, submitTx }) {
     return tx;
   }
 
-  function invite({ urlTipId, body }) {
+  async function invite({ urlTipId, body }) {
     invitedSchema.validateRequest(body, { ...deps(), urlTipId });
+    await _admit(body.org_tip_id, { opening: true });
     const tx = _submit(TX_TYPES.ORG_MEMBER_INVITED, {
       org_tip_id: body.org_tip_id,
       member_tip_id: body.member_tip_id,
@@ -77,8 +104,9 @@ function createOrgMemberService({ dag, config, submitTx }) {
     };
   }
 
-  function accept({ urlTipId, body }) {
+  async function accept({ urlTipId, body }) {
     addedSchema.validateRequest(body, { ...deps(), urlTipId });
+    await _admit(body.org_tip_id, { opening: false });
     const tx = _submit(TX_TYPES.ORG_MEMBER_ADDED, {
       org_tip_id: body.org_tip_id,
       member_tip_id: body.member_tip_id,
@@ -111,14 +139,14 @@ function createOrgMemberService({ dag, config, submitTx }) {
   }
 
   // GET /identity/:org/members: active roster plus open invites; ?include=removed adds history.
-  function listMembers(orgTipId, query = {}) {
+  async function listMembers(orgTipId, query = {}) {
     if (!dag.getIdentity(orgTipId)) throw schemaError(404, "TIP-ID not found", "tip_id_not_found");
     const now = nowMs();
     const rows = dag.getOrgMembersByOrg(orgTipId) || [];
     const includeRemoved = String(query.include || "").split(",").includes("removed");
     return {
       org_tip_id: orgTipId,
-      limit: roster.memberLimit(dag, orgTipId),
+      ...(await _seatsView(orgTipId)),
       roles: ORG_MEMBER_ROLES,
       members: rows.filter(r => r.status === ORG_MEMBER_STATUS.ACTIVE).map(_view),
       pending_invites: rows.filter(r => roster.isOpenInvite(r, now)).map(_view),
@@ -127,6 +155,11 @@ function createOrgMemberService({ dag, config, submitTx }) {
         cancelled: rows.filter(r => r.status === ORG_MEMBER_STATUS.CANCELLED).map(_view),
       } : {}),
     };
+  }
+
+  async function _seatsView(orgTipId) {
+    const seats = await _seats(orgTipId);
+    return { limit: seats.limit, plan: seats.plan, upgrade_url: seats.upgrade_url };
   }
 
   // GET /identity/:member/invites: open invites addressed to a person.

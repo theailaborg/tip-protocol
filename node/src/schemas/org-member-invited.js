@@ -48,7 +48,7 @@ function checkInvite(d, dag, atMs) {
   if (rows.some(r => r.member_tip_id === d.member_tip_id && Number(r.invited_claim) === d.invited_at)) {
     return roster.fail(409, "This invite signature was already used", "invite_replayed");
   }
-  const dayLimit = roster.dayInviteLimit(dag, d.org_tip_id);
+  const dayLimit = roster.dayInviteLimit(dag, d.org_tip_id, atMs);
   if (roster.invitesInLastDay(dag, d.org_tip_id, atMs).length >= dayLimit) {
     return roster.fail(409, `Organization has sent too many invites in 24 hours (limit ${dayLimit})`, "invite_rate_limited");
   }
@@ -58,11 +58,11 @@ function checkInvite(d, dag, atMs) {
   if (roster.openInviteFor(dag, d.org_tip_id, d.member_tip_id, atMs)) {
     return roster.fail(409, `An open invite already exists for ${d.member_tip_id}`, "invite_pending");
   }
-  const limit = roster.memberLimit(dag, d.org_tip_id);
+  const limit = roster.memberLimit(dag, d.org_tip_id, atMs);
   if (roster.activeMembers(dag, d.org_tip_id).length >= limit) {
     return roster.fail(409, `Organization has no free seat (limit ${limit})`, "member_limit_reached");
   }
-  const inviteLimit = roster.openInviteLimit(dag, d.org_tip_id);
+  const inviteLimit = roster.openInviteLimit(dag, d.org_tip_id, atMs);
   if (roster.openInvites(dag, d.org_tip_id, atMs).length >= inviteLimit) {
     return roster.fail(409, `Organization has too many open invites (limit ${inviteLimit})`, "invite_limit_reached");
   }

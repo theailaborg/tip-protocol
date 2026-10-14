@@ -131,14 +131,14 @@ function createRouter({ identityService, profileService, keyService, orgMemberSe
   // :tipId is whoever signs: the org on invite, the person on accept,
   // either party on remove. Reads are per org (members) or per person
   // (invites, memberships).
-  router.get("/identity/:tipId/members", asyncHandler((req, res) => {
+  router.get("/identity/:tipId/members", asyncHandler(async (req, res) => {
     const tipId = decodeURIComponent(req.params.tipId);
-    res.json(orgMemberService.listMembers(tipId, req.query));
+    res.json(await orgMemberService.listMembers(tipId, req.query));
   }));
 
-  router.post("/identity/:tipId/members/invite", asyncHandler((req, res) => {
+  router.post("/identity/:tipId/members/invite", asyncHandler(async (req, res) => {
     const tipId = decodeURIComponent(req.params.tipId);
-    res.status(202).json(orgMemberService.invite({ urlTipId: tipId, body: req.body }));
+    res.status(202).json(await orgMemberService.invite({ urlTipId: tipId, body: req.body }));
   }));
 
   router.post("/identity/:tipId/members/cancel-invite", asyncHandler((req, res) => {
@@ -146,9 +146,9 @@ function createRouter({ identityService, profileService, keyService, orgMemberSe
     res.status(202).json(orgMemberService.cancelInvite({ urlTipId: tipId, body: req.body }));
   }));
 
-  router.post("/identity/:tipId/members/accept", asyncHandler((req, res) => {
+  router.post("/identity/:tipId/members/accept", asyncHandler(async (req, res) => {
     const tipId = decodeURIComponent(req.params.tipId);
-    res.status(202).json(orgMemberService.accept({ urlTipId: tipId, body: req.body }));
+    res.status(202).json(await orgMemberService.accept({ urlTipId: tipId, body: req.body }));
   }));
 
   router.post("/identity/:tipId/members/remove", asyncHandler((req, res) => {
