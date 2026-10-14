@@ -5,7 +5,7 @@ const {
 } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { verifyDedupProof } = require("../../../shared/zk");
-const { TX_TYPES, TX_TYPE_SET, SIGNED_BY_KIND, TIP_ID_TYPES, TIP_ID_TYPE_VALUES } = require("../../../shared/constants");
+const { TX_TYPES, TX_TYPE_SET, SIGNED_BY_KIND, TIP_ID_TYPES, TIP_ID_TYPE_VALUES, ORG_MEMBERS } = require("../../../shared/constants");
 const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
 const linkPlatformSchema = require("../schemas/link-platform");
@@ -111,7 +111,7 @@ function projectActivityItem(tx, tipId, status, extra = {}) {
   };
 }
 
-function createIdentityService({ dag, scoring, config, submitTx }) {
+function createIdentityService({ dag, scoring, config, submitTx, seatAllowance }) {
 
   async function register(body) {
     // GH #51 — accept both legacy `vp_signature` (current WP plugin /
@@ -298,7 +298,9 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       return {
         members: {
           active: roster.activeMembers(dag, rec.tip_id).length,
-          limit: roster.memberLimit(dag, rec.tip_id),
+          limit: Math.min(
+            seatAllowance ? seatAllowance.peek(rec.tip_id).limit : ORG_MEMBERS.FREE_MEMBER_LIMIT,
+            roster.memberLimit(dag, rec.tip_id, nowMs())),
         },
       };
     }

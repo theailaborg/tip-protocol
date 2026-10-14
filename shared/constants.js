@@ -1072,8 +1072,14 @@ const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15
 
 // Organization roster (org_members). An org invites a registered personal
 // TIP-ID; the invite is usable for INVITE_TTL_MS after its tx.timestamp and
-// never consumes a seat; acceptance does. FREE_MEMBER_LIMIT is the only tier
-// today; a paid plan lands as a per-org lookup in _org-members.memberLimit.
+// never consumes a seat; acceptance does. Seats have two layers. Consensus
+// enforces a fixed ceiling every node agrees on: LEGACY_MEMBER_LIMIT before
+// SEATS_ACTIVATION_MS, MAX_MEMBER_LIMIT from then on (a commit-rule change, so
+// it is epoch-gated like ACTIVATION_MS and the fleet upgrades first). Inside
+// that ceiling an operator may sell seats: the node's API asks its billing
+// service (services/seat-allowance-client.js) and admits invites and accepts
+// only within the org's allowance, FREE_MEMBER_LIMIT when it has no plan or no
+// billing service is configured.
 // Open (unexpired, unaccepted) invites per org are capped at limit x
 // OPEN_INVITE_MULTIPLIER so the table cannot be flooded. Lives in code (not
 // genesis) like REGISTER_CREDIT. ACTIVATION_MS: the three tx types are new
@@ -1081,7 +1087,10 @@ const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15
 // before this epoch-ms and the fleet upgrades first (TIP_ORG_MEMBERS_ACTIVATION_MS
 // overrides it on an isolated cluster).
 const ORG_MEMBERS = Object.freeze({
-  FREE_MEMBER_LIMIT: 1,
+  FREE_MEMBER_LIMIT: 2,
+  LEGACY_MEMBER_LIMIT: 1,
+  MAX_MEMBER_LIMIT: 250,
+  SEATS_ACTIVATION_MS: 1792425600000, // 2026-10-19 16:00:00 UTC
   OPEN_INVITE_MULTIPLIER: 3,
   // Invites an org may create per rolling 24 h, any status: limit x this.
   // Cancelling frees an open slot at once, so without it an org could grow

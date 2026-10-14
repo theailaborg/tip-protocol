@@ -646,11 +646,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           const inBatchInvites = validated.filter(t =>
             t.tx_type === TX_TYPES.ORG_MEMBER_INVITED && t.data?.org_tip_id === d.org_tip_id).length;
           const openNow = orgRoster.openInvites(dag, d.org_tip_id, tx.timestamp).length;
-          if (openNow + inBatchInvites >= orgRoster.openInviteLimit(dag, d.org_tip_id)) {
+          if (openNow + inBatchInvites >= orgRoster.openInviteLimit(dag, d.org_tip_id, tx.timestamp)) {
             return { valid: false, error: `open invite cap reached for ${d.org_tip_id} in this batch` };
           }
           const dayNow = orgRoster.invitesInLastDay(dag, d.org_tip_id, tx.timestamp).length;
-          if (dayNow + inBatchInvites >= orgRoster.dayInviteLimit(dag, d.org_tip_id)) {
+          if (dayNow + inBatchInvites >= orgRoster.dayInviteLimit(dag, d.org_tip_id, tx.timestamp)) {
             return { valid: false, error: `daily invite cap reached for ${d.org_tip_id} in this batch` };
           }
         }
@@ -665,7 +665,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           // committed-row limit check cannot see.
           const inBatchSeats = validated.filter(t =>
             t.tx_type === TX_TYPES.ORG_MEMBER_ADDED && t.data?.org_tip_id === d.org_tip_id).length;
-          const freeSeats = orgRoster.memberLimit(dag, d.org_tip_id) - orgRoster.activeMembers(dag, d.org_tip_id).length;
+          const freeSeats = orgRoster.memberLimit(dag, d.org_tip_id, tx.timestamp) - orgRoster.activeMembers(dag, d.org_tip_id).length;
           if (inBatchSeats >= freeSeats) return { valid: false, error: `no free seat left for ${d.org_tip_id} in this batch` };
         }
         return { valid: true };

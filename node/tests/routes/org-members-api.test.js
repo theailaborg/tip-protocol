@@ -11,6 +11,11 @@
 
 "use strict";
 
+// Seat ceiling pinned to the pre-activation rule (1 member) so these tests do
+// not change on 2026-10-19; tests/consensus/org-seats.test.js covers the
+// activated ceiling and paid seats. Must be set before _org-members loads.
+process.env.TIP_ORG_SEATS_ACTIVATION_MS = String(Number.MAX_SAFE_INTEGER);
+
 const path = require("path");
 const express = require("express");
 const request = require("supertest");
@@ -114,7 +119,7 @@ describe("org roster API", () => {
     expect(invites.body.invites[0]).toMatchObject({ invite_tx_id: inv.body.invite_tx_id, org_tip_id: ORG, status: "invited" });
 
     let members = await request(h.app).get(`/v1/identity/${enc(ORG)}/members`);
-    expect(members.body).toMatchObject({ org_tip_id: ORG, limit: ORG_MEMBERS.FREE_MEMBER_LIMIT, members: [] });
+    expect(members.body).toMatchObject({ org_tip_id: ORG, limit: ORG_MEMBERS.LEGACY_MEMBER_LIMIT, members: [] });
     expect(members.body.pending_invites).toHaveLength(1);
 
     const acc = await request(h.app).post(`/v1/identity/${enc(ALICE)}/members/accept`).send(signedAccept(h, ALICE, inv.body.invite_tx_id));
@@ -127,7 +132,7 @@ describe("org roster API", () => {
     expect(members.body.pending_invites).toHaveLength(0);
 
     const org = await request(h.app).get(`/v1/identity/${enc(ORG)}`);
-    expect(org.body.members).toEqual({ active: 1, limit: ORG_MEMBERS.FREE_MEMBER_LIMIT });
+    expect(org.body.members).toEqual({ active: 1, limit: ORG_MEMBERS.LEGACY_MEMBER_LIMIT });
     const alice = await request(h.app).get(`/v1/identity/${enc(ALICE)}`);
     expect(alice.body.member_of).toEqual([ORG]);
     const memberships = await request(h.app).get(`/v1/identity/${enc(ALICE)}/memberships`);
@@ -277,7 +282,7 @@ describe("GET /v1/identity/:tipId/members on a person", () => {
     const h = harness();
     const r = await request(h.app).get(`/v1/identity/${enc(ALICE)}/members`);
     expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ org_tip_id: ALICE, limit: ORG_MEMBERS.FREE_MEMBER_LIMIT, members: [], pending_invites: [] });
+    expect(r.body).toMatchObject({ org_tip_id: ALICE, limit: ORG_MEMBERS.LEGACY_MEMBER_LIMIT, members: [], pending_invites: [] });
     expect(Array.isArray(r.body.roles)).toBe(true);
     const missing = await request(h.app).get(`/v1/identity/${enc("tip://id/US-0000000000000000")}/members`);
     expect(missing.status).toBe(404);

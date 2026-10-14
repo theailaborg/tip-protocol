@@ -10,6 +10,11 @@
 
 "use strict";
 
+// Seat ceiling pinned to the pre-activation rule (1 member) so these tests do
+// not change on 2026-10-19; tests/consensus/org-seats.test.js covers the
+// activated ceiling and paid seats. Must be set before _org-members loads.
+process.env.TIP_ORG_SEATS_ACTIVATION_MS = String(Number.MAX_SAFE_INTEGER);
+
 const path = require("path");
 const SRC = path.resolve(__dirname, "../../src");
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -122,7 +127,7 @@ describe("ORG_MEMBER_INVITED state machine", () => {
     // Seat held by someone else.
     expect(invited.verifyTx(tx(), fakeDag({ identities: ids, rows: [activeRow({ member_tip_id: OTHER })] }), ACTIVE).code).toBe("member_limit_reached");
     // Open invites to other people fill the invite cap (limit x multiplier).
-    const cap = ORG_MEMBERS.FREE_MEMBER_LIMIT * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
+    const cap = ORG_MEMBERS.LEGACY_MEMBER_LIMIT * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
     const others = Array.from({ length: cap }, (_, i) => inviteRow({ invite_tx_id: `inv-o${i}`, member_tip_id: `tip://id/US-${i}` }));
     expect(invited.verifyTx(tx(), fakeDag({ identities: ids, rows: others }), ACTIVE).code).toBe("invite_limit_reached");
   });

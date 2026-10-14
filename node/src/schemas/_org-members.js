@@ -20,6 +20,7 @@
 "use strict";
 
 const { schemaError, assertBounded } = require("./_common");
+const { nowMs } = require("../../../shared/time");
 const {
   ORG_MEMBERS, ORG_MEMBER_ROLES, ORG_MEMBER_STATUS, TIP_ID_TYPES, CLAIM_MAX_AGE_MS,
 } = require("../../../shared/constants");
@@ -80,8 +81,8 @@ function invitesInLastDay(dag, orgTipId, atMs) {
   return (dag.getOrgMembersByOrg(orgTipId) || []).filter(r => atMs - Number(r.invited_at) < DAY_MS);
 }
 
-function dayInviteLimit(dag, orgTipId) {
-  return memberLimit(dag, orgTipId) * ORG_MEMBERS.INVITES_PER_DAY_MULTIPLIER;
+function dayInviteLimit(dag, orgTipId, atMs) {
+  return memberLimit(dag, orgTipId, atMs) * ORG_MEMBERS.INVITES_PER_DAY_MULTIPLIER;
 }
 
 function isInviteExpired(row, atMs) {
@@ -116,14 +117,27 @@ function openInvitesFor(dag, memberTipId, atMs) {
   return (dag.getOrgMembersByMember(memberTipId) || []).filter(r => isOpenInvite(r, atMs));
 }
 
-// The only tier today. A paid plan becomes a per-org lookup here; every
-// limit check in the roster schemas goes through this one function.
-function memberLimit(_dag, _orgTipId) {
-  return ORG_MEMBERS.FREE_MEMBER_LIMIT;
+// Consensus seat ceiling, identical on every node. Per-org paid seats are an
+// operator policy enforced at the API (seat-allowance-client.js), never here:
+// a billing lookup at commit would let nodes disagree. Every limit check in
+// the roster schemas goes through this one function.
+const SEATS_ACTIVATION_MS = (() => {
+  const raw = process.env.TIP_ORG_SEATS_ACTIVATION_MS;
+  if (raw === undefined || raw === "") return ORG_MEMBERS.SEATS_ACTIVATION_MS;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || String(n) !== raw.trim()) {
+    throw new Error(`TIP_ORG_SEATS_ACTIVATION_MS must be an integer epoch-ms value, got "${raw}"`);
+  }
+  return n;
+})();
+
+function memberLimit(_dag, _orgTipId, atMs) {
+  const t = Number.isFinite(atMs) ? atMs : nowMs();
+  return t >= SEATS_ACTIVATION_MS ? ORG_MEMBERS.MAX_MEMBER_LIMIT : ORG_MEMBERS.LEGACY_MEMBER_LIMIT;
 }
 
-function openInviteLimit(dag, orgTipId) {
-  return memberLimit(dag, orgTipId) * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
+function openInviteLimit(dag, orgTipId, atMs) {
+  return memberLimit(dag, orgTipId, atMs) * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
 }
 
 /** Registered, unrevoked identity of the expected type, or a failed result. */
