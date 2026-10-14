@@ -11,10 +11,14 @@
  *   - All reads are synchronous (SQLite prepared statements)
  *
  * DAG properties:
- *   - Each tx references exactly 2 prior txs (prev[0], prev[1])
- *   - Genesis tx has prev = [] (the only exception)
- *   - tx_id = SHAKE-256 of canonical tx content
- *   - Enables 5,000+ TPS via parallel processing
+ *   - tx_id = SHAKE-256 of the canonical tx (tx_type, data, timestamp); a
+ *     transaction carries no references to other transactions
+ *   - The graph is the consensus certificate DAG: each round's certificates
+ *     reference the previous round's through parent_hashes
+ *     (consensus/certificate.js, consensus/narwhal.js), and Bullshark fixes
+ *     one total order (consensus/bullshark.js)
+ *   - Tamper-evidence comes from the signed certificate DAG and state_root
+ *   - Measured throughput: docs/NODE_REQUIREMENTS.md (July 2026 load tests)
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * @author    Dinesh Mendhe <chairman@theailab.org>

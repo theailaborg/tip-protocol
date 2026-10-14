@@ -681,8 +681,8 @@ Hybrid signatures (Ed25519 + ML-DSA-65) are used during the transition period (Y
 TIP Protocol uses a Directed Acyclic Graph (DAG), not a blockchain:
 
 - **No proof-of-work**: no energy-intensive mining
-- **Parallel processing**: each transaction references two prior transactions
-- **Throughput**: exceeds 5,000 transactions per second
+- **Consensus**: Narwhal and Bullshark. Every committee node certifies a batch of transactions each round, each certificate references the certified batches of the round before (`parent_hashes`), and Bullshark commits an anchor every two rounds and orders everything beneath it. Writers never queue behind a single leader.
+- **Measured throughput**: in the July 2026 load tests on a three-node network of 2 vCPU nodes, about 40 registrations per second sustained at full acceptance, bursts to 100 transactions per second, and a cross-node commit of about 2.7 s at the median. Adding nodes does not add throughput. See [docs/NODE_REQUIREMENTS.md](docs/NODE_REQUIREMENTS.md).
 - **Anyone can run a node**: no permission required
 - **Full decentralization roadmap**: Phase 1 (coordinator), Phase 2 (21 validators), Phase 3 (self-validating at 100 TPS)
 
