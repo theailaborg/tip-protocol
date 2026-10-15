@@ -42,17 +42,57 @@ function createOrgMemberService({ dag, config, submitTx, seatAllowance }) {
     return { ...allowance, limit };
   }
 
+  // Relayed but not yet committed, per org: the committed rows cannot see
+  // them, so several people accepting at once would each find a free seat
+  // and all commit (consensus only enforces its own ceiling). Entries leave
+  // once the row is on the DAG, or after PENDING_HOLD_MS if it never lands.
+  const PENDING_HOLD_MS = 120 * 1000;
+  const pending = new Map();   // org -> Map("add:<member>" | "inv:<member>" -> relayed at)
+  function _held(orgTipId, kind) {
+    const m = pending.get(orgTipId);
+    if (!m) return 0;
+    const now = nowMs();
+    const active = new Set(roster.activeMembers(dag, orgTipId).map(r => r.member_tip_id));
+    const open = new Set(roster.openInvites(dag, orgTipId, now).map(r => r.member_tip_id));
+    let n = 0;
+    for (const [key, at] of m) {
+      const member = key.slice(4);
+      const landed = key.startsWith("add:") ? active.has(member) : (open.has(member) || active.has(member));
+      if (landed || now - at > PENDING_HOLD_MS) { m.delete(key); continue; }
+      if (key.startsWith(kind + ":")) n++;
+    }
+    if (!m.size) pending.delete(orgTipId);
+    return n;
+  }
+  function _hold(orgTipId, kind, memberTipId) {
+    if (!pending.has(orgTipId)) pending.set(orgTipId, new Map());
+    pending.get(orgTipId).set(`${kind}:${memberTipId}`, nowMs());
+  }
+
+  // One admission at a time per org, from the seat check through the relay,
+  // so the await on the billing service cannot interleave two decisions.
+  const locks = new Map();
+  function _serial(orgTipId, fn) {
+    const prev = locks.get(orgTipId) || Promise.resolve();
+    const run = prev.then(fn, fn);
+    const tail = run.catch(() => {});
+    locks.set(orgTipId, tail);
+    tail.then(() => { if (locks.get(orgTipId) === tail) locks.delete(orgTipId); });
+    return run;
+  }
+
   // Operator policy at the API: consensus would accept up to its ceiling, so
-  // the plan limit is checked here, before the tx is relayed.
+  // the plan limit is checked here, before the tx is relayed. Counts include
+  // this node's relayed-but-uncommitted acceptances and invites.
   async function _admit(orgTipId, { opening }) {
     const seats = await _seats(orgTipId);
     const details = { limit: seats.limit, plan: seats.plan, upgrade_url: seats.upgrade_url };
-    if (roster.activeMembers(dag, orgTipId).length >= seats.limit) {
+    if (roster.activeMembers(dag, orgTipId).length + _held(orgTipId, "add") >= seats.limit) {
       throw schemaError(409, `Organization has no free seat (limit ${seats.limit})`, "member_limit_reached", details);
     }
     if (opening) {
       const openCap = seats.limit * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER;
-      if (roster.openInvites(dag, orgTipId, nowMs()).length >= openCap) {
+      if (roster.openInvites(dag, orgTipId, nowMs()).length + _held(orgTipId, "inv") >= openCap) {
         throw schemaError(409, `Organization has too many open invites (limit ${openCap})`, "invite_limit_reached", details);
       }
     }
@@ -72,6 +112,9 @@ function createOrgMemberService({ dag, config, submitTx, seatAllowance }) {
   }
 
   async function invite({ urlTipId, body }) {
+    return _serial(body && body.org_tip_id, () => _invite({ urlTipId, body }));
+  }
+  async function _invite({ urlTipId, body }) {
     invitedSchema.validateRequest(body, { ...deps(), urlTipId });
     await _admit(body.org_tip_id, { opening: true });
     const tx = _submit(TX_TYPES.ORG_MEMBER_INVITED, {
@@ -80,6 +123,7 @@ function createOrgMemberService({ dag, config, submitTx, seatAllowance }) {
       role: body.role,
       invited_at: body.invited_at,
     }, body.signature);
+    _hold(body.org_tip_id, "inv", body.member_tip_id);
     log.info(`Org member invited: ${body.org_tip_id} -> ${body.member_tip_id} (${body.role})`);
     return {
       org_tip_id: body.org_tip_id, member_tip_id: body.member_tip_id, role: body.role,
@@ -105,6 +149,9 @@ function createOrgMemberService({ dag, config, submitTx, seatAllowance }) {
   }
 
   async function accept({ urlTipId, body }) {
+    return _serial(body && body.org_tip_id, () => _accept({ urlTipId, body }));
+  }
+  async function _accept({ urlTipId, body }) {
     addedSchema.validateRequest(body, { ...deps(), urlTipId });
     await _admit(body.org_tip_id, { opening: false });
     const tx = _submit(TX_TYPES.ORG_MEMBER_ADDED, {
@@ -113,6 +160,7 @@ function createOrgMemberService({ dag, config, submitTx, seatAllowance }) {
       invite_tx_id: body.invite_tx_id,
       accepted_at: body.accepted_at,
     }, body.signature);
+    _hold(body.org_tip_id, "add", body.member_tip_id);
     log.info(`Org member accepted: ${body.member_tip_id} joined ${body.org_tip_id}`);
     return {
       org_tip_id: body.org_tip_id, member_tip_id: body.member_tip_id,

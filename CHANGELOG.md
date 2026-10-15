@@ -9,6 +9,21 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+**Node 2.7.5: team seats hold under simultaneous accepts**
+- Plan seats are enforced at the API, and the check counted only committed
+  members, so several people accepting at once could each find a free seat and
+  all commit (a free org could reach 6 members, Team 5 could reach 15).
+  Admission now runs one at a time per org and counts this node's relayed but
+  uncommitted acceptances and invites, released when the row lands or after
+  120 s.
+- The seat client shares one request among concurrent callers, answers from
+  memory for 30 s after a failed call instead of waiting out the timeout
+  again, evicts least recently used, and `peek` refreshes in the background.
+- A `TIP_ORG_SEATS_ACTIVATION_MS` override logs a warning on start: it is a
+  consensus gate and forks a node whose value differs from the fleet.
+
 ### Added
 
 **Node 2.7.4: 2 free team seats, paid seats from the operator's billing service**
