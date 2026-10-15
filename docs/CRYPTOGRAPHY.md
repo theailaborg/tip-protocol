@@ -351,7 +351,7 @@ node scripts/zk-setup.js   # dev only — single contributor
 
 Before processing real biometric data:
 
-- [ ] Replace Ed25519 stub with ML-DSA-65 (liboqs or @noble/post-quantum)
+- [x] ML-DSA-65 signatures in production for transactions, batches and certificates (shared/crypto.js, @noble/post-quantum with native OpenSSL verify). Ed25519 remains only for libp2p peer IDs
 - [x] ZK proof system implemented — Groth16/snarkjs with Poseidon(3) circuit (see ZK section above)
 - [ ] Move genesis root keypair to FIPS 140-3 Level 3 HSM
 - [ ] Implement two-of-three custodian policy for root key
