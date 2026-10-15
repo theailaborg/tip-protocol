@@ -42,7 +42,7 @@ let round = 0;
 let ts = nowMs() - 300_000;
 const next = () => (ts += 1000);
 
-function setup({ seatAllowance } = {}) {
+function setup({ seatAllowance, holdCommits } = {}) {
   const dag = initDAG({ dbPath: ":memory:" });
   const nodeKp = generateMLDSAKeypair();
   const keys = {};
@@ -60,9 +60,12 @@ function setup({ seatAllowance } = {}) {
   const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey, orgMembersActivationMs: 0 };
   const handler = createCommitHandler({ dag, scoring: initScoring(dag, config), config });
   // The service relays straight into consensus, so API admission and commit run together.
-  const submitTx = (tx) => handler.commitOrderedTxs([tx], ++round);
+  // holdCommits: relayed txs wait in a queue (as in a real mempool) until flush().
+  const queued = [];
+  const submitTx = (tx) => (holdCommits ? queued.push(tx) : handler.commitOrderedTxs([tx], ++round));
+  const flush = () => { const txs = queued.splice(0); for (const tx of txs) handler.commitOrderedTxs([tx], ++round); return txs.length; };
   const service = createOrgMemberService({ dag, config, submitTx, seatAllowance });
-  return { dag, keys, handler, service };
+  return { dag, keys, handler, service, flush, queued };
 }
 
 const signed = (schema, data, key) => ({ ...data, signature: schema.sign(schema.buildSigningPayload(data), key.privateKey) });
@@ -175,6 +178,54 @@ describe("paid seats come from the operator's billing service", () => {
   });
 });
 
+describe("several people accepting at once cannot overfill a team", () => {
+  test("free: 6 open invites, 6 simultaneous accepts, exactly 2 are relayed and committed", async () => {
+    const ctx = setup({ holdCommits: true });
+    const invs = [];
+    for (const p of PEOPLE.slice(0, 6)) { invs.push(await invite(ctx, p)); ctx.flush(); }
+    const results = await Promise.all(PEOPLE.slice(0, 6).map((p, i) =>
+      accept(ctx, p, invs[i].invite_tx_id).then(() => "ok", (e) => e.code)));
+    expect(results.filter((r) => r === "ok")).toHaveLength(2);
+    expect(results.filter((r) => r === "member_limit_reached")).toHaveLength(4);
+    expect(ctx.flush()).toBe(2);
+    expect(roster.activeMembers(ctx.dag, ORG)).toHaveLength(2);
+  });
+
+  test("Team 5 with a slow billing service: simultaneous accepts still stop at 5", async () => {
+    const slow = { async allowanceFor() { await new Promise((r) => setTimeout(r, 5)); return { limit: 5, plan: "team_5_monthly", upgrade_url: UPGRADE }; },
+      peek() { return { limit: 5 }; } };
+    const ctx = setup({ seatAllowance: slow, holdCommits: true });
+    const invs = [];
+    for (const p of PEOPLE) { invs.push(await invite(ctx, p)); ctx.flush(); }
+    const results = await Promise.all(PEOPLE.map((p, i) => accept(ctx, p, invs[i].invite_tx_id).then(() => "ok", (e) => e.code)));
+    expect(results.filter((r) => r === "ok")).toHaveLength(5);
+    ctx.flush();
+    expect(roster.activeMembers(ctx.dag, ORG)).toHaveLength(5);
+  });
+
+  test("simultaneous invites respect the open-invite cap too", async () => {
+    const ctx = setup({ holdCommits: true });
+    const results = await Promise.all(PEOPLE.map((p) => invite(ctx, p).then(() => "ok", (e) => e.code)));
+    expect(results.filter((r) => r === "ok")).toHaveLength(2 * ORG_MEMBERS.OPEN_INVITE_MULTIPLIER);
+    expect(results.filter((r) => r === "invite_limit_reached")).toHaveLength(PEOPLE.length - 6);
+  });
+
+  test("a relay that never lands frees its seat after the hold", async () => {
+    const ctx = setup({ holdCommits: true });
+    const invs = [];
+    for (const p of PEOPLE.slice(0, 3)) { invs.push(await invite(ctx, p)); ctx.flush(); }
+    await accept(ctx, PEOPLE[0], invs[0].invite_tx_id);
+    await accept(ctx, PEOPLE[1], invs[1].invite_tx_id);
+    ctx.queued.splice(0);   // both relays lost, never committed
+    expect(await refusal(accept(ctx, PEOPLE[2], invs[2].invite_tx_id))).toMatchObject({ code: "member_limit_reached" });
+    const later = nowMs() + 121_000;
+    const clock = jest.spyOn(Date, "now").mockReturnValue(later);   // past the 120 s hold
+    try {
+      expect(await refusal(accept(ctx, PEOPLE[2], invs[2].invite_tx_id))).toBeNull();   // the seat is free again
+    } finally { clock.mockRestore(); }
+  });
+});
+
 describe("seat-allowance-client", () => {
   const res = (status, body) => ({ ok: status < 400, status, text: async () => JSON.stringify(body) });
   const quiet = { warn() {} };
@@ -224,6 +275,36 @@ describe("seat-allowance-client", () => {
     up = false; t += 120_000;
     expect(await c.allowanceFor(ORG)).toMatchObject({ limit: 50, plan: "team_50_monthly" });
     expect(await c.allowanceFor("tip://id/US-0e7db4040667073a")).toEqual({ limit: 2, plan: "free", upgrade_url: null });
+    expect(c.peek(ORG).limit).toBe(50);
+  });
+
+  test("concurrent callers share one request", async () => {
+    let calls = 0;
+    const c = createSeatAllowanceClient({ url: "https://vp.example", key: "k", log: quiet,
+      fetch: async () => { calls++; await new Promise((r) => setTimeout(r, 5)); return res(200, { limit: 15, plan: "team_15_monthly" }); } });
+    const answers = await Promise.all([1, 2, 3, 4].map(() => c.allowanceFor(ORG)));
+    expect(calls).toBe(1);
+    expect(answers.every((a) => a.limit === 15)).toBe(true);
+  });
+
+  test("after a failure it answers from memory for 30 s instead of waiting out the timeout again", async () => {
+    let t = 0, calls = 0;
+    const c = createSeatAllowanceClient({ url: "https://vp.example", key: "k", log: quiet, now: () => t,
+      fetch: async () => { calls++; throw new Error("timeout"); } });
+    expect((await c.allowanceFor(ORG)).limit).toBe(2);
+    t += 10_000; await c.allowanceFor(ORG);
+    expect(calls).toBe(1);
+    t += 25_000; await c.allowanceFor(ORG);
+    expect(calls).toBe(2);
+  });
+
+  test("peek answers at once and refreshes in the background", async () => {
+    let calls = 0;
+    const c = createSeatAllowanceClient({ url: "https://vp.example", key: "k", log: quiet,
+      fetch: async () => { calls++; return res(200, { limit: 50, plan: "team_50_monthly" }); } });
+    expect(c.peek(ORG).limit).toBe(2);           // nothing known yet: free, and a refresh starts
+    await new Promise((r) => setTimeout(r, 10));
+    expect(calls).toBe(1);
     expect(c.peek(ORG).limit).toBe(50);
   });
 

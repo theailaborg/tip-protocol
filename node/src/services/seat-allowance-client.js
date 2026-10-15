@@ -21,6 +21,7 @@ const { nowMs } = require("../../../shared/time");
 
 const DEFAULT_TIMEOUT_MS = 3000;
 const FRESH_MS = 60 * 1000;
+const FAILED_RETRY_MS = 30 * 1000;   // after a failed call, answer from memory this long before asking again
 const LAST_KNOWN_MAX = 5000;
 
 function createSeatAllowanceClient(opts = {}) {
@@ -31,11 +32,14 @@ function createSeatAllowanceClient(opts = {}) {
   const log = opts.log ?? console;
   const now = opts.now ?? nowMs;
   const enabled = Boolean(url && key && typeof fetchImpl === "function");
-  const lastKnown = new Map();   // org_tip_id -> { answer, at }
+  const lastKnown = new Map();   // org_tip_id -> { answer, at }, least recently used first
+  const inFlight = new Map();    // org_tip_id -> Promise, so concurrent callers share one request
+  const failedAt = new Map();    // org_tip_id -> when the billing service last failed for it
 
   const free = () => ({ limit: ORG_MEMBERS.FREE_MEMBER_LIMIT, plan: "free", upgrade_url: null });
 
   function _remember(orgTipId, answer) {
+    lastKnown.delete(orgTipId);
     if (lastKnown.size >= LAST_KNOWN_MAX) lastKnown.delete(lastKnown.keys().next().value);
     lastKnown.set(orgTipId, { answer, at: now() });
   }
@@ -80,19 +84,34 @@ function createSeatAllowanceClient(opts = {}) {
     if (!enabled) return free();
     const known = lastKnown.get(orgTipId);
     if (known && now() - known.at < FRESH_MS) return known.answer;
-    try {
-      const answer = await _post(orgTipId);
+    // While the billing service is failing, do not make every request wait
+    // out the timeout again: answer from memory for FAILED_RETRY_MS.
+    const failed = failedAt.get(orgTipId);
+    if (failed !== undefined && now() - failed < FAILED_RETRY_MS) return known ? known.answer : free();
+    if (inFlight.has(orgTipId)) return inFlight.get(orgTipId);
+    const p = _post(orgTipId).then((answer) => {
+      failedAt.delete(orgTipId);
       _remember(orgTipId, answer);
       return answer;
-    } catch (err) {
+    }, (err) => {
+      if (failedAt.size >= LAST_KNOWN_MAX) failedAt.delete(failedAt.keys().next().value);
+      failedAt.set(orgTipId, now());
       log.warn?.(`team-seats check unavailable for ${orgTipId}: ${err.message}${known ? " (using last known)" : " (free limit)"}`);
       return known ? known.answer : free();
-    }
+    }).finally(() => inFlight.delete(orgTipId));
+    inFlight.set(orgTipId, p);
+    return p;
   }
 
-  /** Last known allowance without a network call, for synchronous summaries. */
+  /**
+   * Last known allowance without waiting, for synchronous summaries
+   * (GET /identity/:org). Best effort: when nothing fresh is known it starts
+   * a background refresh, so the next read is current.
+   */
   function peek(orgTipId) {
-    const known = enabled && lastKnown.get(orgTipId);
+    if (!enabled) return free();
+    const known = lastKnown.get(orgTipId);
+    if (!known || now() - known.at >= FRESH_MS) allowanceFor(orgTipId).catch(() => {});
     return known ? known.answer : free();
   }
 

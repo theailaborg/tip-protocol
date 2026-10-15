@@ -128,6 +128,13 @@ const SEATS_ACTIVATION_MS = (() => {
   if (!Number.isFinite(n) || String(n) !== raw.trim()) {
     throw new Error(`TIP_ORG_SEATS_ACTIVATION_MS must be an integer epoch-ms value, got "${raw}"`);
   }
+  // A consensus gate: a value that differs from the fleet's forks this node at
+  // that time. Say so loudly on every start (tests set it on purpose).
+  if (n !== ORG_MEMBERS.SEATS_ACTIVATION_MS && process.env.NODE_ENV !== "test") {
+    console.warn(`[tip.org.seats] TIP_ORG_SEATS_ACTIVATION_MS=${n} overrides the network seat activation ` +
+      `(${ORG_MEMBERS.SEATS_ACTIVATION_MS}). Every node must use the same value or this node forks. ` +
+      "Unset it on mainnet.");
+  }
   return n;
 })();
 
