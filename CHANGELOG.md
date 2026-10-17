@@ -9,6 +9,22 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+**Node 2.7.6: optional biometric commitment on identity registration**
+- `REGISTER_IDENTITY` accepts an optional VP-signed `biometric_commit` (64-char
+  lowercase hex, a SHAKE-256 commitment the VP computes over its off-DAG face
+  template). The node treats it as opaque: validated for shape, bound into the
+  signed payload with the strip-when-absent rule, mirrored onto `tx.data`,
+  persisted on `identities` in every store and projected into
+  `state_merkle_root`. Identities without a commitment sign and canonicalize
+  byte-identically to before, so existing records and roots are unchanged.
+- Migration `014_identity_biometric_commit` adds the nullable column.
+- Rollout: every node must run 2.7.6 before the VP enables biometrics
+  (`VP_BIOMETRIC_ENABLED`). A node on an older build drops the field when it
+  rebuilds the signed payload, rejects the VP signature and forks on that
+  registration; there is no activation epoch, the fleet upgrades first.
+
 ### Fixed
 
 **Node 2.7.5: team seats hold under simultaneous accepts**
