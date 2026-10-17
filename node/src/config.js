@@ -13,7 +13,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { MEDIA_LIMITS } = require("../../shared/constants");
+const { MEDIA_LIMITS, MEDIA_QUOTA_CLIENT, PRESCAN_FAIL_OPEN_AFTER_MS } = require("../../shared/constants");
 const { CONTENT_LIMITS } = require("../../shared/protocol-constants");
 
 // Fail closed: dev-gated paths check NODE_ENV !== "production", so an unset
@@ -49,6 +49,18 @@ function loadNodeKeypair() {
   };
 }
 
+// Consensus-gate override (epoch ms). A set-but-unparseable value must not
+// fall back silently: the node would then disagree with the fleet.
+function _epochMsOverride(name) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return undefined;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || String(n) !== raw.trim()) {
+    throw new Error(`${name} must be an integer epoch-ms value, got "${raw}"`);
+  }
+  return n;
+}
+
 function loadConfig() {
   const nodeKeys = loadNodeKeypair();
 
@@ -68,7 +80,7 @@ function loadConfig() {
     nodeId: defaultNodeId,
     nodeType: process.env.TIP_NODE_TYPE || "full",  // full | light | vp | archive
     region: process.env.TIP_REGION || "US",
-    nodeVersion: require("../../package.json").version,
+    nodeVersion: process.env.TIP_BUILD_VERSION || require("../package.json").version,
 
     // ── Network ───────────────────────────────────────────────────────────────
     port: parseInt(process.env.PORT || "4000", 10),
@@ -125,6 +137,10 @@ function loadConfig() {
     // isolated test cluster before the mainnet date.
     regCreditCapActivationMs: process.env.TIP_REG_CREDIT_CAP_ACTIVATION_MS
       ? parseInt(process.env.TIP_REG_CREDIT_CAP_ACTIVATION_MS, 10) : undefined,
+    // Org roster activation override (epoch-ms). Same consensus-gate rule as
+    // above: identical on every node, or an isolated test cluster only.
+    orgMembersActivationMs: _epochMsOverride("TIP_ORG_MEMBERS_ACTIVATION_MS"),
+    keyRetirementActivationMs: _epochMsOverride("TIP_KEY_RETIREMENT_ACTIVATION_MS"),
 
     // ── Pre-scan (v2 FIX-03) ──────────────────────────────────────────────────
     preScanEnabled: true,
@@ -147,6 +163,22 @@ function loadConfig() {
       media_items_max: CONTENT_LIMITS.MEDIA_ITEMS_MAX,
     },
 
+    // ── Monthly media allowance (optional billing service) ────────────────────
+    // Off unless both url and key are set; see services/media-quota-client.js.
+    mediaQuota: {
+      url: process.env.TIP_MEDIA_QUOTA_URL || "",
+      key: process.env.TIP_MEDIA_QUOTA_KEY || "",
+      timeoutMs: parseInt(process.env.TIP_MEDIA_QUOTA_TIMEOUT_MS || "", 10) || MEDIA_QUOTA_CLIENT.TIMEOUT_MS,
+    },
+
+    // ── Team seats (optional billing service) ─────────────────────────────────
+    // Same channel as mediaQuota; see services/seat-allowance-client.js.
+    seats: {
+      url: process.env.TIP_SEATS_URL || process.env.TIP_MEDIA_QUOTA_URL || "",
+      key: process.env.TIP_SEATS_KEY || process.env.TIP_MEDIA_QUOTA_KEY || "",
+      timeoutMs: parseInt(process.env.TIP_SEATS_TIMEOUT_MS || "", 10) || 3000,
+    },
+
     // Express body-parser cap (genesis content_limits.request_body_max_bytes).
     // Surfaced here so api.js sets the limit from config (resolved after
     // ProtocolConstants init) rather than reaching into the throwing getter at
@@ -160,6 +192,14 @@ function loadConfig() {
     // nodes row — peers redirect reviewers here for media this node holds.
     // Optional: nodes without a public surface simply never announce.
     apiEndpoint: process.env.TIP_API_ENDPOINT || null,
+
+    // ── Classifier callbacks ──────────────────────────────────────────────────
+    // Verifies the classifier's signed job callbacks; blank means no callback_url
+    // is sent and prescan jobs are polled.
+    classifierCallbackSecret: process.env.TIP_CLASSIFIER_CALLBACK_SECRET || "",
+    // Node policy: how long content may sit unscanned before any node commits
+    // the neutral verdict. The fleet's effective window is the shortest running.
+    prescanFailOpenAfterMs: parseInt(process.env.TIP_PRESCAN_FAIL_OPEN_AFTER_MS || "", 10) || PRESCAN_FAIL_OPEN_AFTER_MS,
 
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),

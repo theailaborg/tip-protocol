@@ -9,6 +9,251 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+**Node 2.7.5: team seats hold under simultaneous accepts**
+- Plan seats are enforced at the API, and the check counted only committed
+  members, so several people accepting at once could each find a free seat and
+  all commit (a free org could reach 6 members, Team 5 could reach 15).
+  Admission now runs one at a time per org and counts this node's relayed but
+  uncommitted acceptances and invites, released when the row lands or after
+  120 s.
+- The seat client shares one request among concurrent callers, answers from
+  memory for 30 s after a failed call instead of waiting out the timeout
+  again, evicts least recently used, and `peek` refreshes in the background.
+- A `TIP_ORG_SEATS_ACTIVATION_MS` override logs a warning on start: it is a
+  consensus gate and forks a node whose value differs from the fleet.
+
+### Added
+
+**Node 2.7.4: 2 free team seats, paid seats from the operator's billing service**
+- Consensus seat ceiling: 1 member before `ORG_MEMBERS.SEATS_ACTIVATION_MS`
+  (2026-10-19 16:00 UTC), `MAX_MEMBER_LIMIT` (250) from then on, decided by the
+  tx timestamp. A commit-rule change: every node must run 2.7.4 before the
+  activation, or it rejects a second member and forks.
+  `TIP_ORG_SEATS_ACTIVATION_MS` overrides it on an isolated cluster only.
+- Inside the ceiling, seats are operator policy at the API. With a billing
+  service configured (`TIP_SEATS_URL`/`TIP_SEATS_KEY`, defaulting to the media
+  quota url and key) the node asks `POST /api/team-seats/check` and admits
+  invites and acceptances only within the org's allowance; without one every
+  org gets `FREE_MEMBER_LIMIT` (2). Past it: `409 member_limit_reached` with
+  `details: {limit, plan, upgrade_url}`. `GET /identity/:org/members` adds
+  `plan` and `upgrade_url`.
+- An outage never takes seats away (last known answer, else free), and a
+  lapsed plan removes nobody.
+
+**Node 2.7.3: optional monthly media allowance at upload-init**
+- With `TIP_MEDIA_QUOTA_URL` and `TIP_MEDIA_QUOTA_KEY` set, a chunked upload
+  asks the operator's billing service (`POST /api/media-quota/check`) before
+  any bytes move and refuses with `402 media_quota_exceeded` (month's bytes
+  used up), `413 file_too_large_for_plan` (single file over the plan) or
+  `429 monthly_file_limit_exceeded` (new files this month, counted per TIP-ID
+  type). Verified uploads are reported afterwards (`/record`), in the
+  background with retries; the same `content_hash` counts once a month. The
+  node's own per-type size caps still apply first. Unset, nothing changes:
+  other operators are unaffected.
+- The service is called fail-open: unreachable, an upload goes through unless
+  a fresh answer for that TIP-ID was remembered. A remembered answer is dropped
+  once its month reset or it aged past `MEDIA_QUOTA_CLIENT.LAST_KNOWN_TTL_MS`,
+  so last month's zero can never refuse this month's uploads during an outage.
+- Env is read in `config.mediaQuota`; timing constants live in
+  `MEDIA_QUOTA_CLIENT`.
+
+### Fixed
+
+**Node 2.7.2: actionable error for the released extension's passkey path**
+- Browser extensions up to v2.9.41 mark authors `signed: true` on the passkey
+  path without attaching a co-signature, which the roster release refuses
+  (`author_cosignature_missing`). The refusal stays, since the flag is a
+  false claim inside the signed bytes; the message now tells the user to
+  update the extension instead of quoting the raw check.
+
+**Node 2.7.2: a retired signing key can no longer sign through a backdated transaction**
+- Signing keys resolve at `tx.timestamp` so that history keeps verifying after
+  a rotation or recovery. Nothing checked whether that key was still current
+  when the round certified, so a node bypassing the API could commit a
+  transaction signed with a rotated-away or recovered-from key by dating it
+  inside the old key's window (the API path was never affected: it stamps the
+  time itself and checks the active key). At commit, the key resolved for the
+  signer and every cosigner must not have been retired more than
+  `KEY_RETIREMENT_GRACE_MS` (6 min, mempool TTL plus a round) before the
+  round's certificate time; otherwise the transaction is rejected as
+  `signer_key_retired`. A key closed by `KEY_RECOVERY` gets no grace at all
+  (it was lost or stolen), the grace applies only to a planned `KEY_ROTATED`.
+  Honest transactions are not age-bounded: one that waited out an outage
+  still commits unless its key was retired meanwhile.
+  New reject rule, so gated on `KEY_RETIREMENT_ACTIVATION_MS`, pinned to the
+  mainnet activation 2026-10-09 00:00:00 UTC (`TIP_KEY_RETIREMENT_ACTIVATION_MS`
+  overrides it on an isolated cluster). Every node, partner nodes included,
+  must run 2.7.2 before that epoch.
+- Closing the loophole around that rule: a `KEY_ROTATED` could park
+  `effective_at` years ahead, and a later recovery closed only the one open
+  row, leaving the old key's window intact. From the same activation,
+  `KEY_ROTATED` / `KEY_RECOVERY` clamp every window of the identity that is
+  still open past `effective_at`, and a rotation may schedule itself at most
+  `KEY_ROTATION_MAX_LEAD_MS` (24 h) ahead (`effective_at_too_far`; enforced at
+  the API immediately, at commit from the activation). From the same
+  activation a `KEY_ROTATED` must be signed by the active key itself
+  (`signer_not_active`), closing the backdated take-over inside the grace.
+- Catch-up replay (`replaySyncedTxs`) now judges each round by the BFT time of
+  the anchor that committed it, the same clock the live path used, and leaves
+  rounds no anchor has committed to bullshark instead of deciding them early
+  without one.
+- `KEY_ROTATED` / `KEY_RECOVERY` close prior key rows via the identity's key
+  history instead of writing through a live full-table cursor, which failed
+  on SQLite-backed nodes.
+
+### Changed
+
+**Node 2.7.1: organization roster activation pinned to 2026-10-07 16:50:00 UTC**
+- `ORG_MEMBERS.ACTIVATION_MS` now carries the mainnet activation epoch, so a node
+  needs no `TIP_ORG_MEMBERS_ACTIVATION_MS` override to agree with the fleet.
+
+### Added
+
+**Node 2.7.0: organization roster (`ORG_MEMBER_INVITED` / `ORG_MEMBER_ADDED` / `ORG_MEMBER_REMOVED`)**
+- An organization can invite a registered personal TIP-ID onto its roster;
+  the person accepts by signing their own tx that references the invite, so
+  both consents are on chain and any node can list a person's open invites,
+  whichever VP issued either identity. Either party ends a membership alone.
+- Rows live in the new canonical `org_members` table (migration 012, in the
+  state root). An invite is usable for 7 days after its tx and never takes a
+  seat; the seat limit (`ORG_MEMBERS.FREE_MEMBER_LIMIT`, 1) is enforced when
+  the acceptance commits, so an invite sent while a seat was free fails with
+  `member_limit_reached` if the seat is gone by then. Open invites per org are
+  capped at three times the seat limit. Roster changes are score-neutral.
+- `GET /v1/identity/search?q=&limit=&type=`: type-ahead for the invite box, TIP-ID prefix or name substring, active personal identities by default.
+- Byline read model: `GET /v1/content/:ctid` adds `publisher` (the signer) and
+  `authors_resolved` (every author with name, type, tier, `member_role` from
+  the signer org's roster, and `relationship`: `signer` | `member` | `listed`); `GET /v1/content?bylined=<tip_id>` lists
+  posts that credit an identity without being its `author_tip_id`, and list
+  rows carry `signer_tip_id`, `attribution_mode`, `publisher_name`;
+  `GET /v1/identity/:id` adds `bylined_count`. The `author`/`bylined` filters
+  now accept three-letter region codes.
+- A member author's signed `authors[].role` is what they did for that post,
+  chosen at publish time from the roster vocabulary (`412 author_role_invalid`
+  otherwise); it need not match their team title, which `authors_resolved`
+  reports as `member_role`. The signer's own entry and co-authors on personal
+  posts keep a free `role`.
+- Roster roles are a locked set (`author`, `editor`, `contributor`, `reviewer`,
+  `correspondent`; labels only, no permission attached); any other value is
+  `role_invalid`. `GET /v1/identity/:org/members` returns the allowed `roles`.
+- API: `POST /v1/identity/:org/members/invite`, `POST /v1/identity/:member/members/accept`,
+  `POST /v1/identity/:signer/members/remove`, `GET /v1/identity/:org/members`
+  (`?include=removed`), `GET /v1/identity/:member/invites`,
+  `GET /v1/identity/:member/memberships`; `GET /v1/identity/:id` adds
+  `members {active, limit}` for organizations and `member_of` for people.
+- `ORG_MEMBER_INVITE_CANCELLED`: the organization cancels an open invite or
+  the invitee declines it (`POST /v1/identity/:signer/members/cancel-invite`);
+  the row becomes `cancelled`, can no longer be accepted and no longer counts
+  as an open invite.
+- Invite replay guard: a committed invite's body signature is public, so the
+  signed `invited_at` must lie within the claim window of the tx at commit
+  and is stored on the row (`invited_claim`, migration 013); the same signed
+  invite is refused a second time (`invite_replayed`). Invites per
+  organization are capped per rolling 24 h, any status (`invite_rate_limited`),
+  so invite/cancel loops cannot grow the table. An `authors[]` entry that
+  claims a co-signature (`signed: true` or `key_mode: "co_signed"`) without one
+  in the envelope is refused (`author_cosignature_missing`); co-signatures are
+  not implemented, so the chain no longer records the false claim. The signed `accepted_at` /
+  `claimed_at` of acceptances, removals and cancellations are held to the same
+  window at commit, so a relayer cannot re-wrap a rejected acceptance later or
+  backdate `tx.timestamp` past an invite's TTL. Open and daily invite caps
+  are also counted inside a single batch, a cancel ordered before an accept of
+  the same invite wins, and a revoked identity can no longer be listed as an
+  author. A malformed `TIP_ORG_MEMBERS_ACTIVATION_MS` refuses to boot instead
+  of silently using the default.
+- Content registration: an organization may list as `authors[]` only itself
+  or its active members, and an organization can appear as an author only on
+  content it signs itself (nobody attributes content to another org); any
+  other author is refused with `412 invalid_author`
+  at the API and dropped at commit. `authors[]` is capped at
+  `MAX_AUTHORS_PER_POST` (10, the spec value). The author checks (on-DAG,
+  type match, roster) now also run at commit, where previously no author
+  check ran at all. Nothing in the signed CNA-2.2 payload changes.
+- Rollout: the three tx types and the author rules are new commit rules, so
+  every node applies them only from `ORG_MEMBERS.ACTIVATION_MS`
+  (`TIP_ORG_MEMBERS_ACTIVATION_MS` overrides it on an isolated cluster).
+  Upgrade the whole fleet before that epoch.
+
+### Fixed
+
+**Node 2.6.6: gossip queued for one peer is bounded; a stalled reader is redialed**
+- gossipsub keeps one outbound queue per peer and its default cap is
+  unlimited. A peer that stays connected but stops reading its gossip stream
+  (alive enough to answer pings and send requests) made every other node queue
+  each batch, certificate and ack for it without bound, outside the V8 heap.
+  On mainnet (2026-10-03) a halted partner node in that state grew every peer
+  by ~90 MB/min; node 2 was killed by the kernel at 6.7 GB. The queue is now
+  capped (`TIP_GOSSIP_MAX_OUTBOUND_BUFFER_BYTES`, 8 MiB), messages beyond it
+  are dropped for that peer (it catches up through anti-entropy), and a peer
+  over the cap for two peer-health ticks is redialed, which frees the queue.
+- `/health` and `/metrics` expose off-heap memory (`external`,
+  `array_buffers`), the per-peer queued bytes and the redial count, so this
+  class is visible instead of hiding behind a flat `heap_used`.
+- snarkjs left one worker thread per CPU, each with a WASM memory, resident
+  after every dedup-proof verification; the curve is released once no proof
+  call is in flight.
+
+### Added
+
+**Node 2.6.5: `GET /v1/identity/:tipId` returns `tip_id_type`**
+- The response now carries `tip_id_type` (`personal` or `organization`), the
+  value the node already enforces on every content registration's `authors[]`.
+  Clients building multi-author bylines can fill each author's type from the
+  lookup instead of guessing; `org_type` is null for genesis organizations, so
+  it was not a usable substitute.
+
+### Fixed
+
+**Node 2.6.4: a node that follows the committee by fast-forwarding no longer reports itself halted**
+- Fast-forwarding to a peer's round now refreshes the round-advance timestamp.
+  A node whose own batches always arrive late never completed a round itself,
+  so the halt detector flagged `sub_quorum` and `/ready` went 503 while its
+  rounds and commits were fully in step (AZ Logics, 2026-09-30).
+
+**Node 2.6.3: a dead joiner can no longer hold the snapshot slot; the last drifted row is corrected**
+- A snapshot serve races its transfer and its final close against the stall
+  timer and a one-hour deadline. Aborting a stream whose connection had already
+  died did not settle the pending close, and on mainnet both peers held their
+  single serve slot for two days, so a halted node had nowhere to recover from.
+- Migration 011 sets the one mainnet content row whose attested value (4249)
+  differs from its transaction to that value; migration 010 had rebuilt it from
+  the transaction and the restarted node halted. No-op on every other network.
+- The score write persists the clamped value the mirror holds.
+- `scripts/check-boot-root.js` is the pre-restart gate: it rebuilds the root
+  from a node's database exactly as boot does and compares it with a live peer.
+  The rolling-upgrade runbook requires a MATCH before a node restarts.
+
+**Node 2.6.2: a restarted node no longer halts and snapshot-recovers on boot**
+- The pre-scan verdict is rounded to basis points where the blend is produced,
+  so the transaction, memory, store, snapshot and state hash all carry one
+  value. content.prescan_probability was float4 in Postgres; a blend such as
+  0.37174999999999997 hashed as 3717 live and 3718 after the round-trip, and
+  every restarted mainnet node diverged from the fleet. Migration 010 widens
+  the column and restores each row from its verdict transaction at basis
+  points, so the state root does not change and nodes roll one at a time.
+
+**Node 2.6.1: a reconnect never snapshots state it already holds**
+- The attested state root decides a reconnect sync: same root, no sync mode and
+  no snapshot; a different root pulls certificates and snapshots only when the
+  peers no longer hold the rounds to replay. An install aborted before any row
+  landed clears its own marker; a wedged install flag times out.
+- Disconnects are counted by the peer that dropped
+  (tip_network_peer_disconnects_by_peer_total) next to the per-observer total.
+
+**Node 2.6.0: a joiner behind a thin link installs, catches up and stays ready**
+- Liveness belongs to the heartbeat; libp2p no longer aborts a connection on its
+  own ping failures, and verdicts stand down during any bulk sync (snapshot or
+  cert tail) on both ends. A peer whose pings still reach us is congested, not dead.
+- The snapshot source pins the cert tail its joiner will need; the join flow
+  pulls certs before snapshotting and promotes within the sync tolerance.
+- Node-local cert retention floor (TIP_CERT_RETENTION_MIN_ROUNDS, 4500 rounds)
+  on top of genesis gc_depth; stream negotiation and status probes sized for
+  real links (TIP_STREAM_NEGOTIATION_TIMEOUT_MS, TIP_ANTI_ENTROPY_PEER_TIMEOUT_MS).
+- Partner link requirement documented: 25 Mbit/s symmetric sustained minimum,
+  50 recommended.
+
 ### Added
 
 **VP Category D: Educational Institutions**

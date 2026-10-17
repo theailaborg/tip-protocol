@@ -76,11 +76,11 @@ The local cluster is 3 nodes (tip-node1..3, API ports 4000/4100/4200) against
 a shared Postgres (`shared-postgres` container, DBs `tip_node1..3`).
 
 ```bash
-# rebuild + deploy , containers pin their image, so ALWAYS recreate, never
+# rebuild + deploy: containers pin their image, so ALWAYS recreate, never
 # just docker start after a build; verify the code actually landed
 docker compose -f docker-compose.local.yml build node1
 docker stop tip-node1 tip-node2 tip-node3
-# wipe (only with explicit owner approval , NEVER seed:fresh, it mints new node identities)
+# wipe (only with explicit owner approval; NEVER seed:fresh, it mints new node identities)
 for n in 1 2 3; do
   docker exec shared-postgres psql -U tip -d postgres -c "DROP DATABASE IF EXISTS tip_node$n"
   docker exec shared-postgres psql -U tip -d postgres -c "CREATE DATABASE tip_node$n OWNER tip"
@@ -98,14 +98,14 @@ Health and convergence checks:
 
 ```bash
 curl -s localhost:4000/health | python3 -c 'import sys,json;d=json.load(sys.stdin)["data"];print(d["status"], d["dag_count"])'
-# same-round root comparison , THE convergence check
+# same-round root comparison: THE convergence check
 R=$(docker exec shared-postgres psql -U tip -d tip_node1 -tAc "SELECT max(round) FROM commits")
 for n in 1 2 3; do docker exec shared-postgres psql -U tip -d tip_node$n -tAc \
   "SELECT (SELECT count(*) FROM content)||' '||left(state_merkle_root,14) FROM commits WHERE round=$R"; done
 # cross-node history identity (id + prev checksums must match)
 docker exec shared-postgres psql -U tip -d tip_node1 -tAc \
   "SELECT count(*)||' '||md5(string_agg(tx_id,',' ORDER BY tx_id))||' '||md5(string_agg(prev,',' ORDER BY tx_id)) FROM transactions"
-# churn check , should stay ~0 on a healthy build
+# churn check: should stay ~0 on a healthy build
 docker exec shared-postgres psql -U tip -d tip_node1 -tAc "SELECT reason, count(*) FROM tx_rejections GROUP BY 1"
 ```
 
@@ -118,15 +118,15 @@ docker exec shared-postgres psql -U tip -d tip_node1 -tAc "SELECT reason, count(
 - **`TIP_LOG_LEVEL=warn`** in cluster env files suppresses all INFO logs.
   Absence of an info line proves nothing; instrument at warn or check env
   before concluding code doesn't run.
-- **Container logs persist across `docker restart`** , counts from
+- **Container logs persist across `docker restart`**: counts from
   `docker logs` may span several experiments. Recreate for clean logs, or
   scope with `--since`.
-- **Prod `/metrics` needs a bearer token** , query via the Prometheus
+- **Prod `/metrics` needs a bearer token**: query via the Prometheus
   container on the metrics host instead.
-- `grep tip_narwhal_join_state` matches HELP/TYPE comment lines , anchor
+- `grep tip_narwhal_join_state` matches HELP/TYPE comment lines; anchor
   with `^tip_narwhal_join_state_ready`.
 - The mempool metric oscillating during bursts is in-flight batching, not
-  loss , judge loss ONLY by the loss-audit script.
+  loss; judge loss ONLY by the loss-audit script.
 
 ## 5. Acceptance gates by change type
 

@@ -64,6 +64,38 @@ const CLASSIFIER_CLIENT = Object.freeze({
   FILE_TIMEOUT_MS: 180_000,
 });
 
+// ─── Media quota client (outbound HTTP) ────────────────────────────────────
+// Node-local timing for the optional monthly media allowance check. A
+// remembered answer outlives neither its month nor LAST_KNOWN_TTL_MS, so an
+// outage can never refuse an upload on a stale zero.
+const MEDIA_QUOTA_CLIENT = Object.freeze({
+  TIMEOUT_MS: 3000,
+  RECORD_RETRY_MS: Object.freeze([2000, 10000, 60000]),
+  LAST_KNOWN_MAX: 5000,
+  LAST_KNOWN_TTL_MS: 60 * 60 * 1000,
+});
+
+// Pre-scans the classifier runs as a job (202): the worker polls on a backoff
+// schedule and a signed callback wakes it early. The wait ends at the network's
+// fail-open deadline, never at a duration guessed from file size. Media links
+// for a job must outlive a queued job.
+const PRESCAN_JOB = Object.freeze({
+  POLL_FIRST_MS: 60_000,
+  POLL_MIN_MS: 30_000,
+  POLL_MAX_MS: 5 * 60_000,
+  POLL_STEPS_MS: Object.freeze([60_000, 120_000, 240_000]),
+  POLL_JITTER: 0.1,
+  BUDGET_MARGIN_MS: 120_000,
+  MEDIA_URL_TTL_SEC: 3_600,
+});
+
+// How long content may sit unscanned before any node commits the neutral
+// verdict. Node policy, not consensus: the timing is not validated when the
+// verdict applies, so a longer wait cannot fork the chain and the fleet's
+// effective window is the shortest one running. In code (not genesis) until
+// PROTOCOL_PARAM_UPDATE ships; changing genesis on a live chain is not an option.
+const PRESCAN_FAIL_OPEN_AFTER_MS = 2 * 60 * 60_000;
+
 // Joiner-side DoS guards for downloading a snapshot from a peer (#94). Local
 // operational caps (NOT consensus state, NOT genesis): each node protects its
 // own memory + liveness, so a divergent value can't fork the chain. Sized
@@ -87,6 +119,20 @@ const SNAPSHOT_REQUEST = Object.freeze({
   MAX_BYTES: 64 * 1024,
   MAX_MS: 5000,
 });
+
+// Sender-side snapshot bookkeeping. The pin bound is a leak guard for a joiner
+// that vanished mid-transfer (~10KB/round), never the working limit.
+const SNAPSHOT_SERVE = Object.freeze({
+  CERT_PIN_MAX_MS: 2 * 60 * 60_000,
+  // "sent" = handed to the kernel; the tail drains at the serve's own rate.
+  INFLIGHT_BOUND_BYTES: 16 * 1024 * 1024,   // Linux tcp_wmem autotuning maximum
+  DRAIN_GRACE_MIN_MS: 30_000,
+  DRAIN_GRACE_MAX_MS: 15 * 60_000,
+  MAX_MS: 60 * 60_000,   // backstop: a serve always frees its single slot
+});
+
+// A peer behind a bloated link pings us in bunches (49s gaps seen at 1mbit).
+const HEARTBEAT_INBOUND_SILENCE_MS = 120_000;
 
 // #132: 1-byte kind tag as each frame's first body byte routes frames as they
 // stream. Doubles as a format discriminator (a raw-protobuf frame starts 0x08),
@@ -280,6 +326,9 @@ const CNA_VERSIONS = Object.freeze({
 const CNA22_AUTHOR_KEYS = Object.freeze([
   "key_mode", "role", "signed", "tip_id", "tip_id_type",
 ]);
+// Spec MAX_AUTHORS_PER_POST. Enforced behind ORG_MEMBERS.ACTIVATION_MS (a new
+// commit-time reject rule), never inside the signed-payload builder.
+const MAX_AUTHORS_PER_POST = 10;
 
 // Canonical `attribution_mode` values per docs/CONTENT_SIGNING.md §2.
 // Locks the enum so any non-listed value is rejected at canonical-builder
@@ -314,6 +363,20 @@ const PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS = 256;
 // is the (gzip+base64 or identity) serialised items[] the commit is taken over.
 const PERCEPTUAL_FINGERPRINTS_PROFILE = "cf-fingerprints-1";
 const PERCEPTUAL_FINGERPRINTS_ENCODINGS = Object.freeze(new Set(["gzip+base64", "identity"]));
+
+// Locked .tip.json key file export: the VP app's "tip-key-export-v2" download.
+// Byte layout and KDF parameters must stay identical on both sides or a file
+// written here will not import there (and vice versa).
+const KEY_FILE_EXPORT = Object.freeze({
+  VERSION: "tip-key-export-v2",
+  ALGORITHM: "AES-256-GCM-PBKDF2-200k",
+  SIG_ALGORITHM: "ML-DSA-65",
+  PBKDF2_ITERATIONS: 200_000,
+  PBKDF2_DIGEST: "sha256",
+  SALT_BYTES: 16,
+  IV_BYTES: 12,
+  KEY_BYTES: 32,
+});
 
 // Canonical `tip_id_type` values — the kind of TIP-ID an identity is.
 // Locked enum; rejected at REGISTER_IDENTITY validation time and at
@@ -568,6 +631,13 @@ const TX_TYPES = Object.freeze({
   UPDATE_PROFILE: "UPDATE_PROFILE",
   LINK_PLATFORM: "LINK_PLATFORM",
   UNLINK_PLATFORM: "UNLINK_PLATFORM",
+  // Organization roster. INVITED is org-signed, ADDED is signed by the
+  // invited person (consent on both sides is on chain), REMOVED by either
+  // party. Rows live in org_members (canonical); see schemas/_org-members.js.
+  ORG_MEMBER_INVITED: "ORG_MEMBER_INVITED",
+  ORG_MEMBER_INVITE_CANCELLED: "ORG_MEMBER_INVITE_CANCELLED",
+  ORG_MEMBER_ADDED: "ORG_MEMBER_ADDED",
+  ORG_MEMBER_REMOVED: "ORG_MEMBER_REMOVED",
   // GH #60 — key rotation + recovery. Both append a new entity_keys row
   // and close the prior active one atomically at commit. KEY_ROTATED is
   // signed by the OLD key (user proves possession); KEY_RECOVERY is
@@ -732,6 +802,9 @@ const TX_REJECTION_REASON = Object.freeze({
   // lifetime cap (a burst raced past the emitter's stale headroom read).
   REG_CREDIT_CAP_REACHED: "reg_credit_cap_reached",
   REVALIDATION_FAILED: "revalidation_failed",
+  // Signer (or cosigner) key already retired by a rotation / recovery when the
+  // round certified; see KEY_RETIREMENT_GRACE_MS.
+  SIGNER_KEY_RETIRED: "signer_key_retired",
   // Site 5 — generic fallback for unexpected drops; always logs detail.
   TX_DECODE_FAILED: "tx_decode_failed",
 });
@@ -859,7 +932,10 @@ const API_PATHS = Object.freeze({
 const PROTOCOL = Object.freeze({
   name: "Trust Identity Protocol",
   short: "TIP",
-  version: require("../package.json").version,
+  // Bound into the hashed genesis payload: changing it changes genesis_hash and
+  // every node fail-stops at boot. The node's own build version is separate
+  // (config.nodeVersion / TIP_BUILD_VERSION).
+  version: "2.0.0",
   specUrl: "https://theailab.org/trust-identity-protocol",
   license: "CC-BY-4.0",
   issuer: "The AI Lab Intelligence Unobscured, Inc.",
@@ -898,6 +974,8 @@ const TIP_ID_FIELDS = Object.freeze({
   APPELLANT_TIP_ID: "appellant_tip_id",   // appeal filed
   VERIFIER_TIP_ID: "verifier_tip_id",     // content-verified
   DISPUTER_TIP_ID: "disputer_tip_id",     // content-disputed (user-mode)
+  ORG_TIP_ID: "org_tip_id",               // org-member-invited (the inviting organization)
+  MEMBER_TIP_ID: "member_tip_id",         // org-member-added (the accepting person)
 });
 const TIP_ID_FIELD_VALUES = Object.freeze(new Set(Object.values(TIP_ID_FIELDS)));
 
@@ -992,6 +1070,66 @@ const REGISTER_CREDIT = Object.freeze({
 // rule, so gated on tx.timestamp to keep a mixed fleet from forking.
 const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15:00:00 UTC
 
+// Organization roster (org_members). An org invites a registered personal
+// TIP-ID; the invite is usable for INVITE_TTL_MS after its tx.timestamp and
+// never consumes a seat; acceptance does. Seats have two layers. Consensus
+// enforces a fixed ceiling every node agrees on: LEGACY_MEMBER_LIMIT before
+// SEATS_ACTIVATION_MS, MAX_MEMBER_LIMIT from then on (a commit-rule change, so
+// it is epoch-gated like ACTIVATION_MS and the fleet upgrades first). Inside
+// that ceiling an operator may sell seats: the node's API asks its billing
+// service (services/seat-allowance-client.js) and admits invites and accepts
+// only within the org's allowance, FREE_MEMBER_LIMIT when it has no plan or no
+// billing service is configured.
+// Open (unexpired, unaccepted) invites per org are capped at limit x
+// OPEN_INVITE_MULTIPLIER so the table cannot be flooded. Lives in code (not
+// genesis) like REGISTER_CREDIT. ACTIVATION_MS: the three tx types are new
+// commit rules, so an un-upgraded node would fork on them; nodes reject them
+// before this epoch-ms and the fleet upgrades first (TIP_ORG_MEMBERS_ACTIVATION_MS
+// overrides it on an isolated cluster).
+const ORG_MEMBERS = Object.freeze({
+  FREE_MEMBER_LIMIT: 2,
+  LEGACY_MEMBER_LIMIT: 1,
+  MAX_MEMBER_LIMIT: 250,
+  SEATS_ACTIVATION_MS: 1792425600000, // 2026-10-19 16:00:00 UTC
+  OPEN_INVITE_MULTIPLIER: 3,
+  // Invites an org may create per rolling 24 h, any status: limit x this.
+  // Cancelling frees an open slot at once, so without it an org could grow
+  // the table without bound through invite/cancel loops.
+  INVITES_PER_DAY_MULTIPLIER: 10,
+  // Commit-time freshness of the signed invited_at against tx.timestamp
+  // (CLAIM_MAX_AGE_MS behind, this much ahead for client clock skew). A
+  // committed invite's body signature is public, so without this a
+  // cancelled invite could be resubmitted by anyone as a new tx.
+  INVITE_CLAIM_SKEW_MS: 60 * 1000,
+  INVITE_TTL_MS: 7 * 24 * 60 * 60 * 1000,
+  ROLE_MAX_LENGTH: 64,
+  ROLE_PATTERN: /^[a-z][a-z0-9_-]{0,63}$/,
+  ACTIVATION_MS: 1791391800000, // 2026-10-07 16:50:00 UTC mainnet activation
+});
+// Roster roles are labels only (no permission is attached yet); locked so the
+// chain never carries variants of the same word.
+const ORG_MEMBER_ROLES = Object.freeze(["author", "editor", "contributor", "reviewer", "correspondent"]);
+// Signing keys resolve at tx.timestamp so history keeps verifying after a
+// rotation or recovery, which would also let a retired key sign forever via a
+// backdated tx. At commit the resolved key must not have been retired more
+// than the grace before the round's certificate time (BFT median, identical
+// on every node). Grace = mempool TTL + a round, the longest an honest tx
+// signed just before a rotation can take to certify; every extra minute is a
+// minute a stolen key still works after recovery. New reject rule, so gated.
+const KEY_RETIREMENT_GRACE_MS = 6 * 60 * 1000;
+const KEY_RETIREMENT_ACTIVATION_MS = 1791504000000; // 2026-10-09 00:00:00 UTC mainnet activation
+// A rotation may be scheduled ahead but not parked years out: a thief holding
+// the current key could otherwise keep its window open past the owner's
+// recovery. API-enforced always; commit-enforced from the activation above.
+const KEY_ROTATION_MAX_LEAD_MS = 24 * 60 * 60 * 1000;
+
+const ORG_MEMBER_STATUS = Object.freeze({
+  INVITED: "invited",
+  CANCELLED: "cancelled",
+  ACTIVE: "active",
+  REMOVED: "removed",
+});
+
 // GET /v1/content?parent_url= read gating. parent_url is an unverified
 // assertion (any content may claim any parent) and is never exclusivity-checked,
 // so the lookup caps the scan, drops sub-VERIFIED authors, and returns one entry
@@ -1026,6 +1164,12 @@ module.exports = {
   STATS_SCORING_CACHE_MS,
   REGISTER_CREDIT,
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
+  ORG_MEMBERS,
+  KEY_RETIREMENT_GRACE_MS,
+  KEY_RETIREMENT_ACTIVATION_MS,
+  KEY_ROTATION_MAX_LEAD_MS,
+  ORG_MEMBER_ROLES,
+  ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   PRESCAN_PERMANENT_MEDIA_ERRORS,
@@ -1044,8 +1188,11 @@ module.exports = {
   VERDICT,
   CONTENT_STATUS,
   CLASSIFIER_CLIENT,
+  MEDIA_QUOTA_CLIENT,
   SNAPSHOT_DOWNLOAD,
   SNAPSHOT_REQUEST,
+  SNAPSHOT_SERVE,
+  HEARTBEAT_INBOUND_SILENCE_MS,
   SNAPSHOT_FRAME_KIND,
   SNAPSHOT_INSTALL_MARKER_KEY,
   SNAPSHOT_INSTALL_BATCH_ROWS,
@@ -1066,6 +1213,7 @@ module.exports = {
   DISPUTE_REASONS,
   CNA_VERSIONS,
   CNA22_AUTHOR_KEYS,
+  MAX_AUTHORS_PER_POST,
   ATTRIBUTION_MODES,
   ATTRIBUTION_MODE_VALUES,
   PERCEPTUAL_FINGERPRINT_KINDS,
@@ -1073,6 +1221,7 @@ module.exports = {
   PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
   PERCEPTUAL_FINGERPRINTS_PROFILE,
   PERCEPTUAL_FINGERPRINTS_ENCODINGS,
+  KEY_FILE_EXPORT,
   TIP_ID_TYPES,
   TIP_ID_TYPE_VALUES,
   DOMAIN_BINDING_STATUS,
@@ -1147,4 +1296,6 @@ module.exports = {
   OAUTH_REQUIRED_PLATFORMS,
   PRIVATE_NETWORK_CIDRS,
   ISO_3166_ALPHA2,
+  PRESCAN_JOB,
+  PRESCAN_FAIL_OPEN_AFTER_MS,
 };

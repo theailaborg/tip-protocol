@@ -106,6 +106,9 @@ verification and commit-time re-verification.
 |---|---|---|---|---|
 | `REGISTER_CONTENT` | CNA-2.2 | ✅ | `schemas/content-register.js` | `docs/CONTENT_SIGNING.md` |
 | `REGISTER_IDENTITY` | 9-field canonical (VP sig) | ✅ | `schemas/register-identity.js` | inline header doc + `docs/IDENTITY_SIGNING.md` (TBD) |
+| `ORG_MEMBER_INVITED` | 4-field canonical (org sig) | ✅ | `schemas/org-member-invited.js` | inline header doc; shared state helpers in `schemas/_org-members.js` |
+| `ORG_MEMBER_ADDED` | 4-field canonical (member sig) | ✅ | `schemas/org-member-added.js` | inline header doc |
+| `ORG_MEMBER_REMOVED` | 5-field canonical (org or member sig) | ✅ | `schemas/org-member-removed.js` | inline header doc |
 | `CONTENT_VERIFIED` | (verifier sig) | ⏳ inline today | — | TBD |
 | `UPDATE_ORIGIN` | (author sig) | ⏳ inline today | — | TBD |
 | `CONTENT_RETRACTED` | (author sig) | ⏳ inline today | — | TBD |

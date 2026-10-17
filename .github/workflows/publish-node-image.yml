@@ -78,6 +78,9 @@ jobs:
           tags: |
             theailaborg/tip-node:${{ steps.version.outputs.version }}
             theailaborg/tip-node:latest
+          build-args: |
+            TIP_BUILD_VERSION=${{ steps.version.outputs.version }}
+            TIP_BUILD_COMMIT=${{ github.sha }}
 
       # Partners verify the image they pulled is the one built from this tag,
       # so surface the digest in the run summary rather than the build log.

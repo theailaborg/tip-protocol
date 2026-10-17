@@ -87,9 +87,13 @@ function createScheduler(network, config) {
 
   // Peer health ping (node config)
   register("peer-health", config.peerHealthInterval, () => {
+    if (network && typeof network.checkOutboundBacklog === "function") network.checkOutboundBacklog();
     const pc = network ? network.peerCount() : 0;
     if (pc === 0 && config.bootstrapPeers.length > 0) {
       log.warn("No active peers (bootstrap configured). DAG sync paused.");
+      // Reconnect chains are event-driven: a peer:disconnect that never fires
+      // leaves zero timers pending and the node isolated indefinitely.
+      if (network && typeof network.rearmBootstrap === "function") network.rearmBootstrap();
     }
   });
 

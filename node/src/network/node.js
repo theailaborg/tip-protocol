@@ -22,6 +22,7 @@
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { nowMs } = require("../../../shared/time");
 const { createChannelHealth } = require("./channel-health");
+const { createOutboundBacklog } = require("./outbound-backlog");
 const { deriveP2pPrivateKey } = require("./peer-key");
 const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
 const { handleIncoming, initiate, unauthorizedPeers, canFastReauth } = require("./handshake");
@@ -128,17 +129,24 @@ async function createNetworkNode(options = {}) {
   // quick reconnect (see the peer:connect handler).
   const _recentlyAuthed = new Map();
   let _onPeerAuthorized = null;
+  let _transferGuard = null;   // (peerId) => true while a rebuild would kill a sync in flight
 
   // Cumulative connection-churn counters. Gauges (current peer count) alias
   // through sub-scrape flaps; these survive so rate() exposes the flap itself.
   const _netMetrics = {
     connects: 0, disconnects: 0, conn_closes: 0,
     handshakes_initiated: 0, rehandshakes: 0, fast_reauths: 0, force_redials: 0,
+    backlog_disconnects: 0,
   };
   // Per-peer outbound-delivery health + force-redial decision (transport auto-heal).
   const _channelHealth = createChannelHealth({
     healThreshold: CONSENSUS.CHANNEL_HEAL_FAIL_THRESHOLD,
     healCooldownMs: CONSENSUS.CHANNEL_HEAL_COOLDOWN_MS,
+  });
+  // Gossip queued per peer, sampled on the peer-health tick (see checkOutboundBacklog).
+  const _outboundBacklog = createOutboundBacklog({
+    limitBytes: CONSENSUS.GOSSIP_MAX_OUTBOUND_BUFFER_BYTES,
+    strikes: CONSENSUS.GOSSIP_BACKLOG_DISCONNECT_STRIKES,
   });
 
   // Deterministic peer id from the TIP node id (see peer-key.js); the same node
@@ -177,8 +185,16 @@ async function createNetworkNode(options = {}) {
     peerDiscovery,
     // Raise libp2p's ping-timeout floor so a brief event-loop stall doesn't abort
     // a healthy committee connection (default floor is 5s; stalls can exceed it).
+    connectionManager: {
+      // A negotiation reply rides the peer's egress queue; right after a bulk
+      // transfer that is tens of seconds, and libp2p's 10s default failed every open.
+      inboundStreamProtocolNegotiationTimeout: CONSENSUS.STREAM_NEGOTIATION_TIMEOUT_MS,
+      outboundStreamProtocolNegotiationTimeout: CONSENSUS.STREAM_NEGOTIATION_TIMEOUT_MS,
+    },
     connectionMonitor: {
       pingTimeout: { minTimeout: CONSENSUS.CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS },
+      // Liveness belongs to the heartbeat; a snapshot mid-install starves pings.
+      abortConnectionOnPingFailure: false,
     },
     services: {
       identify: identify(),
@@ -195,6 +211,9 @@ async function createNetworkNode(options = {}) {
         // idle. Discovery's primary mechanism remains the handshake's
         // known_peers[] field.
         doPX: true,
+        // Hard cap on gossip queued for one peer; over it, messages to that
+        // peer are dropped (it catches up through anti-entropy), not buffered.
+        maxOutboundBufferSize: CONSENSUS.GOSSIP_MAX_OUTBOUND_BUFFER_BYTES,
       }),
     },
   });
@@ -259,6 +278,10 @@ async function createNetworkNode(options = {}) {
   // Register handshake protocol handler
   await node.handle(ctx.handshakeProtocol, (args) => handleIncoming(args, ctx));
   log.info(`Registered protocol handler: ${ctx.handshakeProtocol}`);
+
+  // Counts chains re-armed by the isolation backstop. A non-zero value means
+  // this node lost every peer with no retry pending and had to be restarted.
+  let _bootstrapRearms = 0;
 
   // Bootstrap reconnect — event-driven retry chains. See ./bootstrap-reconnect.js.
   const bootstrapReconnect = createBootstrapReconnect({
@@ -352,10 +375,13 @@ async function createNetworkNode(options = {}) {
     }
   });
 
+  const _disconnectsByPeer = new Map();   // who dropped, not just that we observed a drop
   node.addEventListener("peer:disconnect", (event) => {
     const remotePeerId = event.detail.toString();
     _netMetrics.disconnects++;
     const tipNodeId = _authorizedPeers.get(remotePeerId);
+    const who = tipNodeId || `unauthorized:${remotePeerId.slice(0, 12)}`;
+    _disconnectsByPeer.set(who, (_disconnectsByPeer.get(who) || 0) + 1);
     // Remember the binding so a quick reconnect skips the re-handshake (see peer:connect).
     // We still de-authorize now so dialKnownPeers re-dials (it only dials unauthorized peers).
     if (tipNodeId) {
@@ -366,6 +392,7 @@ async function createNetworkNode(options = {}) {
     _authorizedPeers.delete(remotePeerId);
     directPeers.remove(remotePeerId);
     _channelHealth.forget(remotePeerId);
+    _outboundBacklog.forget(remotePeerId);
     log.info(`Peer disconnected: ${remotePeerId.slice(0, 16)}...${tipNodeId ? ` (${tipNodeId})` : ""}`);
 
     // If this was a bootstrap peer, restart its retry chain.
@@ -376,6 +403,10 @@ async function createNetworkNode(options = {}) {
   // connection is half-dead (the re-handshake re-auths it but never rebuilds the
   // transport). Force-close it and re-dial a fresh one.
   async function _forceRedial(peerId) {
+    if (_transferGuard && _transferGuard(peerId)) {
+      log.warn(`channel-health: sends to ${peerId.slice(0, 12)} failing while a sync is in flight, not rebuilding`);
+      return;
+    }
     _netMetrics.force_redials++;
     log.warn(`channel-health: rebuilding transport to ${peerId.slice(0, 12)} after sustained outbound send failures`);
     try {
@@ -384,6 +415,28 @@ async function createNetworkNode(options = {}) {
     } catch { /* ignore */ }
     try { await node.dial(peerIdFromString(peerId)); }
     catch (err) { log.debug(`channel-health: re-dial to ${peerId.slice(0, 12)} failed: ${err.message}`); }
+  }
+
+  // gossipsub keeps one OutboundStream per peer; readableLength is the bytes
+  // queued and not yet read by that peer.
+  function _outboundBacklogBytes() {
+    const streams = pubsub && pubsub.streamsOutbound;
+    if (!streams || typeof streams.entries !== "function") return [];
+    const out = [];
+    for (const [peerId, os] of streams.entries()) {
+      const n = os && os.pushable ? Number(os.pushable.readableLength) || 0 : 0;
+      out.push([String(peerId), n]);
+    }
+    return out;
+  }
+
+  function checkOutboundBacklog() {
+    for (const [peerId, bytes] of _outboundBacklogBytes()) {
+      if (!_outboundBacklog.observe(peerId, bytes)) continue;
+      _netMetrics.backlog_disconnects++;
+      log.warn(`gossip backlog: ${peerId.slice(0, 12)} has ${Math.round(bytes / 1048576)} MB queued and unread, rebuilding transport`);
+      _forceRedial(peerId);
+    }
   }
 
   // One-shot broadcast to every authorized peer over a direct stream.
@@ -490,6 +543,11 @@ async function createNetworkNode(options = {}) {
   }
 
   // ── Public interface ───────────────────────────────────────────────────
+  /** Drop every connection to a peer. Idempotent: no connection, no-op. */
+  function hangUp(peerId) {
+    return node.hangUp(peerIdFromString(peerId)).catch(() => { });
+  }
+
   return {
     /** The underlying libp2p node */
     node,
@@ -500,6 +558,7 @@ async function createNetworkNode(options = {}) {
 
     /** Register callback for when a peer completes TIP handshake */
     onPeerAuthorized(fn) { _onPeerAuthorized = fn; },
+    setTransferGuard(fn) { _transferGuard = fn; },
 
     /** Set GossipSub topic handlers (called after consensus init) */
     setTopicHandlers(h) { _topicHandlers = h; },
@@ -509,6 +568,18 @@ async function createNetworkNode(options = {}) {
 
     /** Connected peer count (authorized only) */
     peerCount: () => _authorizedPeers.size,
+
+    /** Re-arm bootstrap retry chains that have gone idle. Returns how many were armed. */
+    rearmBootstrap: () => {
+      const armed = Number(bootstrapReconnect.ensureRunning()) || 0;
+      _bootstrapRearms += armed;
+      return armed;
+    },
+
+    /** Total bootstrap chains re-armed by the isolation backstop since start. */
+    bootstrapRearms: () => _bootstrapRearms,
+
+    hangUp,
 
     /** Connected authorized peer IDs (libp2p peerId) */
     peers: () => [..._authorizedPeers.keys()],
@@ -520,7 +591,14 @@ async function createNetworkNode(options = {}) {
     directPeers: () => directPeers.list(),
 
     /** Cumulative connection-churn counters (connects/disconnects/closes/re-auth/force-redials). */
-    metrics: () => ({ ..._netMetrics }),
+    metrics: () => ({
+      ..._netMetrics,
+      disconnects_by_peer: Object.fromEntries(_disconnectsByPeer),
+      outbound_backlog_by_peer: Object.fromEntries(_outboundBacklogBytes().map(([pid, b]) => [_authorizedPeers.get(pid) || pid, b])),
+    }),
+
+    /** Sample every peer's queued gossip bytes; redial a peer stuck over the cap. */
+    checkOutboundBacklog,
 
     /** Per-peer outbound delivery health (send ok/fail, consecutive fails, last-ok age). */
     channelHealth: () => _channelHealth.snapshot().map((c) => ({
@@ -573,8 +651,8 @@ async function createNetworkNode(options = {}) {
      * @param {string} protocol e.g. "/tip/sync/1.0.0"
      * @returns {Promise<Stream>}
      */
-    async openStream(peerId, protocol) {
-      return node.dialProtocol(peerIdFromString(peerId), protocol);
+    async openStream(peerId, protocol, opts) {
+      return node.dialProtocol(peerIdFromString(peerId), protocol, opts);
     },
 
     broadcastToAuthorized,

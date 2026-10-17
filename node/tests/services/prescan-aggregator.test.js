@@ -451,3 +451,29 @@ describe("aggregate — enriched output shape", () => {
     expect(img.probability).toBe(0.95);  // max of 0.10, 0.95, 0.30
   });
 });
+
+// The blend is float arithmetic and consensus hashes basis points. Before the
+// aggregator rounded, a mainnet multi item blended to 0.37174999999999997,
+// which hashed as 3717 live and 3718 after the Postgres float4 round-trip.
+describe("aggregate — verdict carries basis points", () => {
+  test("weighted-average blend is rounded to four decimals, exactly", () => {
+    const r = aggregate([M("text", 0.2736), M("image", 0.4699)], "multi");
+    expect(r.probability).toBe(0.3717);
+    expect(Object.is(r.probability, 0.37174999999999997)).toBe(false);
+  });
+
+  test("primary-floor lift is rounded the same way", () => {
+    const r = aggregate([M("text", 0.2736), M("image", 0.4699)], "text");
+    expect(r.probability).toBe(0.3325);
+  });
+
+  test("a clean four-decimal verdict passes through unchanged", () => {
+    expect(aggregate([M("text", 0.2736)], "text").probability).toBe(0.2736);
+    expect(aggregate([M("image", 0.95)], "image").probability).toBe(0.95);
+  });
+
+  test("per-modality results keep the classifier's raw values", () => {
+    const r = aggregate([M("text", 0.27365), M("image", 0.46995)], "multi");
+    expect(r.modality_results.map(m => m.probability)).toEqual([0.27365, 0.46995]);
+  });
+});

@@ -20,7 +20,7 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS, KEY_RETIREMENT_GRACE_MS, KEY_RETIREMENT_ACTIVATION_MS } = require("../../../shared/constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -42,7 +42,12 @@ const keyRecoverySchema = require("../schemas/key-recovery");
 const interestRegisteredSchema = require("../schemas/interest-registered");
 const linkPlatformSchema = require("../schemas/link-platform");
 const unlinkPlatformSchema = require("../schemas/unlink-platform");
-const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures } = require("../schemas/_common");
+const orgMemberInvitedSchema = require("../schemas/org-member-invited");
+const orgMemberInviteCancelledSchema = require("../schemas/org-member-invite-cancelled");
+const orgMemberAddedSchema = require("../schemas/org-member-added");
+const orgMemberRemovedSchema = require("../schemas/org-member-removed");
+const orgRoster = require("../schemas/_org-members");
+const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures, checkSignerKeysCurrent } = require("../schemas/_common");
 const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 
 // GH #51 — tx_type to schema-module map for the unified signature
@@ -159,6 +164,14 @@ function _actorTipId(tx) {
     case TX_TYPES.UNLINK_PLATFORM:
     case TX_TYPES.UPDATE_PROFILE:
       return d.tip_id ?? null;
+    // Org roster: the signing party.
+    case TX_TYPES.ORG_MEMBER_INVITED:
+      return d.org_tip_id ?? null;
+    case TX_TYPES.ORG_MEMBER_ADDED:
+      return d.member_tip_id ?? null;
+    case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
+    case TX_TYPES.ORG_MEMBER_REMOVED:
+      return d.signer_tip_id ?? null;
     // Content actions — actor field name varies by role.
     case TX_TYPES.REGISTER_CONTENT:
       return d.signer_tip_id ?? null;
@@ -281,6 +294,26 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         _tombstone(tx.tx_id);
         dropped++;
         continue;
+      }
+
+      // The key resolved at tx.timestamp may be retired by the time the round
+      // certifies (rotation in flight, or a backdated tx signed with a stolen
+      // old key). Judged against the cert time on every node, including the
+      // one that pre-verified the bytes at its API.
+      if (_keyRetirementActive(certTimestamp)) {
+        let current;
+        try {
+          current = checkSignerKeysCurrent(tx, SCHEMA_FOR_TX_TYPE[tx.tx_type] ?? null, _cosignatureContracts(tx), dag, certTimestamp, KEY_RETIREMENT_GRACE_MS);
+        } catch (err) {
+          current = { ok: false, error: `signer key check failed: ${err.message}` };
+        }
+        if (!current.ok) {
+          log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}): ${current.error}`);
+          _persistRejection(tx, TX_REJECTION_REASON.SIGNER_KEY_RETIRED, current.error, { round });
+          _tombstone(tx.tx_id);
+          dropped++;
+          continue;
+        }
       }
 
       // Business-rule guard — first-wins dedup for verdict txs and
@@ -411,12 +444,9 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     // Phase B — stateful pre-conditions (same predicate as the API service).
     // Time-window rules use `tx.timestamp` (user submit time, frozen in the
     // signed payload) so the accept/reject decision is identical on every
-    // node. `certTimestamp` is plumbed through for rules that need the
-    // round's BFT clock instead — none today, but keep the wire so future
-    // rules can opt in without changing the signature.
-    void certTimestamp;
+    // node; `certTimestamp` only gates rules that activate at an epoch.
     const txMs = tx.timestamp;
-    return _statefulCheck(tx, txMs, round);
+    return _statefulCheck(tx, txMs, round, certTimestamp);
   }
 
   /**
@@ -596,6 +626,67 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           && t.data?.tip_id === d.tip_id
           && t.data?.platform === d.platform);
         if (inBatch) return { valid: false, error: `duplicate UNLINK_PLATFORM in batch for (${d.tip_id}, ${d.platform})` };
+        return { valid: true };
+      }
+
+      // Org roster: the schema's verifyTx sees committed rows only, so two
+      // siblings in one batch both pass it. Dedup per (org, member) here so
+      // the seat limit and the one-open-invite rule hold inside a batch too.
+      case TX_TYPES.ORG_MEMBER_INVITED:
+      case TX_TYPES.ORG_MEMBER_ADDED: {
+        if (!d.org_tip_id || !d.member_tip_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          (t.tx_type === TX_TYPES.ORG_MEMBER_INVITED || t.tx_type === TX_TYPES.ORG_MEMBER_ADDED)
+          && t.data?.org_tip_id === d.org_tip_id
+          && t.data?.member_tip_id === d.member_tip_id);
+        if (inBatch) return { valid: false, error: `duplicate roster change in batch for (${d.org_tip_id}, ${d.member_tip_id})` };
+        if (tx.tx_type === TX_TYPES.ORG_MEMBER_INVITED) {
+          // Earlier invites in this batch count against the open and daily
+          // caps the committed-row check cannot see.
+          const inBatchInvites = validated.filter(t =>
+            t.tx_type === TX_TYPES.ORG_MEMBER_INVITED && t.data?.org_tip_id === d.org_tip_id).length;
+          const openNow = orgRoster.openInvites(dag, d.org_tip_id, tx.timestamp).length;
+          if (openNow + inBatchInvites >= orgRoster.openInviteLimit(dag, d.org_tip_id, tx.timestamp)) {
+            return { valid: false, error: `open invite cap reached for ${d.org_tip_id} in this batch` };
+          }
+          const dayNow = orgRoster.invitesInLastDay(dag, d.org_tip_id, tx.timestamp).length;
+          if (dayNow + inBatchInvites >= orgRoster.dayInviteLimit(dag, d.org_tip_id, tx.timestamp)) {
+            return { valid: false, error: `daily invite cap reached for ${d.org_tip_id} in this batch` };
+          }
+        }
+        if (tx.tx_type === TX_TYPES.ORG_MEMBER_ADDED) {
+          // One outcome per invite per batch: an earlier cancel (or accept)
+          // of this invite wins.
+          const closed = validated.find(t =>
+            (t.tx_type === TX_TYPES.ORG_MEMBER_INVITE_CANCELLED || t.tx_type === TX_TYPES.ORG_MEMBER_ADDED)
+            && t.data?.invite_tx_id === d.invite_tx_id);
+          if (closed) return { valid: false, error: `invite ${d.invite_tx_id} already closed in this batch` };
+          // Earlier acceptances in this batch already hold seats the
+          // committed-row limit check cannot see.
+          const inBatchSeats = validated.filter(t =>
+            t.tx_type === TX_TYPES.ORG_MEMBER_ADDED && t.data?.org_tip_id === d.org_tip_id).length;
+          const freeSeats = orgRoster.memberLimit(dag, d.org_tip_id, tx.timestamp) - orgRoster.activeMembers(dag, d.org_tip_id).length;
+          if (inBatchSeats >= freeSeats) return { valid: false, error: `no free seat left for ${d.org_tip_id} in this batch` };
+        }
+        return { valid: true };
+      }
+
+      case TX_TYPES.ORG_MEMBER_REMOVED: {
+        if (!d.add_tx_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.ORG_MEMBER_REMOVED && t.data?.add_tx_id === d.add_tx_id);
+        if (inBatch) return { valid: false, error: `duplicate ORG_MEMBER_REMOVED in batch for ${d.add_tx_id}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED: {
+        // One outcome per invite per batch: a cancel and an accept of the
+        // same invite cannot both land.
+        if (!d.invite_tx_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          (t.tx_type === TX_TYPES.ORG_MEMBER_INVITE_CANCELLED || t.tx_type === TX_TYPES.ORG_MEMBER_ADDED)
+          && t.data?.invite_tx_id === d.invite_tx_id);
+        if (inBatch) return { valid: false, error: `invite ${d.invite_tx_id} already closed in this batch` };
         return { valid: true };
       }
 
@@ -929,7 +1020,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
    * between submit and commit (e.g. content disputed or author revoked
    * mid-flight). Closes the silent-divergence gap multi-node #14.
    */
-  function _statefulCheck(tx, now, commitRound = 0) {
+  function _statefulCheck(tx, now, commitRound = 0, certTimestamp = 0) {
     const d = tx.data || {};
     switch (tx.tx_type) {
 
@@ -953,7 +1044,10 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           signer_tip_id: d.signer_tip_id, ctid: d.ctid, origin_code: d.origin_code,
           registered_urls: d.registered_urls,
         });
-        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+        if (!r.valid) return { valid: false, error: r.error.message };
+        // Authors: DAG presence, type and org roster, activation-gated.
+        const a = contentRegisterSchema.verifyAuthors(tx, dag, _orgMemberOpts());
+        return a.ok ? { valid: true } : { valid: false, error: a.error };
       }
 
       case TX_TYPES.CONTENT_VERIFIED: {
@@ -1104,7 +1198,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       // state-machine invariants (active identity, valid effective_at,
       // VP authorisation, rate limits).
       case TX_TYPES.KEY_ROTATED: {
-        const r = keyRotatedSchema.verifyTx(tx, dag);
+        const r = keyRotatedSchema.verifyTx(tx, dag, { strict: _keyRetirementActive(certTimestamp) });
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
       case TX_TYPES.KEY_RECOVERY: {
@@ -1134,9 +1228,51 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
+      // Org roster: activation-gated on the frozen tx.timestamp (new reject
+      // rules fork a mixed fleet), then the schema's state machine.
+      case TX_TYPES.ORG_MEMBER_INVITED: {
+        const r = orgMemberInvitedSchema.verifyTx(tx, dag, _orgMemberOpts());
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
+      case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED: {
+        const r = orgMemberInviteCancelledSchema.verifyTx(tx, dag, _orgMemberOpts());
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
+      case TX_TYPES.ORG_MEMBER_ADDED: {
+        const r = orgMemberAddedSchema.verifyTx(tx, dag, _orgMemberOpts());
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
+      case TX_TYPES.ORG_MEMBER_REMOVED: {
+        const r = orgMemberRemovedSchema.verifyTx(tx, dag, _orgMemberOpts());
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
       default:
         return { valid: true };
     }
+  }
+
+  function _cosignatureContracts(tx) {
+    const tt = tx.tx_type;
+    const schema = SCHEMA_FOR_TX_TYPE[tt] ?? null;
+    const source = schema && typeof schema.getCosignatureContract === "function"
+      ? schema
+      : (TX_SIGNATURE_REGISTRY[tt] && typeof TX_SIGNATURE_REGISTRY[tt].getCosignatureContract === "function"
+        ? TX_SIGNATURE_REGISTRY[tt]
+        : null);
+    return source ? (source.getCosignatureContract(tx) || []) : [];
+  }
+
+  function _keyRetirementActive(certTimestamp) {
+    const gate = config && Number.isFinite(config.keyRetirementActivationMs) ? config.keyRetirementActivationMs : KEY_RETIREMENT_ACTIVATION_MS;
+    return certTimestamp > 0 && certTimestamp >= gate;
+  }
+
+  function _orgMemberOpts() {
+    return { activationMs: config ? config.orgMembersActivationMs : undefined };
   }
 
   /**
@@ -1527,6 +1663,57 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         break;
       }
 
+      // ── Organization roster ──────────────────────────────────────────
+      // Timestamps come from the tx envelope, never the client's claim
+      // fields, so every node writes the same row.
+      case TX_TYPES.ORG_MEMBER_INVITED: {
+        dag.saveOrgMember({
+          invite_tx_id: tx.tx_id,
+          org_tip_id: d.org_tip_id,
+          member_tip_id: d.member_tip_id,
+          role: d.role,
+          status: ORG_MEMBER_STATUS.INVITED,
+          invited_at: tx.timestamp,
+          invited_claim: d.invited_at,
+          accepted_at: null, add_tx_id: null,
+          removed_at: null, remove_tx_id: null, removed_by: null,
+        });
+        break;
+      }
+
+      case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED: {
+        const row = dag.getOrgMember(d.invite_tx_id);
+        if (row) {
+          dag.saveOrgMember({
+            ...row, status: ORG_MEMBER_STATUS.CANCELLED,
+            removed_at: tx.timestamp, remove_tx_id: tx.tx_id, removed_by: d.signer_tip_id,
+          });
+        }
+        break;
+      }
+
+      case TX_TYPES.ORG_MEMBER_ADDED: {
+        const row = dag.getOrgMember(d.invite_tx_id);
+        if (row) {
+          dag.saveOrgMember({
+            ...row, status: ORG_MEMBER_STATUS.ACTIVE,
+            accepted_at: tx.timestamp, add_tx_id: tx.tx_id,
+          });
+        }
+        break;
+      }
+
+      case TX_TYPES.ORG_MEMBER_REMOVED: {
+        const row = dag.getOrgMemberByAddTxId(d.add_tx_id);
+        if (row) {
+          dag.saveOrgMember({
+            ...row, status: ORG_MEMBER_STATUS.REMOVED,
+            removed_at: tx.timestamp, remove_tx_id: tx.tx_id, removed_by: d.signer_tip_id,
+          });
+        }
+        break;
+      }
+
       // ── Verification ──────────────────────────────────────────────────
       case TX_TYPES.CONTENT_VERIFIED:
         // Score effect handled by scoring.computeScore() replay (reads weighted_delta from tx.data)
@@ -1714,29 +1901,27 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           const prev = dag.getActiveKey("identity", d.tip_id);
           const algorithm = d.algorithm || "ml-dsa-65";
           const effectiveAt = Number(d.effective_at);
-          // Close the prior active row at effective_at.
-          if (prev) {
-            // We don't have a direct closeActiveKey API on the public
-            // dag handle (intentional — auto-router handles new key
-            // rotation transparently). Use saveEntityKey to write a
-            // replacement row with valid_to_ts set. We need the prior
-            // row's valid_from_ts to re-write its primary key — pull
-            // it via iterateEntityKeys.
-            for (const r of dag.iterateEntityKeys()) {
-              if (r.entity_type === "identity"
-                && r.entity_id === d.tip_id
-                && r.valid_to_ts == null) {
-                dag.saveEntityKey({
-                  entity_type: "identity",
-                  entity_id: d.tip_id,
-                  public_key: r.public_key,
-                  algorithm: r.algorithm,
-                  valid_from_ts: r.valid_from_ts,
-                  valid_to_ts: effectiveAt,
-                  source_tx_id: r.source_tx_id,
-                });
-                break;
-              }
+          // Close the prior active row at effective_at (rewrite by its
+          // valid_from_ts primary key). Once the retirement rule is active,
+          // also clamp any window a prior rotation parked beyond effective_at;
+          // otherwise a recovery would leave the stolen key resolvable for
+          // old timestamps. A row clamped before it opens never matches.
+          const clampAll = _keyRetirementActive(_committedCertTimestamp);
+          if (prev || clampAll) {
+            // Per-identity history (an array): writing through a live
+            // full-table cursor is an error on SQLite.
+            for (const r of dag.getEntityKeyHistory("identity", d.tip_id)) {
+              if (r.valid_to_ts != null && !(clampAll && r.valid_to_ts > effectiveAt)) continue;
+              dag.saveEntityKey({
+                entity_type: "identity",
+                entity_id: d.tip_id,
+                public_key: r.public_key,
+                algorithm: r.algorithm,
+                valid_from_ts: r.valid_from_ts,
+                valid_to_ts: effectiveAt,
+                source_tx_id: r.source_tx_id,
+              });
+              if (!clampAll) break;
             }
           }
           // Insert the new active row.
@@ -1947,19 +2132,12 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
 
       // Cosignatures: schema declares the contract (per-tx_type, may be
       // empty). Dispatcher resolves keys and verifies each entry.
-      const cosigSource = schema && typeof schema.getCosignatureContract === "function"
-        ? schema
-        : (TX_SIGNATURE_REGISTRY[tt] && typeof TX_SIGNATURE_REGISTRY[tt].getCosignatureContract === "function"
-          ? TX_SIGNATURE_REGISTRY[tt]
-          : null);
-      if (cosigSource) {
-        const contract = cosigSource.getCosignatureContract(tx) || [];
-        if (contract.length > 0) {
-          const cosigResult = verifyCosignatures(tx, contract, dag);
-          if (!cosigResult.ok) {
-            log.warn(`Cosignature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${cosigResult.error}`);
-            return false;
-          }
+      const contract = _cosignatureContracts(tx);
+      if (contract.length > 0) {
+        const cosigResult = verifyCosignatures(tx, contract, dag);
+        if (!cosigResult.ok) {
+          log.warn(`Cosignature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${cosigResult.error}`);
+          return false;
         }
       }
 

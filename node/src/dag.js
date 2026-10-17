@@ -11,10 +11,14 @@
  *   - All reads are synchronous (SQLite prepared statements)
  *
  * DAG properties:
- *   - Each tx references exactly 2 prior txs (prev[0], prev[1])
- *   - Genesis tx has prev = [] (the only exception)
- *   - tx_id = SHAKE-256 of canonical tx content
- *   - Enables 5,000+ TPS via parallel processing
+ *   - tx_id = SHAKE-256 of the canonical tx (tx_type, data, timestamp); a
+ *     transaction carries no references to other transactions
+ *   - The graph is the consensus certificate DAG: each round's certificates
+ *     reference the previous round's through parent_hashes
+ *     (consensus/certificate.js, consensus/narwhal.js), and Bullshark fixes
+ *     one total order (consensus/bullshark.js)
+ *   - Tamper-evidence comes from the signed certificate DAG and state_root
+ *   - Measured throughput: docs/NODE_REQUIREMENTS.md (July 2026 load tests)
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * @author    Dinesh Mendhe <chairman@theailab.org>
@@ -33,6 +37,7 @@ const { nowMs } = require("../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES, PENDING_OWNER_HEAD_TTL_MS, UPLOAD_SESSION_STATE } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
 const { subjectTipId, subjectTipIds } = require("./tx-attribution");
+const { quantizeProbability } = require("../../shared/prescan-probability");
 const { log } = require("./logger");
 
 // ─── SQLite loaded lazily ─────────────────────────────────────────────────────
@@ -110,12 +115,9 @@ function _canonIdentity(r) {
     tx_id: r.tx_id || null,
   };
 }
-// prescan_probability is float4 in the DB but float64 live; hashing the raw float
-// forked the state root between restarted and live nodes (incident 2026-07-06).
-// Basis-point quantization collapses both representations to one value.
-function _quantizeProb(p) {
-  return typeof p === "number" && Number.isFinite(p) ? Math.round(p * 10000) : 0;
-}
+// Hashing the raw float forked the state root between restarted and live nodes
+// (incident 2026-07-06); the leaf carries basis points, same as the stored value.
+const _quantizeProb = quantizeProbability;
 
 function _canonContent(r) {
   // Intentionally excluded: `dispute_count`, `verification_count`. Both are
@@ -253,6 +255,32 @@ function _canonPlatformLink(r) {
     unlink_tx_id: r.unlink_tx_id ?? null,
     node_id: r.node_id,
     tx_id: r.tx_id,
+  };
+}
+// Byline test shared by the stores: in authors[] but not the owning author.
+function _isBylined(c, tipId) {
+  return c.author_tip_id !== tipId && Array.isArray(c.authors) && c.authors.some(a => a && a.tip_id === tipId);
+}
+
+// Org members: every column participates in state_merkle_root. One row per
+// invite (pk = invite_tx_id); status walks invited -> active -> removed, or
+// invited -> cancelled (removed_* then hold the cancel). Signatures are
+// reachable through the tx ids, not duplicated here. invited_claim is
+// strip-when-absent so rows written before the column keep their hash.
+function _canonOrgMember(r) {
+  return {
+    invite_tx_id: r.invite_tx_id,
+    org_tip_id: r.org_tip_id,
+    member_tip_id: r.member_tip_id,
+    role: r.role,
+    status: r.status,
+    invited_at: r.invited_at,
+    ...(r.invited_claim != null ? { invited_claim: r.invited_claim } : {}),
+    accepted_at: r.accepted_at ?? null,
+    add_tx_id: r.add_tx_id ?? null,
+    removed_at: r.removed_at ?? null,
+    remove_tx_id: r.remove_tx_id ?? null,
+    removed_by: r.removed_by ?? null,
   };
 }
 function _canonVP(r) {
@@ -442,6 +470,7 @@ const SMT_READ = {
   revocations: (st, pk) => { const r = st._revocations.get(pk); return r ? _canonRevocation(r) : null; },
   domain_bindings: (st, pk) => { const r = st._domainBindings.get(pk); return r ? _canonDomainBinding(r) : null; },
   platform_links: (st, pk) => { const r = st._platformLinks.get(pk); return r ? _canonPlatformLink(r) : null; },
+  org_members: (st, pk) => { const r = st._orgMembers.get(pk); return r ? _canonOrgMember(r) : null; },
   verification_providers: (st, pk) => { const r = st._vps.get(pk); return r ? _canonVP(r) : null; },
   nodes: (st, pk) => { const r = st._nodes.get(pk); return r ? _canonNode(r) : null; },
   entity_keys: (st, pk) => { const r = st._entityKeys.get(pk); return r ? _canonEntityKey(r) : null; },
@@ -471,6 +500,7 @@ const CANONICAL_PK = {
   revocations: r => r.tip_id,
   domain_bindings: r => r.domain,
   platform_links: r => r.id,
+  org_members: r => r.invite_tx_id,
   verification_providers: r => r.vp_id,
   nodes: r => r.node_id,
   entity_keys: r => `${r.entity_type}:${r.entity_id}:${r.valid_from_ts}`,
@@ -563,6 +593,7 @@ class MemoryStore {
     this._audioLandmarks = [];                  // audio inverted-index rows { profile, hash, clip_id, t }
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new SmtMap(this, "platform_links"); // key: `${tip_id}::${platform}` (== row.id)
+    this._orgMembers = new SmtMap(this, "org_members"); // invite_tx_id -> roster row (canonical)
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -692,9 +723,10 @@ class MemoryStore {
   // query. Cursor is an exclusive (registered_at, ctid) tuple; the
   // composite tiebreak makes pagination stable when several rows share
   // a timestamp.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, bylined = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
     let rows = [...this._content.values()];
     if (author) rows = rows.filter(c => c.author_tip_id === author);
+    if (bylined) rows = rows.filter(c => _isBylined(c, bylined));
     if (origin) rows = rows.filter(c => c.origin_code === origin);
     if (status) rows = rows.filter(c => c.status === status);
     if (hasMedia === true) rows = rows.filter(c => Array.isArray(c.media) && c.media.length > 0);
@@ -777,6 +809,11 @@ class MemoryStore {
   }
   getContentByAuthor(tipId) {
     return [...this._content.values()].filter(c => c.author_tip_id === tipId);
+  }
+  // Content that credits tipId in authors[] without being its author_tip_id
+  // (an org post carrying a member's byline).
+  getContentBylined(tipId) {
+    return [...this._content.values()].filter(c => _isBylined(c, tipId));
   }
   // Register-time near-duplicate warning: all content rows sharing an exact
   // (normalized) content_hash. Same content by a different author/origin gets
@@ -898,6 +935,24 @@ class MemoryStore {
   }
   getPlatformLinksByTipId(tipId) {
     return [...this._platformLinks.values()].filter(r => r.tip_id === tipId);
+  }
+
+  // ── Org members (canonical, in state_merkle_root) ─────────────────────────
+  saveOrgMember(rec) {
+    this._orgMembers.set(rec.invite_tx_id, { ...rec });
+  }
+  getOrgMember(inviteTxId) {
+    return this._orgMembers.get(inviteTxId) || null;
+  }
+  getOrgMemberByAddTxId(addTxId) {
+    for (const r of this._orgMembers.values()) if (r.add_tx_id === addTxId) return r;
+    return null;
+  }
+  getOrgMembersByOrg(orgTipId) {
+    return [...this._orgMembers.values()].filter(r => r.org_tip_id === orgTipId);
+  }
+  getOrgMembersByMember(memberTipId) {
+    return [...this._orgMembers.values()].filter(r => r.member_tip_id === memberTipId);
   }
 
   // ── Domain pending claims (local-only; NOT canonical, NOT in merkle root) ─
@@ -1052,7 +1107,7 @@ class MemoryStore {
       if (r.valid_to_ts != null && r.valid_to_ts <= timestamp) continue;
       if (!best || r.valid_from_ts > best.valid_from_ts) best = r;
     }
-    return best ? { public_key: best.public_key, algorithm: best.algorithm } : null;
+    return best ? { public_key: best.public_key, algorithm: best.algorithm, valid_to_ts: best.valid_to_ts ?? null, source_tx_id: best.source_tx_id ?? null } : null;
   }
   // Full key chain for one entity, oldest first — the raw material a
   // client walks to verify rotations from the tip_id-anchored root key
@@ -1098,6 +1153,7 @@ class MemoryStore {
     // GH #60 — entity_keys is canonical state too.
     this._entityKeys.clear();
     this._platformLinks.clear();
+    this._orgMembers.clear();
     // Every table that iterateCanonicalState yields MUST be cleared here,
     // otherwise leftover rows survive a snapshot install and contribute to
     // state_merkle_root → permanent Merkle divergence vs the snapshot author.
@@ -1119,6 +1175,7 @@ class MemoryStore {
       case "revocations": return this._revocations.delete(pk);
       case "domain_bindings": return this._domainBindings.delete(pk);
       case "platform_links": return this._platformLinks.delete(pk);
+      case "org_members": return this._orgMembers.delete(pk);
       case "verification_providers": return this._vps.delete(pk);
       case "nodes": return this._nodes.delete(pk);
       case "entity_keys": return this._entityKeys.delete(pk);
@@ -1715,6 +1772,10 @@ class MemoryStore {
       .sort((a, b) => cmpBin(a.id, b.id))) {
       yield { table: "platform_links", row: _canonPlatformLink(r) };
     }
+    for (const r of [...this._orgMembers.values()]
+      .sort((a, b) => cmpBin(a.invite_tx_id, b.invite_tx_id))) {
+      yield { table: "org_members", row: _canonOrgMember(r) };
+    }
     for (const [entity_key, tx_id] of [...this._ownerHeads.entries()]
       .sort((a, b) => cmpBin(a[0], b[0]))) {
       yield { table: "owner_heads", row: _canonOwnerHead({ entity_key, tx_id }) };
@@ -1933,6 +1994,10 @@ class MemoryStore {
       last_error: null,
       created_at: rec.created_at,
       completed_at: null,
+      retry_after: 0,
+      classifier_job_id: null,
+      classifier_job_at: null,
+      classifier_polls: 0,
     });
     return true;
   }
@@ -2091,6 +2156,39 @@ class MemoryStore {
     row.last_error = lastError || null;
     row.retries = (row.retries || 0) + 1;
     row.retry_after = retryAfter || 0;
+    return true;
+  }
+  // classifier_job_at is the first acceptance time and survives a resubmit, so the
+  // polling budget cannot be reset by the classifier losing a job.
+  setPrescanJobClassifierRef(jobId, { classifierJobId, startedAt }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.classifier_job_id = classifierJobId || null;
+    if (classifierJobId && !row.classifier_job_at) row.classifier_job_at = startedAt;
+    return true;
+  }
+  // Waiting on a classifier job is not a failed attempt, so retries is untouched.
+  deferPrescanJobForPoll(jobId, { retryAfter, polls, note }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.status = "queued";
+    row.claimed_at = null;
+    row.claimed_by = null;
+    row.last_error = note || null;
+    row.classifier_polls = polls;
+    row.retry_after = retryAfter || 0;
+    return true;
+  }
+  getPrescanJobByClassifierRef(classifierJobId) {
+    for (const row of this._prescanJobs.values()) {
+      if (row.classifier_job_id === classifierJobId) return row;
+    }
+    return null;
+  }
+  wakePrescanJob(jobId) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row || row.status !== "queued") return false;
+    row.retry_after = 0;
     return true;
   }
 
@@ -2278,6 +2376,12 @@ class SQLiteStore {
     // cert was GC'd (same pre-fix behaviour for old rows). Every new
     // commit written after this migration includes the column directly,
     // so going forward each commit row is self-contained.
+    // Pre-existing prescan_jobs tables predate retry_after and the classifier job columns.
+    const pjCols = this.db.prepare("PRAGMA table_info(prescan_jobs)").all().map(c => c.name);
+    if (!pjCols.includes("retry_after")) this.db.exec("ALTER TABLE prescan_jobs ADD COLUMN retry_after INTEGER NOT NULL DEFAULT 0");
+    if (!pjCols.includes("classifier_job_id")) this.db.exec("ALTER TABLE prescan_jobs ADD COLUMN classifier_job_id TEXT");
+    if (!pjCols.includes("classifier_job_at")) this.db.exec("ALTER TABLE prescan_jobs ADD COLUMN classifier_job_at INTEGER");
+    if (!pjCols.includes("classifier_polls")) this.db.exec("ALTER TABLE prescan_jobs ADD COLUMN classifier_polls INTEGER NOT NULL DEFAULT 0");
     const commitCols = this.db.prepare("PRAGMA table_info(commits)").all().map(c => c.name);
     if (!commitCols.includes("anchor_batch_hash")) {
       this.db.exec("ALTER TABLE commits ADD COLUMN anchor_batch_hash TEXT");
@@ -2595,6 +2699,18 @@ class SQLiteStore {
       getPlatformLinksByTipId: this.db.prepare(
         "SELECT * FROM platform_links WHERE tip_id=?"
       ),
+
+      saveOrgMember: this.db.prepare(
+        `INSERT OR REPLACE INTO org_members
+         (invite_tx_id, org_tip_id, member_tip_id, role, status, invited_at, invited_claim,
+          accepted_at, add_tx_id, removed_at, remove_tx_id, removed_by)
+         VALUES (@invite_tx_id, @org_tip_id, @member_tip_id, @role, @status, @invited_at, @invited_claim,
+                 @accepted_at, @add_tx_id, @removed_at, @remove_tx_id, @removed_by)`
+      ),
+      getOrgMember: this.db.prepare("SELECT * FROM org_members WHERE invite_tx_id=?"),
+      getOrgMemberByAddTxId: this.db.prepare("SELECT * FROM org_members WHERE add_tx_id=?"),
+      getOrgMembersByOrg: this.db.prepare("SELECT * FROM org_members WHERE org_tip_id=?"),
+      getOrgMembersByMember: this.db.prepare("SELECT * FROM org_members WHERE member_tip_id=?"),
 
       savePendingDomainClaim: this.db.prepare(
         `INSERT OR REPLACE INTO pending_domain_claims
@@ -3020,7 +3136,7 @@ class SQLiteStore {
             SET status='claimed', claimed_at=?, claimed_by=?
           WHERE job_id = (
             SELECT job_id FROM prescan_jobs
-             WHERE (status='queued'
+             WHERE ((status='queued' AND retry_after <= ?)
                 OR (status='claimed' AND claimed_at < ?))
                AND EXISTS (SELECT 1 FROM content WHERE content.tip_ctid = prescan_jobs.tip_ctid)
              ORDER BY created_at
@@ -3039,11 +3155,28 @@ class SQLiteStore {
       releasePrescanJobForRetry: this.db.prepare(
         `UPDATE prescan_jobs
             SET status='queued', claimed_at=NULL, claimed_by=NULL,
-                last_error=?, retries=retries+1
+                last_error=?, retries=retries+1, retry_after=?
           WHERE job_id=?`
       ),
       countPendingPrescanJobs: this.db.prepare(
         "SELECT COUNT(*) AS n FROM prescan_jobs WHERE status IN ('queued','claimed')"
+      ),
+      setPrescanJobClassifierRef: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET classifier_job_id=?, classifier_job_at=COALESCE(classifier_job_at, ?)
+          WHERE job_id=?`
+      ),
+      deferPrescanJobForPoll: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='queued', claimed_at=NULL, claimed_by=NULL,
+                last_error=?, classifier_polls=?, retry_after=?
+          WHERE job_id=?`
+      ),
+      getPrescanJobByClassifierRef: this.db.prepare(
+        "SELECT * FROM prescan_jobs WHERE classifier_job_id=?"
+      ),
+      wakePrescanJob: this.db.prepare(
+        "UPDATE prescan_jobs SET retry_after=0 WHERE job_id=? AND status='queued'"
       ),
 
       // Upload sessions (node-local ephemeral chunked-upload state).
@@ -3292,6 +3425,10 @@ class SQLiteStore {
     if (stmt) stmt.run(ctid);
   }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
+  getContentBylined(tipId) {
+    return this.db.prepare("SELECT * FROM content WHERE author_tip_id != ? AND instr(authors, ?) > 0")
+      .all(tipId, '"tip_id":' + JSON.stringify(tipId)).map(r => this._hydrateContent(r));
+  }
   getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
   getContentByHash(contentHash) {
     if (!contentHash) return [];
@@ -3300,10 +3437,16 @@ class SQLiteStore {
   // Explorer list — see MemoryStore.listContent for the contract.
   // Filters vary per call, so the statement is built dynamically; the
   // (status, author, origin) columns are indexed.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, bylined = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
     const where = [];
     const params = [];
     if (author) { where.push("author_tip_id = ?"); params.push(author); }
+    if (bylined) {
+      // authors is JSON.stringify'd author objects, so `"tip_id":"<id>"` is an
+      // exact element match (same reasoning as the url filter below).
+      where.push("author_tip_id != ? AND instr(authors, ?) > 0");
+      params.push(bylined, '"tip_id":' + JSON.stringify(bylined));
+    }
     if (origin) { where.push("origin_code = ?"); params.push(origin); }
     if (status) { where.push("status = ?"); params.push(status); }
     if (hasMedia === true) where.push("media IS NOT NULL AND media != '[]'");
@@ -3480,6 +3623,13 @@ class SQLiteStore {
     return this._stmts.getPlatformLinksByTipId.all(tipId);
   }
 
+  // ── Org members (canonical) ──────────────────────────────────────────────
+  saveOrgMember(rec) { this._stmts.saveOrgMember.run({ invited_claim: null, ..._canonOrgMember(rec) }); }
+  getOrgMember(inviteTxId) { return this._stmts.getOrgMember.get(inviteTxId) || null; }
+  getOrgMemberByAddTxId(addTxId) { return this._stmts.getOrgMemberByAddTxId.get(addTxId) || null; }
+  getOrgMembersByOrg(orgTipId) { return this._stmts.getOrgMembersByOrg.all(orgTipId); }
+  getOrgMembersByMember(memberTipId) { return this._stmts.getOrgMembersByMember.all(memberTipId); }
+
   // ── Pending domain claims (local-only) ───────────────────────────────────
   savePendingDomainClaim(rec) {
     this._stmts.savePendingDomainClaim.run(
@@ -3574,7 +3724,7 @@ class SQLiteStore {
   }
   getKeyValidAt(entity_type, entity_id, timestamp) {
     const r = this._stmts.getKeyValidAt.get(entity_type, entity_id, timestamp, timestamp);
-    return r ? { public_key: r.public_key, algorithm: r.algorithm } : null;
+    return r ? { public_key: r.public_key, algorithm: r.algorithm, valid_to_ts: r.valid_to_ts ?? null, source_tx_id: r.source_tx_id ?? null } : null;
   }
   // Full key chain for one entity, oldest first — parity with
   // MemoryStore.getEntityKeyHistory.
@@ -3992,6 +4142,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM platform_links ORDER BY id").iterate()) {
       yield { table: "platform_links", row: _canonPlatformLink(r) };
     }
+    for (const r of db.prepare("SELECT * FROM org_members ORDER BY invite_tx_id").iterate()) {
+      yield { table: "org_members", row: _canonOrgMember(r) };
+    }
     for (const r of db.prepare("SELECT * FROM owner_heads ORDER BY entity_key").iterate()) {
       yield { table: "owner_heads", row: _canonOwnerHead(r) };
     }
@@ -4035,6 +4188,7 @@ class SQLiteStore {
       // GH #60 — entity_keys is canonical state too.
       this.db.prepare("DELETE FROM entity_keys").run();
       this.db.prepare("DELETE FROM platform_links").run();
+      this.db.prepare("DELETE FROM org_members").run();
       // Every table that iterateCanonicalState yields MUST be cleared here,
       // otherwise leftover rows survive a snapshot install and contribute
       // to state_merkle_root → permanent Merkle divergence.
@@ -4055,6 +4209,7 @@ class SQLiteStore {
       case "revocations": return del("DELETE FROM revocations WHERE tip_id=?", row.tip_id);
       case "domain_bindings": return del("DELETE FROM domain_bindings WHERE domain=?", row.domain);
       case "platform_links": return del("DELETE FROM platform_links WHERE id=?", row.id);
+      case "org_members": return del("DELETE FROM org_members WHERE invite_tx_id=?", row.invite_tx_id);
       case "verification_providers": return del("DELETE FROM verification_providers WHERE vp_id=?", row.vp_id);
       case "nodes": return del("DELETE FROM nodes WHERE node_id=?", row.node_id);
       case "entity_keys": return del(
@@ -4378,7 +4533,7 @@ class SQLiteStore {
     return this._stmts.getAudioClip.get(clipId) || null;
   }
   claimPrescanJob({ workerId, now, claimTimeoutMs }) {
-    return this._hydratePrescanJob(this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs));
+    return this._hydratePrescanJob(this._stmts.claimPrescanJob.get(now, workerId, now, now - claimTimeoutMs));
   }
   markPrescanJobDone(jobId, { completedAt }) {
     void completedAt;
@@ -4387,8 +4542,21 @@ class SQLiteStore {
   markPrescanJobFailed(jobId, { lastError, completedAt }) {
     return this._stmts.markPrescanJobFailed.run(completedAt, lastError || null, jobId).changes > 0;
   }
-  releasePrescanJobForRetry(jobId, { lastError }) {
-    return this._stmts.releasePrescanJobForRetry.run(lastError || null, jobId).changes > 0;
+  releasePrescanJobForRetry(jobId, { lastError, retryAfter }) {
+    return this._stmts.releasePrescanJobForRetry.run(lastError || null, retryAfter || 0, jobId).changes > 0;
+  }
+  setPrescanJobClassifierRef(jobId, { classifierJobId, startedAt }) {
+    return this._stmts.setPrescanJobClassifierRef
+      .run(classifierJobId || null, classifierJobId ? startedAt : null, jobId).changes > 0;
+  }
+  deferPrescanJobForPoll(jobId, { retryAfter, polls, note }) {
+    return this._stmts.deferPrescanJobForPoll.run(note || null, polls, retryAfter || 0, jobId).changes > 0;
+  }
+  getPrescanJobByClassifierRef(classifierJobId) {
+    return this._hydratePrescanJob(this._stmts.getPrescanJobByClassifierRef.get(classifierJobId));
+  }
+  wakePrescanJob(jobId) {
+    return this._stmts.wakePrescanJob.run(jobId).changes > 0;
   }
 
   saveDisputeDetails(rec) {
@@ -4589,6 +4757,7 @@ function _buildDagHandle(store, config) {
     updateContentUrls: (ctid, urls) => store.updateContentUrls(ctid, urls),
     incrementContentCounter: (ctid, f) => store.incrementContentCounter(ctid, f),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
+    getContentBylined: (id) => store.getContentBylined(id),
     getContentByStatus: (s) => store.getContentByStatus(s),
     // Register-time near-duplicate warning (exact normalized content_hash).
     getContentByHash: (h) => store.getContentByHash(h),
@@ -4648,6 +4817,13 @@ function _buildDagHandle(store, config) {
     updatePlatformLinkStatus: (tipId, platform, update) => store.updatePlatformLinkStatus(tipId, platform, update),
     getPlatformLink: (tipId, platform) => store.getPlatformLink(tipId, platform),
     getPlatformLinksByTipId: (tipId) => store.getPlatformLinksByTipId(tipId),
+
+    // ── Org members (canonical) ───────────────────────────────────────────
+    saveOrgMember: (rec) => store.saveOrgMember(rec),
+    getOrgMember: (inviteTxId) => store.getOrgMember(inviteTxId),
+    getOrgMemberByAddTxId: (addTxId) => store.getOrgMemberByAddTxId(addTxId),
+    getOrgMembersByOrg: (orgTipId) => store.getOrgMembersByOrg(orgTipId),
+    getOrgMembersByMember: (memberTipId) => store.getOrgMembersByMember(memberTipId),
 
     // ── Verification Providers ────────────────────────────────────────────
     saveVP: (rec) => store.saveVP(rec),
@@ -4829,6 +5005,10 @@ function _buildDagHandle(store, config) {
     markPrescanJobDone: (jobId, opts) => store.markPrescanJobDone(jobId, opts),
     markPrescanJobFailed: (jobId, opts) => store.markPrescanJobFailed(jobId, opts),
     releasePrescanJobForRetry: (jobId, opts) => store.releasePrescanJobForRetry(jobId, opts),
+    setPrescanJobClassifierRef: (jobId, opts) => store.setPrescanJobClassifierRef(jobId, opts),
+    deferPrescanJobForPoll: (jobId, opts) => store.deferPrescanJobForPoll(jobId, opts),
+    getPrescanJobByClassifierRef: (id) => store.getPrescanJobByClassifierRef(id),
+    wakePrescanJob: (jobId) => store.wakePrescanJob(jobId),
 
     // ── Upload sessions (node-local ephemeral chunked-upload state) ─────
     createUploadSession: (session) => store.createUploadSession(session),

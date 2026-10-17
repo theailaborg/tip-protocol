@@ -164,3 +164,39 @@ describe("sync handler GC horizon signaling (framed wire)", () => {
     expect(result.peerLatestRound).toBe(105);
   });
 });
+
+describe("sync handler reports each catch-up request to the retention bookkeeping", () => {
+  test("onCertSyncRequest receives the requesting peer and its fromRound", async () => {
+    const { dag: serverDag, network: serverNet } = setup();
+    const seen = [];
+    const serverSync = createSyncHandler({ dag: serverDag, network: serverNet, onCertSyncRequest: (peer, from) => seen.push([peer, from]) });
+    for (let r = 10; r <= 15; r++) serverDag.saveCertificate(fakeCert(r));
+    const { client, server } = createStreamPair();
+    const serverPromise = serverSync.handleIncomingSync(server, "peer-x");
+    await client.sink((async function* () {
+      yield encode("SyncRequest", { fromRound: 12, toRound: 0, merkleRoot: new Uint8Array(), batchSize: 100 });
+    })());
+    await readFramedResponse(client);
+    await serverPromise;
+    expect(seen).toEqual([["peer-x", 12]]);
+  });
+});
+
+describe("sync handler knows which peer it is streaming a cert tail to", () => {
+  test("isServingTo is false before, true during and (drain grace) after a served request, false for others", async () => {
+    const { dag: serverDag, network: serverNet } = setup();
+    const serverSync = createSyncHandler({ dag: serverDag, network: serverNet });
+    for (let r = 10; r <= 15; r++) serverDag.saveCertificate(fakeCert(r));
+    expect(serverSync.isServingTo("peer-x")).toBe(false);
+    const { client, server } = createStreamPair();
+    const serverPromise = serverSync.handleIncomingSync(server, "peer-x");
+    await client.sink((async function* () {
+      yield encode("SyncRequest", { fromRound: 12, toRound: 0, merkleRoot: new Uint8Array(), batchSize: 100 });
+    })());
+    await readFramedResponse(client);
+    await serverPromise;
+    expect(serverSync.isServingTo("peer-x")).toBe(true);
+    expect(serverSync.isServingTo("peer-y")).toBe(false);
+  });
+});
+

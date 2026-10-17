@@ -23,7 +23,13 @@ const LOCAL_CONFIG = Object.freeze({
   BATCH_WAIT_MS:                       _num("TIP_BATCH_WAIT_MS",                       500),
   CONSENSUS_SUMMARY_INTERVAL_MS:       _num("TIP_CONSENSUS_SUMMARY_INTERVAL_MS",       60000),
   ANTI_ENTROPY_INTERVAL_MS:            _num("TIP_ANTI_ENTROPY_INTERVAL_MS",            4000),
-  ANTI_ENTROPY_PEER_TIMEOUT_MS:        _num("TIP_ANTI_ENTROPY_PEER_TIMEOUT_MS",        2000),
+  // 2s was a LAN assumption: a probe reply rides the peer's egress queue, tens of seconds on a bloated link.
+  ANTI_ENTROPY_PEER_TIMEOUT_MS:        _num("TIP_ANTI_ENTROPY_PEER_TIMEOUT_MS",        10000),
+  // libp2p bounds every stream negotiation with its own timer (default 10s), combined with the caller's signal.
+  STREAM_NEGOTIATION_TIMEOUT_MS:       _num("TIP_STREAM_NEGOTIATION_TIMEOUT_MS",       60000),
+  // Cert retention floor in rounds. gc_depth (genesis, 500) was sized for 2s rounds; at 0.4s
+  // it covers 3.4 min. 4500 rounds is ~30 min today: revisit when the round time changes.
+  CERT_RETENTION_MIN_ROUNDS:           _num("TIP_CERT_RETENTION_MIN_ROUNDS",           4500),
   SYNC_RETRY_BASE_MS:                  _num("TIP_SYNC_RETRY_BASE_MS",                  1000),
   SNAPSHOT_BUSY_RETRY_MS:              _num("TIP_SNAPSHOT_BUSY_RETRY_MS",              5000),
   ACK_STREAM_TIMEOUT_MS:               _num("TIP_ACK_STREAM_TIMEOUT_MS",               3000),
@@ -34,6 +40,8 @@ const LOCAL_CONFIG = Object.freeze({
   ROTATION_REPAIR_MAX_RESPONSE_BYTES:  _num("TIP_ROTATION_REPAIR_MAX_RESPONSE_BYTES",  1048576),
   CHANNEL_HEAL_FAIL_THRESHOLD:         _num("TIP_CHANNEL_HEAL_FAIL_THRESHOLD",         5),
   CHANNEL_HEAL_COOLDOWN_MS:            _num("TIP_CHANNEL_HEAL_COOLDOWN_MS",            30000),
+  GOSSIP_MAX_OUTBOUND_BUFFER_BYTES:    _num("TIP_GOSSIP_MAX_OUTBOUND_BUFFER_BYTES",    8388608),
+  GOSSIP_BACKLOG_DISCONNECT_STRIKES:   _num("TIP_GOSSIP_BACKLOG_DISCONNECT_STRIKES",   2),
   HANDSHAKE_TIMEOUT_MS:                _num("TIP_HANDSHAKE_TIMEOUT_MS",                10000),
   HANDSHAKE_REHANDSHAKE_INTERVAL_MS:  _num("TIP_HANDSHAKE_REHANDSHAKE_INTERVAL_MS",  20000),
   HANDSHAKE_REAUTH_GRACE_MS:          _num("TIP_HANDSHAKE_REAUTH_GRACE_MS",          15000),

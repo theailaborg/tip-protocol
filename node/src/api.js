@@ -26,6 +26,7 @@ const { createTxSubmitter } = require("./services/helpers");
 
 // Services
 const { createIdentityService } = require("./services/identity-service");
+const { createOrgMemberService } = require("./services/org-member-service");
 const { createContentService } = require("./services/content-service");
 const { createProfileService } = require("./services/profile-service");
 const { createKeyService } = require("./services/key-service");
@@ -39,6 +40,8 @@ const { createStatsService } = require("./services/stats-service");
 const { createMediaService } = require("./services/media-service");
 const { createMediaStorage } = require("./services/media-storage");
 const { createChunkedUploadService } = require("./services/chunked-upload-service");
+const { createMediaQuotaClient } = require("./services/media-quota-client");
+const { createSeatAllowanceClient } = require("./services/seat-allowance-client");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -54,6 +57,7 @@ const dagRoutes = require("./routes/dag");
 const domainRoutes = require("./routes/domain");
 const reviewRoutes = require("./routes/reviews");
 const mediaRoutes = require("./routes/media");
+const prescanCallbackRoutes = require("./routes/prescan-callback");
 
 function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null, prescanJobs = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
@@ -69,12 +73,16 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // ref.current once consensus starts.
   const cryptoPoolRef = { current: null };
 
+  // Monthly media allowance: disabled unless config.mediaQuota has url + key.
+  const mediaQuota = createMediaQuotaClient({ ...config.mediaQuota, log: getLogger("tip.media.quota") });
+
   const chunkedUploadService = createChunkedUploadService({
     storage: mediaStorage,
     dag,
     cryptoPoolRef,
     mediaLimits: config.mediaLimits,
     log: getLogger("tip.media.chunked"),
+    mediaQuota,
   });
 
   const mediaService = createMediaService({
@@ -85,13 +93,18 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
     chunkedUploadService,
   });
 
+  // Team seats per org: free limit unless config.seats (or the media quota
+  // url + key) points at a billing service.
+  const seatAllowance = createSeatAllowanceClient({ ...config.seats, log: getLogger("tip.org.seats") });
+
   const ctx = {
-    dag, scoring, config, submitTx, submitBatch,
+    dag, scoring, config, submitTx, submitBatch, seatAllowance,
     consensus: consensusRef, network: networkRef, prescanJobs, mediaService,
   };
 
   // ── Create services ────────────────────────────────────────────────────────
   const identityService = createIdentityService(ctx);
+  const orgMemberService = createOrgMemberService(ctx);
   const contentService = createContentService(ctx);
   const profileService = createProfileService(ctx);
   const keyService = createKeyService(ctx);
@@ -117,6 +130,21 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // Middleware
   app.use(requestId);
   app.use(helmet({ contentSecurityPolicy: false }));
+  morgan.token("req-id", (req) => req.id);
+  // Routine requests go ONLY to access.log (audit trail, separate from the
+  // debug/error logs). A failed request (>=400) is the exception: it surfaces in
+  // the main logs at warn so it isn't buried. Internal probes are dropped.
+  const httpLog = getLogger("tip.http");
+  // :remote-addr resolves to req.ip, the same value the rate limiter keys on, so
+  // per-IP demand can be measured from the access log before tuning the limit.
+  const _accessFmt = ":remote-addr :req-id :method :url :status :response-time ms";
+  const _isProbe = (req) => req.path === "/metrics" || req.path === "/health" || req.path === "/v1/health"
+    || req.path === "/ready" || req.path === "/v1/ready";
+  app.use(morgan(_accessFmt, { stream: { write: (l) => logAccess(l.trimEnd()) }, skip: (req, res) => _isProbe(req) || res.statusCode >= 400 }));
+  app.use(morgan(_accessFmt, { stream: { write: (l) => httpLog.warn(l.trimEnd()) }, skip: (req, res) => res.statusCode < 400 }));
+
+  // Ahead of the JSON parser: the classifier signs the raw callback body.
+  app.use("/v1", prescanCallbackRoutes.createRouter({ prescanJobs, config }));
   // Body-parser cap = the genesis-configured request_body_max_bytes (25 MB via
   // config), not a hardcoded literal. Sized for content registrations that
   // carry a gzipped perceptual `fingerprints` envelope (a long song's landmark
@@ -130,18 +158,6 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   //   - incoming: ISO 8601 in request bodies → integer ms
   //   - outgoing: integer ms in response bodies → ISO 8601
   app.use(createTimestampFormat({ outgoing: true, incoming: true }));
-  morgan.token("req-id", (req) => req.id);
-  // Routine requests go ONLY to access.log (audit trail, separate from the
-  // debug/error logs). A failed request (>=400) is the exception: it surfaces in
-  // the main logs at warn so it isn't buried. Internal probes are dropped.
-  const httpLog = getLogger("tip.http");
-  // :remote-addr resolves to req.ip, the same value the rate limiter keys on, so
-  // per-IP demand can be measured from the access log before tuning the limit.
-  const _accessFmt = ":remote-addr :req-id :method :url :status :response-time ms";
-  const _isProbe = (req) => req.path === "/metrics" || req.path === "/health" || req.path === "/v1/health"
-    || req.path === "/ready" || req.path === "/v1/ready";
-  app.use(morgan(_accessFmt, { stream: { write: (l) => logAccess(l.trimEnd()) }, skip: (req, res) => _isProbe(req) || res.statusCode >= 400 }));
-  app.use(morgan(_accessFmt, { stream: { write: (l) => httpLog.warn(l.trimEnd()) }, skip: (req, res) => res.statusCode < 400 }));
 
   const limiter = rateLimit({
     windowMs: config.rateLimitWindow, max: config.rateLimitMax,
@@ -203,7 +219,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, createConsensusGate({ consensusRef }));
 
   // All API routes under /v1
-  app.use(API_VERSION, identityRoutes.createRouter({ identityService, profileService, keyService }));
+  app.use(API_VERSION, identityRoutes.createRouter({ identityService, profileService, keyService, orgMemberService }));
   app.use(API_VERSION, contentRoutes.createRouter({ contentService }));
   app.use(API_VERSION, disputeRoutes.createRouter({ disputeService }));
   app.use(API_VERSION, disputeDetailsRoutes.createRouter({ disputeDetailsService }));

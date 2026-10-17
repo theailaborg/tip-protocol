@@ -28,6 +28,8 @@ const path    = require("path");
 const fs      = require("fs");
 const snarkjs = require("snarkjs");
 
+const { canonicalizeGovId, GOV_ID_MAX_CHARS } = require("./gov-id");
+
 const CIRCUITS_DIR = path.join(__dirname, "../circuits");
 
 // ─── Load verification key (server-side) ─────────────────────────────────────
@@ -54,7 +56,7 @@ function _loadVKey() {
  * @returns {string} decimal string
  */
 function encodeGovId(govId) {
-  const norm  = govId.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 30);
+  const norm  = canonicalizeGovId(govId).slice(0, GOV_ID_MAX_CHARS);
   const hex   = Buffer.from(norm, "utf8").toString("hex");
   return hex ? BigInt("0x" + hex).toString() : "0";
 }
@@ -107,11 +109,11 @@ async function generateDedupProof(govId, dob, country) {
     country: encodeCountry(country),
   };
 
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+  const { proof, publicSignals } = await _withCurve(() => snarkjs.groth16.fullProve(
     input,
     wasmPath,
     zkeyPath
-  );
+  ));
 
   // TODO [NIST-HASH]: dedup_hash is currently the raw Poseidon field element (decimal
   // string). Poseidon has no NIST certification — this is a compliance gap for
@@ -143,7 +145,24 @@ async function generateDedupProof(govId, dob, country) {
  */
 async function verifyDedupProof(dedupHash, proof) {
   const vKey = _loadVKey();
-  return snarkjs.groth16.verify(vKey, [dedupHash], proof);
+  return _withCurve(() => snarkjs.groth16.verify(vKey, [dedupHash], proof));
+}
+
+// snarkjs caches the bn128 curve in globalThis.curve_bn128 with one worker
+// thread per CPU, each holding a WASM memory, and never releases it. Proofs
+// are rare (identity registration), so the curve is torn down once no call
+// is in flight rather than kept resident for the life of the process.
+let _curveInFlight = 0;
+async function _withCurve(fn) {
+  _curveInFlight++;
+  try {
+    return await fn();
+  } finally {
+    _curveInFlight--;
+    if (_curveInFlight === 0 && globalThis.curve_bn128 && typeof globalThis.curve_bn128.terminate === "function") {
+      try { await globalThis.curve_bn128.terminate(); } catch { /* workers already gone */ }
+    }
+  }
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────

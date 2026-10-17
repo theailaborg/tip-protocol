@@ -20,6 +20,7 @@
 "use strict";
 
 const LC = require("./local-config");
+const { PRESCAN_FAIL_OPEN_AFTER_MS } = require("./constants");
 
 let _instance = null;
 
@@ -247,7 +248,9 @@ const PRESCAN_WORKER = {
   get RETRY_BACKOFF_MS() { return _ps().worker_retry_backoff_ms; },
   get CLAIM_TIMEOUT_MS() { return _ps().worker_claim_timeout_ms; },
   get TAKEOVER_AFTER_MS() { return _ps().takeover_after_ms; },
-  get FAIL_OPEN_AFTER_MS() { return _ps().fail_open_after_ms; },
+  // Node policy, not consensus (see PRESCAN_FAIL_OPEN_AFTER_MS): the genesis
+  // value is kept for the founding record but no longer read here.
+  get FAIL_OPEN_AFTER_MS() { return PRESCAN_FAIL_OPEN_AFTER_MS; },
   get POLL_AFTER_MS() { return _ps().poll_after_ms; },
   get POLL_MAX_ATTEMPTS() { return _ps().poll_max_attempts; },
 };
@@ -376,6 +379,8 @@ const CONSENSUS = {
   get HANDSHAKE_TIMEOUT_MS() { return LC.HANDSHAKE_TIMEOUT_MS; },
   get HANDSHAKE_MAX_RETRIES() { return LC.HANDSHAKE_MAX_RETRIES; },
   get HANDSHAKE_REHANDSHAKE_INTERVAL_MS() { return LC.HANDSHAKE_REHANDSHAKE_INTERVAL_MS; },
+  get STREAM_NEGOTIATION_TIMEOUT_MS() { return LC.STREAM_NEGOTIATION_TIMEOUT_MS; },
+  get CERT_RETENTION_MIN_ROUNDS() { return LC.CERT_RETENTION_MIN_ROUNDS; },
   get HANDSHAKE_REAUTH_GRACE_MS() { return LC.HANDSHAKE_REAUTH_GRACE_MS; },
   get CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS() { return LC.CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS; },
   get SYNC_FROM_PEER_TOLERANCE_ROUNDS() { return LC.SYNC_FROM_PEER_TOLERANCE_ROUNDS; },
@@ -432,6 +437,12 @@ const CONSENSUS = {
   // bounds re-dial churn. Per-node operational tunables.
   get CHANNEL_HEAL_FAIL_THRESHOLD() { return LC.CHANNEL_HEAL_FAIL_THRESHOLD; },
   get CHANNEL_HEAL_COOLDOWN_MS() { return LC.CHANNEL_HEAL_COOLDOWN_MS; },
+  // Gossip queued for one peer is capped: a peer that stays connected but stops
+  // reading otherwise accumulates every batch/cert/ack we publish, unbounded
+  // (mainnet 2026-10-03: a halted partner node held 6.7 GB on node 2, OOM).
+  // Over the cap for STRIKES consecutive peer-health ticks, the peer is redialed.
+  get GOSSIP_MAX_OUTBOUND_BUFFER_BYTES() { return LC.GOSSIP_MAX_OUTBOUND_BUFFER_BYTES; },
+  get GOSSIP_BACKLOG_DISCONNECT_STRIKES() { return LC.GOSSIP_BACKLOG_DISCONNECT_STRIKES; },
   get SYNC_TOTAL_TIMEOUT_MS() { return LC.SYNC_TOTAL_TIMEOUT_MS; },
   get SYNC_MAX_RESPONSE_BYTES() { return LC.SYNC_MAX_RESPONSE_BYTES; },
   // Tier-3 local tunable (shared/local-config.js). Currently has NO consumer in

@@ -39,9 +39,9 @@ function mkNetwork({ openStreamFn = null } = {}) {
   const authorizedMap = { "peer-id-1": "tip://node/peer1", "peer-id-2": "tip://node/peer2" };
   return {
     handle: async (proto, fn) => { handlers[proto] = fn; },
-    openStream: async (peerId, proto) => {
+    openStream: async (peerId, proto, opts) => {
       if (!openStreamFn) throw new Error("no openStream configured");
-      return openStreamFn(peerId, proto);
+      return openStreamFn(peerId, proto, opts);
     },
     authorizedPeers: () => ({ ...authorizedMap }),
     handlers,
@@ -180,12 +180,130 @@ describe("heartbeat client side", () => {
     jest.useRealTimers();
 
     const states = hb.peerStates();
-    // At least one peer should have reached suspect threshold
-    const suspectPeer = Object.values(states).find(
-      ps => ps.consecutiveMisses >= CONSENSUS.HEARTBEAT_SUSPECT_MISSES
-    );
-    expect(suspectPeer).toBeDefined();
+    // a verdict fired and was consumed: the streak restarts from zero
     expect(suspects.length).toBeGreaterThan(0);
+    for (const ps of Object.values(states)) expect(ps.consecutiveMisses).toBeLessThan(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
+  });
+
+  test("forgive zeroes the miss counter: eviction then needs fresh misses", async () => {
+    const suspects = [];
+    const { hb } = mkHeartbeat({
+      openStreamFn: () => { throw new Error("connection refused"); },
+      onPeerSuspect: (peerId) => suspects.push(peerId),
+    });
+    jest.useFakeTimers();
+    try {
+      hb.start();
+      for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
+        await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      }
+      const peerId = suspects[0];
+      expect(peerId).toBeDefined();
+      expect(hb.peerStates()[peerId].consecutiveMisses).toBeLessThan(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);   // consumed by the verdict
+
+      hb.forgive(peerId);
+      expect(hb.peerStates()[peerId].consecutiveMisses).toBe(0);
+      expect(() => hb.forgive("never-seen-peer")).not.toThrow();
+
+      // One more miss is not a verdict any more: the transfer-time misses are gone.
+      const verdictsBefore = suspects.filter((p) => p === peerId).length;
+      await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      expect(hb.peerStates()[peerId].consecutiveMisses).toBeLessThan(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
+      expect(suspects.filter((p) => p === peerId).length).toBe(verdictsBefore);
+    } finally {
+      hb.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  // Our probes fail on a congested path while the peer's own pings still reach
+  // us; that is queueing, not a dead peer, and must not become an eviction.
+  test("no suspect verdict while the peer's own pings keep arriving", async () => {
+    const suspects = [];
+    const { hb, net } = mkHeartbeat({
+      openStreamFn: () => { throw new Error("connection refused"); },
+      onPeerSuspect: (peerId) => suspects.push(peerId),
+    });
+    await hb.registerHandler();
+    await callHandler(net);   // an authenticated ping from peer-id-1 lands on our handler
+    expect(hb.peerStates()["peer-id-1"].lastInboundAt).toBeGreaterThan(0);
+
+    jest.useFakeTimers();
+    try {
+      hb.start();
+      for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
+        await callHandler(net);   // peer-id-1 keeps pinging us while our probes to it fail
+        await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      }
+      expect(hb.peerStates()["peer-id-1"].consecutiveMisses).toBeGreaterThanOrEqual(CONSENSUS.HEARTBEAT_SUSPECT_MISSES);
+      expect(suspects).not.toContain("peer-id-1");
+      // peer-id-2 never pinged us: same misses, real verdict
+      expect(suspects).toContain("peer-id-2");
+      // once its pings stop for the silence bound AND a whole streak, the verdict is real again
+      const { HEARTBEAT_INBOUND_SILENCE_MS } = require("../../../shared/constants");
+      await jest.advanceTimersByTimeAsync(HEARTBEAT_INBOUND_SILENCE_MS);
+      for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
+        await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      }
+      expect(suspects).toContain("peer-id-1");
+    } finally {
+      hb.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  // A black-holed peer makes the stream open hang until libp2p's own deadline;
+  // the tick awaits every peer, so that froze the whole heartbeat (test cluster,
+  // 2026-09-25: one miss in 75s, no eviction). The probe is bounded by our timer.
+  test("a hung stream open is a miss at HEARTBEAT_TIMEOUT_MS and never stalls the tick", async () => {
+    const suspects = [];
+    const signals = [];
+    const { hb } = mkHeartbeat({
+      openStreamFn: (peerId, proto, opts) => { signals.push(opts && opts.signal); return new Promise(() => {}); },
+      onPeerSuspect: (peerId) => suspects.push(peerId),
+    });
+    jest.useFakeTimers();
+    try {
+      hb.start();
+      for (let i = 0; i <= CONSENSUS.HEARTBEAT_SUSPECT_MISSES; i++) {
+        await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + CONSENSUS.HEARTBEAT_TIMEOUT_MS + 10);
+      }
+      expect(suspects).toContain("peer-id-1");
+      expect(suspects).toContain("peer-id-2");
+      // the open was handed our abort signal and it fired (last tick's staggered peer included)
+      await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_TIMEOUT_MS);
+      expect(signals.length).toBeGreaterThan(0);
+      expect(signals.every((s) => s && s.aborted)).toBe(true);
+    } finally {
+      hb.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  // A live peer behind a bloated link pings us in bunches; a ping older than the
+  // current streak but inside HEARTBEAT_INBOUND_SILENCE_MS is still evidence.
+  test("an inbound ping within the silence bound but before the streak still blocks the verdict", async () => {
+    const { HEARTBEAT_INBOUND_SILENCE_MS } = require("../../../shared/constants");
+    const suspects = [];
+    const { hb, net } = mkHeartbeat({
+      openStreamFn: () => { throw new Error("connection refused"); },
+      onPeerSuspect: (peerId) => suspects.push(peerId),
+    });
+    await hb.registerHandler();
+    jest.useFakeTimers();
+    try {
+      await callHandler(net);   // one ping from peer-id-1, then silence
+      hb.start();
+      const streak = CONSENSUS.HEARTBEAT_SUSPECT_MISSES + 1;
+      for (let i = 0; i < streak; i++) await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
+      expect(suspects).not.toContain("peer-id-1");     // ping predates the streak, inside the bound
+      expect(suspects).toContain("peer-id-2");         // never heard from
+      await jest.advanceTimersByTimeAsync(HEARTBEAT_INBOUND_SILENCE_MS);
+      expect(suspects).toContain("peer-id-1");         // silent past the bound: real verdict
+    } finally {
+      hb.stop();
+      jest.useRealTimers();
+    }
   });
 
   test("recovery after misses resets consecutiveMisses to 0", async () => {

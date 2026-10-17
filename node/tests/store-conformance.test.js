@@ -266,6 +266,9 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getActiveKey("identity", tipId).public_key).toBe(`pk2-${tipId}`);
     expect(dag.getKeyValidAt("identity", tipId, T0 + 500).public_key).toBe(`pk-${tipId}`);
     expect(dag.getKeyValidAt("identity", tipId, T0 + 1500).public_key).toBe(`pk2-${tipId}`);
+    // The commit-time retirement rule reads valid_to_ts off the resolved record.
+    expect(Number(dag.getKeyValidAt("identity", tipId, T0 + 500).valid_to_ts)).toBe(T0 + 1000);
+    expect(dag.getKeyValidAt("identity", tipId, T0 + 1500).valid_to_ts == null).toBe(true);
 
     // Re-saving the same active key must not append a duplicate history row
     const rowsBefore = [...dag.iterateEntityKeys()].filter(r => r.entity_id === tipId).length;
@@ -412,6 +415,35 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
 
     expect(dag.releasePrescanJobForRetry(newer.job_id, { lastError: "boom" })).toBe(true);
     expect(dag.getPrescanJob(newer.job_id)).toEqual(expect.objectContaining({ status: "queued", retries: 1, last_error: "boom", claimed_by: null }));
+  });
+
+  test("prescan classifier job ref: set, look up, defer without a retry, wake, clear", async () => {
+    const dag = await makeDag();
+    const job = prescanJob(uniq("job"), T0);
+    dag.saveContent(contentRec(job.ctid, uniq("a")));
+    dag.enqueuePrescanJob(job);
+    dag.claimPrescanJob({ workerId: "w1", now: T0 + 1000, claimTimeoutMs: 60000 });
+
+    const ref = uniq("cj");
+    expect(dag.setPrescanJobClassifierRef(job.job_id, { classifierJobId: ref, startedAt: T0 + 1000 })).toBe(true);
+    expect(dag.getPrescanJobByClassifierRef(ref).job_id).toBe(job.job_id);
+
+    expect(dag.deferPrescanJobForPoll(job.job_id, { retryAfter: T0 + 60000, polls: 1, note: "awaiting_classifier_job" })).toBe(true);
+    const deferred = dag.getPrescanJob(job.job_id);
+    expect(deferred).toEqual(expect.objectContaining({ status: "queued", retries: 0, classifier_job_id: ref, classifier_polls: 1 }));
+    expect(Number(deferred.classifier_job_at)).toBe(T0 + 1000);
+
+    // Deferred until retry_after; a callback wake makes it claimable now
+    expect(dag.claimPrescanJob({ workerId: "w2", now: T0 + 2000, claimTimeoutMs: 60000 })).toBeNull();
+    expect(dag.wakePrescanJob(job.job_id)).toBe(true);
+    expect(dag.claimPrescanJob({ workerId: "w2", now: T0 + 2000, claimTimeoutMs: 60000 }).job_id).toBe(job.job_id);
+
+    // Clearing the ref keeps the budget start
+    expect(dag.setPrescanJobClassifierRef(job.job_id, { classifierJobId: null, startedAt: T0 + 5000 })).toBe(true);
+    const cleared = dag.getPrescanJob(job.job_id);
+    expect(cleared.classifier_job_id).toBeNull();
+    expect(Number(cleared.classifier_job_at)).toBe(T0 + 1000);
+    expect(dag.getPrescanJobByClassifierRef(ref)).toBeNull();
   });
 
   test("claim is single-winner: one queued job is never handed to two claimants", async () => {
@@ -640,6 +672,58 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     const updated = dag.getPlatformLink(tipId, "youtube");
     expect(updated.status).toBe("unlinked");
     expect(updated.handle).toBe("@x");
+  });
+
+  test("org members round-trip; a re-save merges the status change; lookups by org, member and add_tx_id", async () => {
+    const dag = await makeDag();
+    const org = uniq("GB-org");
+    const member = uniq("IN-member");
+    const inviteTxId = uniq("tx");
+    const addTxId = uniq("tx");
+
+    dag.saveOrgMember({
+      invite_tx_id: inviteTxId, org_tip_id: org, member_tip_id: member, role: "author",
+      status: "invited", invited_at: T0, invited_claim: T0 - 5, accepted_at: null, add_tx_id: null,
+      removed_at: null, remove_tx_id: null, removed_by: null,
+    });
+    expect(dag.getOrgMember(inviteTxId)).toEqual(expect.objectContaining({ status: "invited", role: "author" }));
+    expect(Number(dag.getOrgMember(inviteTxId).invited_claim)).toBe(T0 - 5);
+    expect(dag.getOrgMembersByOrg(org).map(r => r.member_tip_id)).toEqual([member]);
+    expect(dag.getOrgMembersByMember(member).map(r => r.org_tip_id)).toEqual([org]);
+    expect(dag.getOrgMemberByAddTxId(addTxId)).toBeNull();
+
+    dag.saveOrgMember({ ...dag.getOrgMember(inviteTxId), status: "active", accepted_at: T0 + 5, add_tx_id: addTxId });
+    const active = dag.getOrgMemberByAddTxId(addTxId);
+    expect(active).toEqual(expect.objectContaining({ invite_tx_id: inviteTxId, status: "active", role: "author" }));
+    expect(Number(active.accepted_at)).toBe(T0 + 5);
+
+    dag.saveOrgMember({ ...active, status: "removed", removed_at: T0 + 9, remove_tx_id: uniq("tx"), removed_by: member });
+    expect(dag.getOrgMember(inviteTxId).status).toBe("removed");
+    expect([...dag.iterateCanonicalState()].filter(r => r.table === "org_members")).toHaveLength(1);
+    expect(dag.deleteCanonicalRow("org_members", { invite_tx_id: inviteTxId })).toBe(true);
+    expect(dag.getOrgMember(inviteTxId)).toBeNull();
+  });
+
+  test("bylined content: credited in authors[] without being author_tip_id, in both the lookup and the list filter", async () => {
+    const dag = await makeDag();
+    const org = uniq("GB-org");
+    const member = uniq("IN-member");
+    const byline = (ct) => ({ ...contentRec(ct, org), authors: [
+      { key_mode: "attribution", role: "byline", signed: false, tip_id: org, tip_id_type: "organization" },
+      { key_mode: "attribution", role: "byline", signed: false, tip_id: member, tip_id_type: "personal" },
+    ] });
+    const own = uniq("ct"), bylined = uniq("ct"), solo = uniq("ct");
+    dag.saveContent({ ...contentRec(own, member), authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: member, tip_id_type: "personal" }] });
+    dag.saveContent(byline(bylined));
+    dag.saveContent({ ...contentRec(solo, org), authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: org, tip_id_type: "organization" }] });
+
+    expect(dag.getContentBylined(member).map(c => c.ctid)).toEqual([bylined]);
+    expect(dag.getContentBylined(org)).toEqual([]);
+    expect(dag.getContentByAuthor(member).map(c => c.ctid)).toEqual([own]);
+    expect(dag.listContent({ bylined: member, limit: 10 }).map(c => c.ctid)).toEqual([bylined]);
+    expect(dag.listContent({ author: member, limit: 10 }).map(c => c.ctid)).toEqual([own]);
+    // A prefix of the id must not match (exact JSON element match).
+    expect(dag.getContentBylined(member.slice(0, -2))).toEqual([]);
   });
 
   // ── 12. Canonical state ──────────────────────────────────────────────────

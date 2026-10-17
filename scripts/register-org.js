@@ -39,10 +39,13 @@
  *
  * Output:
  *   generated/<partner>/org/
- *     └── <tip-id>.tip.json   Keypair + org metadata (mode 0600)
+ *     └── <tip-id>.tip.json   VP-app export (tip-key-export-v2) + org metadata (mode 0600)
  *
  * The private key is written locally and never transmitted: registration sends
- * only the public key. Deliver the file to the organization over a secure
+ * only the public key. The file is locked with the incorporation date exactly
+ * as the VP app locks a personal download with the date of birth, so it
+ * imports into the VP app and is not usable as-is if it leaks. The date is
+ * public record, so this is one layer, not the delivery channel. Deliver the file to the organization over a secure
  * channel and have them store it at mode 0600.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
@@ -64,8 +67,12 @@ const {
   generateTIPID,
 } = require("../shared/crypto");
 const { generateDedupProof } = require("../shared/zk");
+const { resolveIdScheme } = require("../shared/org-id-schemes");
 const registerIdentitySchema = require("../node/src/schemas/register-identity");
 const { loadVpBackup } = require("./genesis-backups");
+const { writePartnerReadme } = require("./partner-readme");
+const { KEY_FILE_EXPORT } = require("../shared/constants");
+const { datePassword, encryptPrivateKey, readKeyFile } = require("../shared/key-file");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
 const T = {
@@ -107,83 +114,6 @@ function slugify(s) {
   return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "org";
 }
 
-// One README at the partner root explaining every credential type it may hold.
-// Overwritten on each run so it always reflects the current layout.
-function writePartnerReadme(partnerRoot) {
-  const text = `# Partner credentials , handling rules
-
-Everything for one partner lives under this directory.
-
-## org/  (organization identity)
-The .tip.json here IS the organization on the network: it signs content as them.
-It is NOT needed to run a node. Keep it OFF the node host, with company signing
-material. Mode 0600, never committed, never emailed in the clear.
-
-## node/  (node identity + env)
-The .tip.json here runs the node: it lives on the node host, read at boot
-(mode 0600, owned by the container user). The .env is the node configuration ,
-secrets (classifier key, metrics token) are filled by hand at bundle time, never
-generated here.
-
-## vp/  (verification provider , rarely present)
-A VP key approves registrations. If one exists here, it is the most sensitive
-file in this tree; it never leaves the registration machine.
-
-Delivery: docs/REGISTRATION_AND_KEY_DISTRIBUTION.md section 5 , one AES-256 zip
-via scripts/make-secure-bundle.sh, password over a separate channel.
-`;
-  fs.writeFileSync(path.join(partnerRoot, "README.md"), text);
-}
-
-// ─── Which identifier IS the company's identity, per jurisdiction ─────────────
-// The dedup hash is Poseidon(reg_no, incorporation_date, country). The circuit
-// cannot tell a company number from a tax number, so "one company = one
-// identity" only holds if every registration for a country derives reg_no the
-// same way. One Indian company legitimately holds a CIN, a PAN and several
-// GSTINs: each would mint a separate, permanent, un-reconcilable identity.
-//
-// So: exactly one accepted identifier per jurisdiction, and reject anything
-// that does not match its shape. A wrong value here cannot be detected later
-// (the hash is one-way) and cannot be corrected (the entry is committed).
-const ORG_ID_SCHEMES = Object.freeze({
-  GB: [{ key: "company", name: "company number (Companies House)", re: /^[A-Z0-9]{8}$/,
-         hint: "8 characters, keep leading zeros (e.g. 01234567). Not the VAT or UTR number" }],
-  IN: [{ key: "company", name: "CIN", re: /^[A-Z0-9]{21}$/,
-         hint: "21 characters (e.g. U74999MH2020PTC123456)" },
-       { key: "llp", name: "LLPIN", re: /^[A-Z0-9]{7}$/,
-         hint: "7 characters; LLPs are never issued a CIN" }],
-  US: [{ key: "company", name: "EIN (federal)", re: /^\d{9}$/,
-         hint: "9 digits, IRS-issued. NOT a state entity number: state numbers repeat across states" },
-       { key: "state", name: "namespaced state number", re: /^US-[A-Z]{2}-[A-Z0-9]+$/,
-         hint: "only when no EIN exists, e.g. US-DE-1234567" }],
-  AU: [{ key: "company", name: "ACN", re: /^\d{9}$/, hint: "9 digits" }],
-  FR: [{ key: "company", name: "SIREN", re: /^\d{9}$/, hint: "9 digits" }],
-  JP: [{ key: "company", name: "Corporate Number", re: /^\d{13}$/, hint: "13 digits" }],
-  DE: [{ key: "company", name: "court-qualified HRB/HRA", re: /^DE-HR[AB]-\d+-[A-Z]{2,5}$/,
-         hint: "HRB alone is only unique per local court, e.g. DE-HRB-12345-MUC" }],
-});
-
-// Returns the matching scheme, or throws with what the jurisdiction expects.
-// An unlisted country stops the run rather than guessing: adding a row is a
-// deliberate act (confirm whether that country has ONE national registry).
-function resolveIdScheme(country, regNumber) {
-  const schemes = ORG_ID_SCHEMES[country];
-  if (!schemes) {
-    throw new Error(
-      `no registration-number scheme defined for ${country}.\n` +
-      `    Add it to ORG_ID_SCHEMES after confirming that country's single national\n` +
-      `    company registry. Do not substitute a tax or state identifier.`);
-  }
-  const normalized = String(regNumber).trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
-  const hit = schemes.find(s => s.re.test(normalized));
-  if (!hit) {
-    const opts = schemes.map(s => `      ${s.name}: ${s.hint}`).join("\n");
-    throw new Error(
-      `"${regNumber}" is not a valid registration number for ${country}.\n` +
-      `    ${country} accepts:\n${opts}`);
-  }
-  return { ...hit, normalized };
-}
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
 function post(url, body) {
@@ -332,32 +262,48 @@ async function main() {
 
   const fileName = String(result.tip_id || tipId)
     .replace(/^tip:\/\//, "").replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-") + ".tip.json";
+  const finalTipId = result.tip_id || tipId;
+  // Same envelope as the VP app's download, locked with the incorporation
+  // date, so the organization imports it there the way a person imports theirs.
   const tipJson = JSON.stringify({
-    v: 1,
-    type: "identity",
+    version: KEY_FILE_EXPORT.VERSION,
+    tipId: finalTipId,
+    publicKey: keypair.publicKey,
+    encrypted: encryptPrivateKey(keypair.privateKey, datePassword(incorporated)),
+    algorithm: KEY_FILE_EXPORT.ALGORITHM,
+    sigAlgorithm: KEY_FILE_EXPORT.SIG_ALGORITHM,
     tip_id_type: "organization",
-    name: orgName,
-    tip_id: result.tip_id || tipId,
+    vp_id: vp.vp_id,
+    display_name: orgName,
     region,
-    public_key: keypair.publicKey,
-    private_key: keypair.privateKey,
     // Recorded so the dedup inputs stay auditable: they cannot be recovered
     // from the hash, and re-deriving them wrongly would mint a second identity.
+    // The canonical value is what was hashed; the as-provided form is kept so a
+    // later audit can read it back against the certificate it was copied from.
     registration_number: scheme.normalized,
+    registration_number_as_provided: regNumber,
     registration_scheme: scheme.name,
     incorporated,
     dedup_hash: dedupHash,
-    approving_vp_id: vp.vp_id,
     registered_at: result.registered_at || nowMs(),
     registered_on: nodeUrl,
-    generated_at: nowIso(),
+    exportedAt: nowIso(),
+    warning: "Locked with the date of incorporation (MM/DD/YYYY, as registered). There is no recovery if it is lost.",
   }, null, 2);
-  fs.writeFileSync(path.join(outDir, fileName), tipJson, { mode: 0o600 });
+  const credPath = path.join(outDir, fileName);
+  fs.writeFileSync(credPath, tipJson, { mode: 0o600 });
+
+  // Prove the file on disk opens with the date before anyone relies on it.
+  const reread = readKeyFile(credPath, datePassword(incorporated));
+  if (reread.private_key !== keypair.privateKey || reread.public_key !== keypair.publicKey || reread.tip_id !== finalTipId) {
+    throw new Error(`${credPath} did not decrypt back to the generated keypair`);
+  }
 
   console.log("");
-  ok(`Credential: ${path.join(outDir, fileName)}`);
-  warn("Contains the PRIVATE key. Deliver over a secure channel, never chat or email.");
-  warn("Recipient should store it at mode 0600; anyone holding it can sign as this organization.");
+  ok(`Credential: ${credPath}`);
+  ok(`Verified: decrypts with the incorporation date (${incorporated}), imports into the VP app as ${finalTipId}`);
+  warn("Contains the PRIVATE key, locked only with a public date. Deliver over a secure channel, never chat or email.");
+  warn("Recipient should store it at mode 0600; anyone holding it and the date can sign as this organization.");
   console.log("");
 }
 

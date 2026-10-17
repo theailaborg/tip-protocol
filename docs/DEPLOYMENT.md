@@ -57,7 +57,7 @@ DAG, serve the REST API, and participate in the network. That is it.
 
 | Item | Full Node | VP Node |
 |------|-----------|---------|
-| Node.js 20+ or Python 3.12+ | Required | Required |
+| Node.js 24+ | Required | Required |
 | Docker and Docker Compose (optional) | Recommended | Recommended |
 | Public IP address | Recommended for gossip | Required |
 | Open ports 4000 (REST) and 4001 (gossip) | Recommended | Required |
@@ -132,21 +132,36 @@ Expected response:
 ```json
 {
   "status": "ok",
-  "version": "2.0.0",
-  "chain_id": "tip-devnet-v2",
+  "version": "2.7.5",
+  "node_id": "tip://node/<id>",
   "dag_count": 0
 }
 ```
 
-### Step 5: Seed the genesis block (first launch only)
+`/health` does not return `genesis_hash` or a chain id. To confirm which chain
+the image carries, read the baked genesis directly:
+
+```bash
+python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"
+```
+
+### Step 5: Seed the genesis block (FOUNDING node only)
+
+> **Do not run this if you are joining an existing network.** Seeding mints a
+> new genesis and a new founding VP. A node that seeds has a different
+> `genesis_hash` from the fleet, so the p2p handshake rejects it, it peers with
+> nobody, and it sits at `join_state: syncing` forever. There is no clean
+> "wrong network" error and `scripts/seed.js` will not stop you. Partners
+> joining mainnet skip straight to Step 6: the genesis is already baked into
+> the image and state arrives by sync.
 
 ```bash
 docker compose exec tip-node node scripts/seed.js
 ```
 
 This mints the genesis block, registers the founding VP, and writes the
-genesis ring members to the DAG. You must complete this step before the
-node is useful.
+genesis ring members to the DAG. Only the first node of a **brand new** chain
+does this.
 
 After seeding:
 
@@ -212,7 +227,12 @@ node scripts/seed.js
 
 ---
 
-## Option C: Manual Setup (Python)
+## Option C: Manual Setup (Python), UNMAINTAINED
+
+> `python/` is no longer maintained and does not track the Node implementation.
+> It has not been validated against the current genesis, schema migrations or
+> consensus code, so it must not be used for a mainnet or test-cluster node.
+> Kept for reference only; use Option A or B.
 
 ```bash
 git clone https://github.com/theailaborg/tip-protocol.git
@@ -251,14 +271,14 @@ files `genesis-data/backups/tip-node-<id>.tip.json` (gitignored).
 curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker ubuntu
 ```
 
-**2. Clone via git (every node)** , `main` already carries the baked genesis.
+**2. Clone via git (every node)**: `main` already carries the baked genesis.
 
 ```bash
 git clone https://x-access-token:<TOKEN>@github.com/theailaborg/tip-protocol.git ~/tip-protocol
 git -C ~/tip-protocol remote set-url origin https://github.com/theailaborg/tip-protocol.git
 ```
 
-**3. Node identity + env (every node)** , owner must be uid 1001.
+**3. Node identity + env (every node)**: owner must be uid 1001.
 
 ```bash
 scp tip-node-<id>.tip.json ubuntu@<node-ip>:~/tip-protocol/genesis-data/backups/
@@ -272,7 +292,7 @@ protocol defaults. Prod values: `NODE_ENV=production`, `TIP_CORS_ORIGINS`
 listing every browser client (the VP app; NOT `*`), a shared `TIP_METRICS_TOKEN`
 identical on all nodes, `TIP_CRYPTO_POOL_SIZE=2` on 4-core hosts.
 
-**Media storage (S3)** , the node writes media bytes to S3 (SSE-KMS) and hands
+**Media storage (S3)**: the node writes media bytes to S3 (SSE-KMS) and hands
 the classifier presigned URLs. Provision the bucket + KMS key + IAM role once
 and set `TIP_MEDIA_BACKEND=s3`, `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`,
 `TIP_MEDIA_S3_KMS_KEY_ID` in each node's `.env`. Full step-by-step (Terraform or
@@ -280,7 +300,7 @@ console/CLI, IAM policy, VPC endpoint, smoke tests): **[`PROD_S3_SETUP.md`](PROD
 Credentials come from the instance role (EC2) / IRSA (EKS), never a long-lived
 `AWS_ACCESS_KEY_ID` in the env.
 
-**4. Log directory permissions (GOTCHA)** , the compose bind-mounts
+**4. Log directory permissions (GOTCHA)**: the compose bind-mounts
 `./logs/node-1`, which docker creates root-owned, so the container cannot write
 its per-level log files. Fix before first boot:
 
@@ -291,7 +311,7 @@ mkdir -p ~/tip-protocol/logs && sudo chown -R 1001:1001 ~/tip-protocol/logs
 Skip this and the log dir stays empty (logs only reach docker stdout) and Loki
 never gets the `level` label.
 
-**5. Build (every node)** , bakes the genesis into the image.
+**5. Build (every node)**: bakes the genesis into the image.
 
 ```bash
 cd ~/tip-protocol && sudo docker compose build tip-node
@@ -324,7 +344,7 @@ docker exec tip-postgres psql -U tip -d "$DB_NAME" -tAc \
   "SELECT name FROM knex_migrations ORDER BY id;"
 ```
 
-**7. Validate** , across all nodes: `/health` shows `byzantineForkHalt=none`,
+**7. Validate** across all nodes: `/health` shows `byzantineForkHalt=none`,
 `joinState=ready`, `peers=<N-1>`, rounds advancing; the same
 `state_merkle_root` at the same round from `/v1/state-root` (`/health` does not
 return `genesis_hash`),
@@ -332,24 +352,122 @@ identities = genesis ring size, and the same committed tx count (converged).
 
 **8. Observability** (obs host: Prometheus + Grafana + Loki + Caddy)
 
-Full step-by-step , monitoring host, per-node agent, verify, operations , is the
+Full step-by-step (monitoring host, per-node agent, verify, operations) is the
 runbook at **[`infra/observability/prod/README.md`](../infra/observability/prod/README.md)**.
 The load-bearing gotchas to not relearn the hard way:
 
-- **Metrics**: `infra/observability/prod/prometheus.yml` (gitignored) , job
+- **Metrics**: `infra/observability/prod/prometheus.yml` (gitignored), job
   `tip-federation` (do NOT rename), targets = the nodes' **private** IPs `:4000`,
   `Bearer` = the shared `TIP_METRICS_TOKEN`, and `chmod 644` the file (a `sudo`
   edit that leaves it `root:600` crash-loops Prometheus). Verify
   `count(up{job="tip-federation"}==1)` returns N.
-- **Logs**: promtail per node (`infra/observability/agent/`) , requires Step 4.
+- **Logs**: promtail per node (`infra/observability/agent/`), requires Step 4.
   `promtail.env`: `LOKI_URL=logs.<domain>`, `LOKI_PASSWORD=<plaintext>`,
   `NODE_LABEL=node<n>`; then `docker compose -f docker-compose.promtail.yml up -d`.
   It tags `node` + derives `level` from the per-level filenames. Set the Loki
   basic-auth (`LOKI_BASIC_AUTH_HASH` via `caddy hash-password`) in the obs `.env`.
 - **DNS (GOTCHA)**: `logs.<domain>` must be **DNS-only (grey cloud), NOT
-  Cloudflare-proxied** , Caddy owns TLS + basic-auth for the push; a proxy in
+  Cloudflare-proxied**: Caddy owns TLS + basic-auth for the push; a proxy in
   front breaks the ACME challenge and the push times out. `grafana.<domain>`
   proxied is fine (browser UI).
+
+---
+
+## Joining an Existing Federation (partner node)
+
+The section above is a **cold start** for a brand new chain. A partner joining
+mainnet is a different job: the chain already exists, so the node mints nothing
+and instead proves it agrees with everyone else. We register the node and issue
+the credentials bundle first, per
+[`REGISTRATION_AND_KEY_DISTRIBUTION.md`](./REGISTRATION_AND_KEY_DISTRIBUTION.md).
+
+The one rule that matters: **never run `scripts/seed.js`**. It mints a fresh
+genesis, and a node whose `genesis_hash` differs cannot complete the p2p
+handshake with anybody. The symptom is not an error, it is zero peers and
+`join_state: syncing` forever.
+
+**1. Clone and place the credentials.** The zip is flat; the key has to be moved
+to where `node.env` points it and handed to uid 1001, the container user.
+
+```bash
+git clone https://github.com/theailaborg/tip-protocol.git ~/tip-protocol
+cd ~/tip-protocol
+
+cp <bundle>/NODE-KEY__tip-node-<id>.tip.json genesis-data/backups/tip-node-<id>.tip.json
+cp <bundle>/node.env .env                     # compose reads .env, not node.env
+
+mkdir -p data logs/node-1
+sudo chown -R 1001:1001 genesis-data/backups data logs
+sudo chmod 600 genesis-data/backups/tip-node-<id>.tip.json
+```
+
+The `ORG-IDENTITY__*.tip.json` from the same bundle does **not** belong on this
+host. It signs as the company, not as the node; keep it offline.
+
+**2. Confirm the chain before starting anything.**
+
+```bash
+python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"
+```
+
+It must match the federation's genesis prefix. If it does not, you are on the
+wrong branch or a stale clone, and nothing below will work.
+
+**3. Fill the host-specific values** left as placeholders in `.env`:
+`TIP_PUBLIC_IP` (static/elastic, peers store it), `TIP_PUBLIC_URL`, and
+`DB_PASSWORD`. Confirm `TIP_BOOTSTRAP_PEERS` is populated and
+`TIP_REG_CREDIT_CAP_ACTIVATION_MS` matches the fleet.
+
+**4. Build and start.** No seed step.
+
+```bash
+sudo docker compose build tip-node
+sudo docker compose up -d
+docker compose logs -f tip-node
+```
+
+**5. Watch it sync.** A joining node downloads a snapshot before it can
+participate, which takes minutes on a live chain. Progress, not speed, is what
+to watch:
+
+```bash
+curl -s http://localhost:4000/ready | python3 -m json.tool
+```
+
+`join_state` moves `syncing` → `catching_up` → `ready`. Snapshot installs are
+not resumable today, so a dropped transfer restarts it; repeated restarts
+usually mean an unstable link rather than a broken node.
+
+**6. Verify, in this order.** Each proves something different:
+
+```bash
+# reachable and not halted
+curl -s http://localhost:4000/ready      | python3 -m json.tool   # ready:true, halted:false
+
+# on the right chain: the handshake authorises peers against the genesis-scoped
+# on-chain registry, so a non-zero peer count IS proof of the correct genesis
+curl -s http://localhost:4000/health     | python3 -m json.tool   # peers.connected >= 1
+
+# the definitive check: identical state at the same round
+curl -s http://localhost:4000/v1/state-root
+curl -s https://node.theailab.org/v1/state-root
+```
+
+Equal `state_merkle_root` at equal `round` means the node's entire state is
+byte-identical to the rest of the federation. Rounds advance every ~2s, so
+compare matching round numbers rather than two snapshots taken seconds apart.
+
+**7. Announce the public endpoint** once DNS resolves to this host. It is
+optional at registration and updated any time afterwards, signed by the node's
+own key with no council re-approval:
+
+```bash
+curl -X POST http://localhost:4000/v1/node/endpoint/announce
+```
+
+**8. Before real traffic**, provision S3 media storage per
+[`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md). The generated env ships
+`TIP_MEDIA_BACKEND=fs`, which writes media bytes to the node disk.
 
 ---
 
@@ -373,10 +491,22 @@ git fetch origin && git checkout <sha>
 git stash pop -q
 diff -q genesis-data/genesis.json /tmp/genesis-backup.json   # MUST be identical
 
-# 3. rebuild (genesis is baked into the image) and recreate this node only
+# 3. rebuild (genesis is baked into the image); the running container keeps its image
 docker compose build tip-node
+
+# 4. gate: stop this node, apply the new migrations, and prove its database
+#    rebuilds to the live root of an untouched peer. Exit 0 means MATCH.
+docker compose stop tip-node
+docker compose run --rm --no-deps -T --entrypoint node tip-node \
+  scripts/check-boot-root.js --migrate --peer https://<untouched-peer>
+
+# 5. only on MATCH: recreate this node
 docker compose up -d --no-deps --force-recreate tip-node
 ```
+
+On MISMATCH, do not start the node on the new version: it would halt at boot and
+depend on a peer's single snapshot slot to recover. The script prints per-table
+roots; the table that differs from the peer's is where the database drifted.
 
 Then verify **before** moving on:
 
@@ -388,15 +518,15 @@ Then verify **before** moving on:
 Give it a few minutes rather than seconds. A node that comes up and then dies
 on its second cycle looks healthy at t+30s.
 
-Two things that are normal and should not stop a rollout:
+Nodes on different commits reporting **identical** state roots is normal: the
+canonical projections used for hashing are explicit whitelists, so a column added
+by a new migration does not enter the root. Mixed versions agree by design.
 
-- Nodes on different commits reporting **identical** state roots. The canonical
-  projections used for hashing are explicit whitelists, so a column added by a
-  new migration does not enter the root. Mixed versions agree by design.
-- A single `HALT (byzantine_fork)` about 8-10s after boot that clears itself
-  via snapshot resync. The node is behind, not forked; anti-entropy compares its
-  catching-up root against peers that are further ahead. It self-heals and
-  `halted` returns to `false`.
+A `HALT (byzantine_fork)` after boot is **not** normal, even when it clears itself
+through a snapshot. It means this node's database rebuilt to a different root than
+the fleet holds. It was read as harmless for months and hid a real drift until a
+restart found no peer able to serve a snapshot (2026-09-28). Stop the rollout and
+run the gate against the node's database.
 
 Anything else, stop and investigate before touching the next node.
 
@@ -421,7 +551,7 @@ mainnet bootstrap peers, complete this checklist.
 - [ ] `TIP_PUBLIC_URL` is set to your node's public HTTPS URL
 - [ ] `TIP_BOOTSTRAP_PEERS` points to the mainnet bootstrap peers
 - [ ] Port 4001 (gossip) is open for TCP from any IP
-- [ ] Port 4000 (REST API) is behind a reverse proxy (nginx, Caddo, or Cloudflare)
+- [ ] Port 4000 (REST API) is behind a reverse proxy (nginx, Caddy, or Cloudflare)
 
 **Chain**
 

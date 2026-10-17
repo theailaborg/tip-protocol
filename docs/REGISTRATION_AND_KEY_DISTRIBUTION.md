@@ -17,16 +17,20 @@ mint partner private keys.
 
 ## 1. Prerequisites on the registration machine
 
-- [ ] Repo cloned at latest `main`, `npm install` run at the **repo root** (Node 22+;
-      workspaces hoist every dependency there , installing inside `node/` is wrong)
+- [ ] Repo cloned at latest `main`, `npm install` run at the **repo root** (Node 24+;
+      workspaces hoist every dependency there, installing inside `node/` is wrong)
 - [ ] The **mainnet founding VP key file** (`tip-vp-....tip.json`) present locally,
       readable only by you (`chmod 600`). Referred to below as `<VP_KEY_FILE>`
 - [ ] Network access to `https://node.theailab.org`
 - [ ] `7zz` installed for the bundle step (`brew install sevenzip` / `apt install 7zip`)
 - [ ] The live mainnet `TIP_CLASSIFIER_KEY` and `TIP_METRICS_TOKEN` values available
       (from the production node configuration, not from any test environment)
+- [ ] The fleet's `TIP_REG_CREDIT_CAP_ACTIVATION_MS`, read off a node already in the
+      network (`grep TIP_REG_CREDIT_CAP_ACTIVATION_MS .env`). It is a consensus
+      gate: a node that disagrees with the fleet forks, and nothing exposes it
+      over HTTP, so it can only be matched, never discovered
 
-## 2. Gates , all must be true before anything is registered
+## 2. Gates: all must be true before anything is registered
 
 - [ ] Partner's company details received **in writing, from their official
       documents** (certificate of incorporation), not from memory or a web search
@@ -35,15 +39,17 @@ mint partner private keys.
 - [ ] Partner's production host provisioned per `NODE_REQUIREMENTS.md`, with a
       **static** public IP
 - [ ] Inbound TCP **4000 and 4001** verified open from the public internet
-- [ ] Partner's node domain resolves to their stated IP (`dig +short <domain>`)
-      , needed **by their first boot**, not for registration: the node probes
+- [ ] Partner's node link confirmed: **25 Mbit/s download and upload, sustained**
+      minimum, 50 recommended (`NODE_REQUIREMENTS.md`); a shared office line is
+      usually not it, and a slower link installs but never keeps up
+- [ ] Partner's node domain resolves to their stated IP (`dig +short <domain>`), needed **by their first boot**, not for registration: the node probes
       its own domain before announcing it on-chain. Booting without DNS only
       fails the announce with a warning, recoverable later via
       `POST /v1/node/endpoint/announce`, so registration may proceed while DNS
       is pending
 - [ ] Ops contact (name + email) received and recorded somewhere durable
 - [ ] Any open security decisions recorded on their tracking issues
-- [ ] This is the partner's **production** onboarding , every value below must be
+- [ ] This is the partner's **production** onboarding, every value below must be
       a mainnet value; no test-network tokens, genesis, or URLs anywhere
 
 Flow: collect details → register org → register node → build bundle → deliver
@@ -63,6 +69,7 @@ Infrastructure details to collect alongside:
 | static public IP of the node host | the node's advertised address in its env; how peers dial it |
 | domain the node will serve on | published **on-chain** as their API endpoint; must be permanent |
 | confirmation TCP 4000 + 4001 are open | 4000 API, 4001 p2p; without 4001 they never fully join |
+| internet link of the node host | 25 Mbit/s symmetric sustained minimum, 50 recommended (`NODE_REQUIREMENTS.md`); ask for the plan's sustained rate, not the advertised peak |
 | ops contact name + email | who we call when their node misbehaves |
 
 The mainnet node needs its **own host**: a partner already running a testnet
@@ -80,7 +87,7 @@ Commands, verification, and gotchas live in
 [`ORG_REGISTRATION.md`](./ORG_REGISTRATION.md) sections 3-5. Summary of the
 non-negotiables:
 
-1. **Dry-run first**, always , it validates the identifier against the country
+1. **Dry-run first**, always: it validates the identifier against the country
    scheme, builds the real proof, and prints the derived values without touching
    any chain:
 
@@ -96,7 +103,7 @@ non-negotiables:
    ```
 
    Check the output: identifier accepted under the right scheme, name exact,
-   date right. A country not in the scheme table stops the run , that is a
+   date right. A country not in the scheme table stops the run; that is a
    feature; see `ORG_REGISTRATION.md` before adding a country.
 
 2. **The real run must name the mainnet VP and the mainnet node.** Without
@@ -116,8 +123,8 @@ non-negotiables:
      --vp-file <VP_KEY_FILE>
    ```
 
-3. **Verify from two different nodes** , they must agree. Set the ID on its own
-   line first (no trailing backslash , pasting the assignment and the loop as
+3. **Verify from two different nodes**: they must agree. Set the ID on its own
+   line first (no trailing backslash: pasting the assignment and the loop as
    one line is a shell parse error):
 
    ```bash
@@ -137,8 +144,12 @@ non-negotiables:
 
 The node is registered *by us* but *operated by them*, and that claim is signed
 twice: the founding VP approves the node, and the **organization cosigns**,
-because naming an operator is a claim about a third party , the org's own key
+because naming an operator is a claim about a third party: the org's own key
 must agree to it.
+
+Dry-run it first. `--dry-run` renders the env and prints the derived values
+without registering anything, which is the only chance to read the payload
+before it is permanent:
 
 ```bash
 node scripts/register-node.js \
@@ -147,27 +158,35 @@ node scripts/register-node.js \
   --node-url https://node.theailab.org \
   --operated-by "tip://id/<REGION>-<org-id>" \
   --operator-key-file generated/<partner-slug>/org/<org-tip-id>.tip.json \
+  --operator-key-date <incorporation date, YYYY-MM-DD> \
   --vp-file <mainnet VP .tip.json> \
   --production \
   --port 4000 \
+  --reg-credit-activation-ms <fleet value from section 1> \
   --api-endpoint "https://<their-node-domain>" \
   --public-url "https://<their-node-domain>" \
-  --public-ip <their-static-ip>
+  --public-ip <their-static-ip> \
+  --dry-run
 ```
+
+Then the real run: the same command with `--dry-run` removed.
 
 Flag by flag:
 
 | flag | meaning |
 |---|---|
 | `--operated-by` | the org identity accountable for this node |
-| `--operator-key-file` | the org's key from section 4 , produces the cosignature |
+| `--operator-key-file` | the org's key from section 4, produces the cosignature |
+| `--operator-key-date` | the incorporation date the org key is locked with (register-org locks it in the VP app's `tip-key-export-v2` format); omit only for an old plaintext file |
 | `--vp-file` | the founding VP key that signs the council approval. Same rule as register-org: without it the script uses the local/test VP from `genesis-data/backups` and mainnet rejects the signature |
 | `--production` | `NODE_ENV=production` in the generated env; CORS must be filled by the partner, never `*` |
 | `--port` | the partner's node serves API on 4000 (p2p follows on 4001); the script default is 4100, which is for extra local nodes |
 | `--api-endpoint` | their domain; the node announces it **on-chain** at first boot after probing that the URL answers `/health` as itself |
-| `--public-url` / `--public-ip` | what the API surfaces / what peers dial back |
+| `--public-url` / `--public-ip` | what the API surfaces / what peers dial back. Omitted under `--production` they become `CHANGE_ME` placeholders rather than silently shipping `localhost` / `127.0.0.1` |
+| `--reg-credit-activation-ms` | the fleet's consensus gate from section 1. Omitted, the node falls back to a code constant that a fleet with a pinned activation is **not** running, and the mismatch forks it. The script warns when `--production` runs without it |
+| `--dry-run` | render and print, register nothing |
 
-The script generates the env **only** from `.env.example` plus these flags , it
+The script generates the env **only** from `.env.example` plus these flags; it
 reads nothing from your shell, so nothing from the registration machine can leak
 into the partner's file. Secrets are added by hand in section 6.2.
 
@@ -185,7 +204,7 @@ generated/<partner>/
 
 **Verify** the registration. There is no `/v1/nodes` HTTP endpoint; the node
 roster is exposed by the `tip_node_registry_info` metric (needs the metrics
-token) , check it on two nodes:
+token), check it on two nodes:
 
 ```bash
 TOK=<production TIP_METRICS_TOKEN>
@@ -194,12 +213,12 @@ curl -s -H "Authorization: Bearer $TOK" https://node2.theailab.org/metrics | gre
 ```
 
 The new node must appear with the partner's name and `status="active"` on both.
-Nothing on the partner's machine needs to be live yet , this step involves only
+Nothing on the partner's machine needs to be live yet; this step involves only
 our nodes.
 
 ## 6. Build and deliver the credentials bundle
 
-### 6.1 The bundle contents , assembled automatically
+### 6.1 The bundle contents: assembled automatically
 
 Point the bundler (6.3) at `generated/<partner>/` and it stages the deliverable
 itself from whatever the registrations produced:
@@ -217,7 +236,7 @@ mainnet genesis. Their verification (and ours) is the hash, not a file copy:
 
 ```bash
 python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"
-# must print the production genesis prefix , and they must never run npm run seed
+# must print the production genesis prefix, and they must never run npm run seed
 ```
 
 Anything absent is reported with a WARNING and skipped, so an org-only or
@@ -226,22 +245,65 @@ build. The `NODE-KEY__` / `ORG-IDENTITY__` prefixes exist so the partner cannot
 confuse the two: the node key lives on the node host; the org identity stays
 **off** the node host entirely.
 
+**Where each file has to end up.** The zip is flat; the node will not find the
+key where it lands. `node.env` sets
+
+```
+TIP_NODE_CREDENTIALS_FILE=genesis-data/backups/tip-node-<id>.tip.json
+```
+
+so the key must be moved there, renamed back (drop the `NODE-KEY__` prefix), and
+given to uid 1001, which is the container user. `docker-compose.yml` mounts that
+directory read-only at `/app/genesis-data/backups`, and `WORKDIR` is `/app`, so
+the relative path resolves onto the mount:
+
+```bash
+cd ~/tip-protocol
+cp <bundle>/NODE-KEY__tip-node-<id>.tip.json genesis-data/backups/tip-node-<id>.tip.json
+cp <bundle>/node.env .env                 # compose reads .env, not node.env
+mkdir -p data logs/node-1
+sudo chown -R 1001:1001 genesis-data/backups data logs
+sudo chmod 600 genesis-data/backups/tip-node-<id>.tip.json
+```
+
+A key left in the home directory, or owned by root, boots to a fail-stop: the
+node cannot read its own identity. The org identity is NOT copied to this host.
+
 ### 6.2 Hand-fill the secrets in `node.env`
 
-The generator leaves these empty on purpose , edit
+`--production` already writes the federation-wide values: classifier URL, CORS
+origins, strict classifier fallback, the mainnet rate limit and prescan
+concurrency, and container-relative data/log paths. `node-env-template.js`
+refuses to write credentials at all, so those stay hand work. Edit
 `generated/<partner>/node/<slug>.env` **before** building the zip (the bundler
-warns on empty values but does not fail). Fill in:
+warns on empty values but does not fail):
 
-- `TIP_CLASSIFIER_KEY` , the live production classifier key
-- `TIP_METRICS_TOKEN` , the production metrics token (a 64-char random value; a
+- `TIP_CLASSIFIER_KEY`: the live production classifier key. Prefer one minted
+  for this node rather than the shared key: a shared key cannot be revoked
+  without rotating every node at once
+- `TIP_METRICS_TOKEN`: the production metrics token (a 64-char random value; a
   token starting `certtest` is a test-network token and must never appear here)
-- `TIP_BOOTSTRAP_PEERS` , **verify, usually auto-filled**: the generator reads it
+- `TIP_BOOTSTRAP_PEERS`: **verify, usually auto-filled**: the generator reads it
   from the `--node-url` target's `/health`. If the run warned it could not, fill
   it from `curl -s https://node2.theailab.org/health` → `data.p2p.bootstrap_addr`
+- `TIP_REG_CREDIT_CAP_ACTIVATION_MS`: must equal the fleet's value. Written for
+  you by `--reg-credit-activation-ms`; confirm it is present and matches
 
-Confirm `TIP_API_ENDPOINT` and `TIP_PUBLIC_URL` carry their domain,
-`DB_PASSWORD` and `TIP_CORS_ORIGINS` are `CHANGE_ME` placeholders, and nothing
-else carries a live value.
+Then confirm the placeholders are still placeholders and nothing carries a value
+it should not:
+
+```bash
+grep -E '^(TIP_PUBLIC_IP|TIP_PUBLIC_URL|DB_PASSWORD|TIP_CORS_ORIGINS|TIP_CLASSIFIER_FALLBACK|TIP_REG_CREDIT_CAP_ACTIVATION_MS)=' <slug>.env
+```
+
+`TIP_PUBLIC_IP`, `TIP_PUBLIC_URL` and `DB_PASSWORD` read `CHANGE_ME_*` unless you
+passed them explicitly; `TIP_CLASSIFIER_FALLBACK` must be `0`.
+
+**Media storage is not in the env.** Every mainnet node writes media to its own
+S3 bucket with SSE-KMS; the generated env ships `TIP_MEDIA_BACKEND=fs`, which
+writes media bytes to the node disk instead. Provision the bucket, KMS key and
+instance role per [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md) and set the four
+`TIP_MEDIA_S3_*` values before the node serves real traffic.
 
 ### 6.3 Build the encrypted zip
 
@@ -252,13 +314,13 @@ scripts/make-secure-bundle.sh generated/<partner> <OrgName>
 One AES-256 zip containing all four files, a fresh 20-character password per
 run, printed once and appended to a `ZIP-PASSWORDS.md` build log. Both land
 next to the partner directory: every zip collects in a single **`deliveries/`**
-folder there, with the password log beside it , one place to look, outside any
+folder there, with the password log beside it: one place to look, outside any
 repo checkout, and `deliveries/` is gitignored as a backstop.
 
 ### 6.4 Deliver
 
 - **The zip goes by email. The password goes by phone or WhatsApp. Never both
-  in the same channel** , if the password rides with the archive, the
+  in the same channel**: if the password rides with the archive, the
   encryption bought nothing.
 - Attach **one partner's zip only**. Bundles are named per partner and sit in
   one output directory; check the attachment name against the To: field before
@@ -271,20 +333,27 @@ Email wording: `partner-onboarding-emails.html`, mainnet card.
 
 ## 7. Partner boots, we verify
 
-Partner side: `DEPLOYMENT.md`, section *Production Federation Deploy (0 to
-live)*. The two classic stumbles are in the email template: the container runs
-as uid 1001, and `logs/` must be chown'd before first boot.
+Partner side: `DEPLOYMENT.md`, section *[Joining an Existing Federation (partner
+node)](./DEPLOYMENT.md#joining-an-existing-federation-partner-node)*. Not
+*Production Federation Deploy*, which is a cold start for a new chain and tells
+them to seed. The three classic stumbles: the container runs as uid 1001,
+`logs/` must be chown'd before first boot, and the node key has to be moved into
+`genesis-data/backups/` where `TIP_NODE_CREDENTIALS_FILE` points.
 
-Our side , four checks, in this order. Each proves something different:
+**They must never run `scripts/seed.js`.** It mints a fresh genesis, and a node
+whose `genesis_hash` differs cannot handshake with anyone. It presents as zero
+peers and a permanent `syncing`, not as an error.
+
+Our side: four checks, in this order. Each proves something different:
 
 1. **Connected.** `curl -s https://<their-domain>/ready` shows `ready:true`,
    `halted:false`, `join_state:"ready"`. `syncing` / `catching_up` means still
-   downloading state , normal for a while on first boot.
+   downloading state, normal for a while on first boot.
 2. **Right network.** `/health` shows `peers.connected >= 1`. The p2p handshake
    authorises peers against the genesis-scoped on-chain registry, so a node on
    the wrong genesis cannot peer at all: non-zero peers **is** proof of the
    correct chain.
-3. **All data correct , the definitive check.** Their
+3. **All data correct, the definitive check.** Their
    `/v1/state-root` matches ours at the same round:
 
    ```bash
@@ -313,7 +382,7 @@ it), and have them register one test content and check it reaches
       key files, org identity never on the node host
 
 **Key loss or leak:** the classifier key and metrics token are shared,
-fleet-rotatable credentials , a leak means rotating every node at once, so
+fleet-rotatable credentials: a leak means rotating every node at once, so
 report immediately. The **node key cannot be rotated at all** (issue #257): a
 leaked or lost node key means deregistering and re-registering the node under a
 new identity. The org identity key is rotatable via `KEY_ROTATED`.
@@ -322,7 +391,7 @@ new identity. The org identity key is rotatable via `KEY_ROTATED`.
 
 | symptom | cause |
 |---|---|
-| `Only the founding VP can approve` | wrong or missing `--vp-file` , you signed with a non-mainnet VP |
+| `Only the founding VP can approve` | wrong or missing `--vp-file`: you signed with a non-mainnet VP |
 | `409 Identity already registered` | dedup hit: this company (same number + date + country) is already on-chain. If that is a surprise, stop and investigate before anything else |
 | partner node: 0 peers and stuck at `join_state: syncing` despite open ports | almost always the wrong `genesis.json`. There is no clean "wrong network" error; this is what it looks like. Check the genesis before debugging firewalls |
 | endpoint announce failed at boot | their DNS does not resolve, or 4000 is not reachable from the internet. Fix, then `POST /v1/node/endpoint/announce` on their node re-announces without a restart |
@@ -330,15 +399,15 @@ new identity. The org identity key is rotatable via `KEY_ROTATED`.
 
 ---
 
-## Appendix A , worked example: full local rehearsal
+## Appendix A: worked example, full local rehearsal
 
 Rehearse the entire flow on the local cluster before any mainnet run. Fictional
 company throughout; local cluster must be up (`curl -s localhost:4000/ready`).
-The local VP key in `genesis-data/backups` is picked up automatically , no
+The local VP key in `genesis-data/backups` is picked up automatically, no
 `--vp-file` locally, which is exactly why mainnet **must** pass it.
 
 ```bash
-# R1 , dry-run: validates the identifier, builds the proof, registers nothing
+# R1: dry-run. Validates the identifier, builds the proof, registers nothing
 node scripts/register-org.js \
   --name "THE PRESCIENT PACHYDERM LTD" \
   --reg-number 16846775 \
@@ -347,7 +416,7 @@ node scripts/register-org.js \
   --org-type private-limited-company \
   --dry-run
 
-# R2 , register the org locally (note the printed tip://id/GB-... for R3/R4)
+# R2: register the org locally (note the printed tip://id/GB-... for R3/R4)
 node scripts/register-org.js \
   --name "THE PRESCIENT PACHYDERM LTD" \
   --reg-number 16846775 \
@@ -359,7 +428,7 @@ node scripts/register-org.js \
 ```
 
 ```bash
-# R3 , verify from two local nodes (both must agree)
+# R3: verify from two local nodes (both must agree)
 ORG_ID='tip://id/GB-xxxxxxxxxxxxxxxx'
 ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$ORG_ID")
 curl -s "http://localhost:4000/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"status"|"org_type"'
@@ -367,26 +436,27 @@ curl -s "http://localhost:4100/v1/identity/$ENC" | python3 -m json.tool | grep -
 ```
 
 ```bash
-# R4 , register the node, org cosigning (use the exact key path R2 printed)
+# R4: register the node, org cosigning (use the exact key path R2 printed)
 node scripts/register-node.js \
   --name "Pachyderm Node" \
   --node-url http://localhost:4000 \
   --operated-by "$ORG_ID" \
   --partner pachyderm \
   --operator-key-file generated/pachyderm/org/<org-tip-id>.tip.json \
+  --operator-key-date 2025-11-11 \
   --production \
   --port 4000 \
   --api-endpoint "https://tipnode.pachyderm.example" \
   --public-url "https://tipnode.pachyderm.example" \
   --public-ip 203.0.113.10
 
-# R5 , verify the roster (there is no /v1/nodes endpoint; use the metric)
+# R5: verify the roster (there is no /v1/nodes endpoint; use the metric)
 TOK=$(grep '^TIP_METRICS_TOKEN=' .env | cut -d= -f2-)
 curl -s -H "Authorization: Bearer $TOK" http://localhost:4000/metrics | grep tip_node_registry_info
 ```
 
 ```bash
-# R6 , rehearse the bundle: one command, staged straight from the partner dir
+# R6: rehearse the bundle. One command, staged straight from the partner dir
 scripts/make-secure-bundle.sh generated/pachyderm Pachyderm
 ls -la generated/deliveries/             # the zip; password was printed + logged
 rm -rf generated/pachyderm generated/deliveries generated/ZIP-PASSWORDS.md   # rehearsal cleanup

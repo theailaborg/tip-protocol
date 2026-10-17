@@ -265,7 +265,8 @@ function _parseKnexBigIntegerColumns() {
   const dir = path.join(NODE_SRC, "db", "migrations");
   const files = fs.readdirSync(dir).filter(f => f.endsWith(".js")).sort();
   const result = new Map();
-  const createRe = /await\s+(?:knex\.schema\.createTable\(|_createTable\(\s*knex\s*,)\s*(?:["']([a-z_][a-z0-9_]*)["']|([A-Za-z_][A-Za-z0-9_]*))\s*,\s*\(?t\)?\s*=>\s*\{/g;
+  // Incremental migrations add columns with schema.table / alterTable, so those blocks count too.
+  const createRe = /await\s+(?:knex\.schema\.(?:createTable|table|alterTable)\(|_createTable\(\s*knex\s*,)\s*(?:["']([a-z_][a-z0-9_]*)["']|([A-Za-z_][A-Za-z0-9_]*))\s*,\s*\(?t\)?\s*=>\s*\{/g;
   for (const f of files) {
     const src = fs.readFileSync(path.join(dir, f), "utf8");
     const consts = new Map();

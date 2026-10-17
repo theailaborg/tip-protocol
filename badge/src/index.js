@@ -12,7 +12,7 @@
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * @author    Dinesh Mendhe <chairman@theailab.org>
- * Apache 2.0 — Free for any TIP® implementer
+ * TIPCL-1.0 (converts to Apache 2.0 on January 1, 2031). Free for any TIP® implementer under the Free Use grant.
  */
 
 (function (global) {

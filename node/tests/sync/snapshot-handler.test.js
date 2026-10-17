@@ -35,7 +35,7 @@ const { loadTypes } = require(path.join(SRC, "network", "proto"));
 
 const { createStreamPair } = require("../helpers/stream-pair");
 const { buildCommittedDag } = require("../helpers/commit-builder");
-const { SNAPSHOT_FRAME_KIND } = require(path.join(SHARED, "constants"));
+const { SNAPSHOT_FRAME_KIND, SNAPSHOT_DOWNLOAD } = require(path.join(SHARED, "constants"));
 
 // #132 streaming wire format: each frame is [4-byte BE length][1-byte kind]
 // [protobuf], so the kind byte sits at index 4. Row frames are interleaved
@@ -899,5 +899,192 @@ describe("§69 snapshot ships recent certs for joiner committee derivation", () 
       const destCommittee = getActiveCommittee(destDag, queryRound);
       expect(destCommittee).toEqual(sourceCommittee);
     }
+  });
+});
+
+describe("§14 isServingTo: the sender knows which peer it is streaming to", () => {
+  test("true only while the serve stream is live, false before and after", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    expect(sourceHandler.isServingTo("test-client")).toBe(false);
+
+    let seenLive = false;
+    const serve = sourceHandler._handleIncomingSnapshot(server, "test-client");
+    const request = destHandler.requestSnapshotFromPeer("test-server", {});
+    let settled = false;
+    Promise.all([serve, request]).finally(() => { settled = true; });
+    while (!settled) {
+      if (sourceHandler.isServingTo("test-client")) seenLive = true;
+      await new Promise((r) => setImmediate(r));
+    }
+    const [, result] = await Promise.all([serve, request]);
+    expect(result.round).toBe(2);
+    expect(seenLive).toBe(true);
+    // "sent" is handed to the kernel: the tail is still draining to the joiner
+    expect(sourceHandler.isServingTo("test-client")).toBe(true);
+    expect(sourceHandler.isServingTo("someone-else")).toBe(false);
+    // the joiner's catch-up request proves the download is over
+    sourceHandler.advanceCertPin("test-client", 3);
+    expect(sourceHandler.isServingTo("test-client")).toBe(false);
+  });
+
+  test("the drain grace expires on its own, bounded by DRAIN_GRACE_MAX_MS", async () => {
+    const { SNAPSHOT_SERVE } = require("../../../shared/constants");
+    const { nowMs } = require("../../../shared/time");
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+    expect(sourceHandler.isServingTo("test-client")).toBe(true);
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(nowMs() + SNAPSHOT_SERVE.DRAIN_GRACE_MAX_MS + 1);
+      expect(sourceHandler.isServingTo("test-client")).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe("§14 cert retention pins: the sender keeps what its joiner will need", () => {
+  const { SNAPSHOT_SERVE } = require("../../../shared/constants");
+  const { nowMs } = require("../../../shared/time");
+
+  test("serving pins the round after the shipped cert tail; catch-up requests move it; release clears it", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    expect(sourceHandler.certRetentionFloor()).toBe(0);
+
+    const [, result] = await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+    // the snapshot shipped certs up to the committed round; the joiner needs the next one on
+    expect(sourceHandler.certRetentionFloor()).toBe(result.peer_committed_round + 1);
+    expect(destHandler.lastInstallSource()).toBe("test-server");
+
+    // the joiner asks for certs from a later round: it holds everything below
+    sourceHandler.advanceCertPin("test-client", result.peer_committed_round + 40);
+    expect(sourceHandler.certRetentionFloor()).toBe(result.peer_committed_round + 40);
+    // a lower request never moves the pin backwards
+    sourceHandler.advanceCertPin("test-client", 1);
+    expect(sourceHandler.certRetentionFloor()).toBe(result.peer_committed_round + 40);
+    // an unknown peer is a no-op
+    sourceHandler.advanceCertPin("nobody", 999);
+    expect(sourceHandler.certRetentionFloor()).toBe(result.peer_committed_round + 40);
+
+    sourceHandler.releaseCertPin("test-client");
+    expect(sourceHandler.certRetentionFloor()).toBe(0);
+  });
+
+  test("a pin outlives the serve but not the leak-guard bound", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+    expect(sourceHandler.certRetentionFloor()).toBeGreaterThan(0);
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(nowMs() + SNAPSHOT_SERVE.CERT_PIN_MAX_MS + 1);
+      expect(sourceHandler.certRetentionFloor()).toBe(0);
+      expect(sourceHandler.isServingTo("test-client")).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe("§14 install marker hygiene (a wedged joiner must not refuse ready on nothing)", () => {
+  const { SNAPSHOT_INSTALL_MARKER_KEY, SNAPSHOT_DOWNLOAD } = require("../../../shared/constants");
+  const { nowMs } = require("../../../shared/time");
+
+  test("an abort before any row landed clears the in_progress marker", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    const originalServerSink = server.sink;
+    server.sink = async (src) => {
+      await originalServerSink((async function* () {
+        let sent = false;
+        for await (const frame of src) { if (!sent) { sent = true; yield frame; } }
+      })());
+    };
+    await expect(Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ])).rejects.toThrow(/missing SnapshotEnd terminator/i);
+    expect(String(destDag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) || "")).toBe("");
+    expect(await destHandler.resolveStaleInstallMarker()).toBe("none");
+  });
+
+  test("an install flag with no progress for 2x the stall timeout is reset by resolveStaleInstallMarker", async () => {
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const destHandler = createSnapshotHandler({
+      dag: destDag,
+      network: { node: {}, openStream: () => new Promise(() => {}) },   // the open never returns
+      isAuthorizedPeer: () => true,
+    });
+    const pending = destHandler.requestSnapshotFromPeer("dark-peer", {});
+    pending.catch(() => {});
+    await new Promise((r) => setImmediate(r));
+    expect(destHandler.isInstalling()).toBe(true);
+    expect(await destHandler.resolveStaleInstallMarker()).toBe("installing");
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(nowMs() + 2 * SNAPSHOT_DOWNLOAD.STALL_MS + 1);
+      expect(await destHandler.resolveStaleInstallMarker()).not.toBe("installing");
+      expect(destHandler.isInstalling()).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+
+// A joiner whose connection died mid-download: the serve's close never settles and
+// abort cannot reach it. Mainnet held its only serve slot for two days this way.
+describe("snapshot serve: a dead joiner never holds the serve slot", () => {
+  afterEach(() => jest.useRealTimers());
+
+  function deadJoinerStream() {
+    const state = { closeWriteCalled: false };
+    return {
+      state,
+      source: (async function* () { yield Buffer.alloc(4); })(),
+      sink: async (src) => { for await (const _chunk of src) { /* accepted by the kernel */ } },
+      closeWrite: () => { state.closeWriteCalled = true; return new Promise(() => {}); },
+      abort: () => {},
+      close: () => {},
+    };
+  }
+
+  test("the stall timer releases the slot when closeWrite never settles", async () => {
+    jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick", "queueMicrotask"] });
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const handler = createSnapshotHandler({
+      dag: fx.sourceDag,
+      network: { node: {}, handle: async () => { } },
+      isAuthorizedPeer: () => true,
+    });
+    const ghost = deadJoinerStream();
+    let settled = false;
+    const serving = handler._handleIncomingSnapshot(ghost, "ghost").then(() => { settled = true; });
+
+    for (let i = 0; i < 500 && !ghost.state.closeWriteCalled; i++) await new Promise((r) => setImmediate(r));
+    expect(ghost.state.closeWriteCalled).toBe(true);
+    expect(handler.isServingTo("ghost")).toBe(true);
+
+    await jest.advanceTimersByTimeAsync(SNAPSHOT_DOWNLOAD.STALL_MS + 1_000);
+    await serving;
+    expect(settled).toBe(true);
+    expect(handler.isServingTo("ghost")).toBe(false);
   });
 });

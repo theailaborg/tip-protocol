@@ -21,6 +21,7 @@ const { initCrypto, shake256 } = require(path.resolve(__dirname, "../../../share
 const PC = require(path.resolve(__dirname, "../../../shared/protocol-constants"));
 const { getGenesisPayload } = require(path.resolve(__dirname, "../../src/genesis"));
 const { initDAG } = require(path.resolve(__dirname, "../../src/dag"));
+const { quantizeProbability, roundProbability } = require(path.resolve(__dirname, "../../../shared/prescan-probability"));
 
 beforeAll(async () => {
   PC.init(getGenesisPayload().protocol_constants);
@@ -93,5 +94,41 @@ describe("prescan_probability float determinism", () => {
     delete row.prescan_probability;
     b.saveContent(row);
     expect(b.stateRoot()).toBe(a.stateRoot());
+  });
+});
+
+// node-pg hands a float4 back as its shortest round-tripping decimal text, not
+// as the widened binary value asFloat32 models. 0.37174999999999997 becomes
+// "0.37175", which is the other side of the basis-point edge.
+function asPostgresReal(n) {
+  const f = Math.fround(n);
+  for (let digits = 1; digits <= 9; digits++) {
+    const s = Number(f.toPrecision(digits));
+    if (Math.fround(s) === f) return s;
+  }
+  return f;
+}
+
+describe("prescan_probability: the value stored is the value hashed", () => {
+  // Mainnet rows that halted every restarted node (2026-09-22, 2026-09-26).
+  const edges = [0.37174999999999997, 0.42484999999999995];
+
+  test("an unrounded blend does not survive the Postgres real round-trip", () => {
+    for (const p of edges) {
+      expect(quantizeProbability(asPostgresReal(p))).not.toBe(quantizeProbability(p));
+    }
+  });
+
+  test("the rounded blend hashes the same live, after float4, and after float8", () => {
+    for (const p of edges) {
+      const stored = roundProbability(p);
+      expect(quantizeProbability(stored)).toBe(quantizeProbability(p));
+      expect(quantizeProbability(asPostgresReal(stored))).toBe(quantizeProbability(p));
+      const live = initDAG({ inMemory: true });
+      const rebooted = initDAG({ inMemory: true });
+      live.saveContent(contentRow("tip://c/OH-test-0004", p));
+      rebooted.saveContent(contentRow("tip://c/OH-test-0004", asPostgresReal(stored)));
+      expect(rebooted.stateRoot()).toBe(live.stateRoot());
+    }
   });
 });

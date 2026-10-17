@@ -27,6 +27,7 @@ const {
 const { isValidDomain } = require("../schemas/register-domain");
 const { PLATFORM_MAX_LENGTH: LINK_PLATFORM_MAX_LENGTH } = require("../schemas/link-platform");
 const unlinkPlatformSchema = require("../schemas/unlink-platform");
+const { SCHEMA_FOR_TX_TYPE } = require("../schemas/_schema-map");
 const { getFoundingVP, getGenesisCommittee, getGenesisRing } = require("../genesis");
 const { nowMs, isValidMs } = require("../../../shared/time");
 const { SOCIAL_LINK } = require("../../../shared/protocol-constants");
@@ -88,6 +89,30 @@ const SCHEMA = {
     types: {
       domain: "string", node_id: "string", reason: "string",
       revoked_at: "number",
+    },
+  },
+  // Org roster: each wire shape is exactly the signed canonical body
+  // (schemas/org-member-*.js), so commit-handler replays buildSigningPayload(d).
+  [TX_TYPES.ORG_MEMBER_INVITED]: {
+    required: ["org_tip_id", "member_tip_id", "role", "invited_at"],
+    types: { org_tip_id: "string", member_tip_id: "string", role: "string", invited_at: "number" },
+  },
+  [TX_TYPES.ORG_MEMBER_INVITE_CANCELLED]: {
+    required: ["org_tip_id", "member_tip_id", "invite_tx_id", "claimed_at", "signer_tip_id"],
+    types: {
+      org_tip_id: "string", member_tip_id: "string", invite_tx_id: "string",
+      claimed_at: "number", signer_tip_id: "string",
+    },
+  },
+  [TX_TYPES.ORG_MEMBER_ADDED]: {
+    required: ["org_tip_id", "member_tip_id", "invite_tx_id", "accepted_at"],
+    types: { org_tip_id: "string", member_tip_id: "string", invite_tx_id: "string", accepted_at: "number" },
+  },
+  [TX_TYPES.ORG_MEMBER_REMOVED]: {
+    required: ["org_tip_id", "member_tip_id", "add_tx_id", "claimed_at", "signer_tip_id"],
+    types: {
+      org_tip_id: "string", member_tip_id: "string", add_tx_id: "string",
+      claimed_at: "number", signer_tip_id: "string",
     },
   },
   [TX_TYPES.CONTENT_DISPUTED]: {
@@ -549,6 +574,21 @@ function validateBusinessRules(tx, dag = null) {
       break;
     }
 
+    case TX_TYPES.ORG_MEMBER_INVITED:
+    case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
+    case TX_TYPES.ORG_MEMBER_ADDED:
+    case TX_TYPES.ORG_MEMBER_REMOVED: {
+      // Shape only: the schema's buildSigningPayload rejects a malformed
+      // body with the same codes the API returns. Roster state (open
+      // invite, seat limit, party check) lives in the schema's verifyTx.
+      try {
+        SCHEMA_FOR_TX_TYPE[tx.tx_type].buildSigningPayload(d);
+      } catch (err) {
+        errors.push(`${tx.tx_type}: ${err.error || err.message}`);
+      }
+      break;
+    }
+
     case TX_TYPES.PRESCAN_REVIEW_TRIGGERED:
     case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
     case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
@@ -717,6 +757,22 @@ function validateState(tx, dag) {
       if (d.tip_id && dag.isRevoked(d.tip_id)) {
         errors.push(`TIP-ID is revoked: ${d.tip_id}`);
       }
+      break;
+    }
+
+    case TX_TYPES.ORG_MEMBER_INVITED: {
+      if (d.org_tip_id && dag.isRevoked(d.org_tip_id)) errors.push(`TIP-ID is revoked: ${d.org_tip_id}`);
+      break;
+    }
+
+    case TX_TYPES.ORG_MEMBER_ADDED: {
+      if (d.member_tip_id && dag.isRevoked(d.member_tip_id)) errors.push(`TIP-ID is revoked: ${d.member_tip_id}`);
+      break;
+    }
+
+    case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
+    case TX_TYPES.ORG_MEMBER_REMOVED: {
+      if (d.signer_tip_id && dag.isRevoked(d.signer_tip_id)) errors.push(`TIP-ID is revoked: ${d.signer_tip_id}`);
       break;
     }
 

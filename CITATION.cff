@@ -34,7 +34,7 @@ keywords:
   - "open standard"
   - "federated DAG"
   - "CNA-2.2"
-license: "Apache-2.0"
+license: "LicenseRef-TIPCL-1.0"
 license-url: "https://theailab.org/tip-license"
 version: "2.0.0"
 date-released: "2026-06-16"

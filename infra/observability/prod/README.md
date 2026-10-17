@@ -1,4 +1,4 @@
-# Production Observability , Deploy Runbook
+# Production Observability: Deploy Runbook
 
 One monitoring host runs the full stack; every node EC2 runs one small log
 agent. Metrics are scraped FROM the nodes (pull), logs are shipped TO the
@@ -20,8 +20,8 @@ node3 EC2  ── :4000/metrics ────────────────
 
 | Surface | Exposure |
 |---|---|
-| `https://<OBS_DOMAIN>` (Grafana login) | public, TLS , the only human entry point |
-| `https://<LOGS_DOMAIN>` (Loki push) | public, TLS, basic-auth , agents only |
+| `https://<OBS_DOMAIN>` (Grafana login) | public, TLS, the only human entry point |
+| `https://<LOGS_DOMAIN>` (Loki push) | public, TLS, basic-auth, agents only |
 | Prometheus, Loki | no published ports; compose network only |
 | Node `/metrics` | rides the public API port; 401 without the bearer token |
 | Node logs | never exposed; agents push outbound only |
@@ -48,7 +48,7 @@ else stays gated.
   When pasting the hash into `.env`, escape every `$` as `$$` (compose treats
   bare `$` as variable interpolation and silently blanks the hash).
 
-## Step 1 , monitoring host (once)
+## Step 1: monitoring host (once)
 
 ```bash
 git clone <repo> && cd tip-protocol/infra/observability/prod
@@ -57,7 +57,7 @@ cp prometheus.yml.example prometheus.yml   # fill node addresses + the metrics t
 cp .env.example .env                        # OBS_DOMAIN, LOGS_DOMAIN,
                                             # GRAFANA_ADMIN_PASSWORD, LOKI_BASIC_AUTH_HASH
 # .env is read by compose (root); prometheus.yml is read INSIDE the container
-# by user nobody (uid 65534) , chmod 600 under ubuntu makes Prometheus
+# by user nobody (uid 65534); chmod 600 under ubuntu makes Prometheus
 # crash-loop with "permission denied".
 chmod 600 .env
 sudo chown 65534:65534 prometheus.yml && sudo chmod 400 prometheus.yml
@@ -70,9 +70,9 @@ Caddy provisions both TLS certificates automatically. Open
 operators. All TIP dashboards are provisioned; the Loki datasource appears
 under Explore.
 
-## Step 2 , each node EC2 (once per node)
+## Step 2: each node EC2 (once per node)
 
-Metrics , add the shared token to the node's `.env` and restart it:
+Metrics: add the shared token to the node's `.env` and restart it:
 
 ```bash
 TIP_METRICS_TOKEN=<token>
@@ -81,7 +81,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:4000/metrics                 
 curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer <token>" localhost:4000/metrics # 200
 ```
 
-Logs , run the agent next to the node container:
+Logs: run the agent next to the node container:
 
 ```bash
 cd tip-protocol/infra/observability/agent
@@ -113,11 +113,11 @@ services:
 No extra security-group rules on nodes: `/metrics` shares the already-open
 API port, and promtail pushes outbound over 443.
 
-## Step 3 , verify end to end
+## Step 3: verify end to end
 
 ```bash
 # metrics: every node target "up" AND filed under the job the dashboards
-# query , zero results here means the job got renamed and every panel
+# query: zero results here means the job got renamed and every panel
 # will show "No data" despite healthy scrapes:
 docker exec tip-obs-prometheus wget -qO- \
   'http://localhost:9090/api/v1/query?query=up{job="tip-federation"}' \
@@ -230,5 +230,5 @@ cd infra/observability && docker compose up -d
 # Grafana http://localhost:3030 → Explore → Loki → {job="tip-node"}
 ```
 
-Same datasource, same labels, same queries as prod , what you see locally is
+Same datasource, same labels, same queries as prod: what you see locally is
 what you get on AWS.

@@ -152,7 +152,38 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // get quorum on its own batches (lagging, partitioned, or under-
     // weighted in committee).
     my_batches_orphaned: 0,
+
+    // Every round where our own batch failed to certify, empty or not.
+    // my_batches_orphaned deliberately ignores empty batches, which makes a
+    // registered non-committee node's only failure mode invisible: it carries
+    // no user traffic, so its batches are always empty, and failing to certify
+    // them is exactly what keeps it out of the committee.
+    my_batches_uncertified: 0,
+
+    // Rounds where we did seal our own certificate. With rounds_advanced this
+    // gives the seal rate, the single number that says whether a registered
+    // node can earn its way into the committee.
+    own_certs_sealed: 0,
   };
+
+  // Per-peer certificate arrival delay: how long after a certificate's own BFT
+  // timestamp it reached us. Exported as sum + count so the average over any
+  // window is rate(sum)/rate(count). A delay approaching the round time means
+  // that peer's certificates land too late to be used as parents.
+  const _arrivalDelay = new Map();   // author_node_id -> { sumMs, count }
+
+  function _recordArrivalDelay(cert) {
+    const ts = Number(cert && cert.timestamp);
+    if (!Number.isFinite(ts) || ts <= 0) return;
+    const author = String((cert && cert.author_node_id) || "");
+    if (!author || author === nodeId) return;
+    const delta = nowMs() - ts;
+    if (delta < 0 || delta > 600_000) return;   // clock skew or a replayed cert
+    const e = _arrivalDelay.get(author) || { sumMs: 0, count: 0 };
+    e.sumMs += delta;
+    e.count += 1;
+    _arrivalDelay.set(author, e);
+  }
 
   // Wall-clock timestamp of the last successful round advance. Used by
   // the consensus-halt gate: if no rounds advance within the stuck-
@@ -435,6 +466,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // those certs don't include our own batch).
     if (_myBatch && !_myCertificateCreated) {
       const orphanedTxs = _myBatch.txs || [];
+      _metrics.my_batches_uncertified++;
       if (orphanedTxs.length > 0) {
         let requeued = 0;
         // Re-insert in REVERSE order so the first tx of the original
@@ -532,6 +564,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _metrics.fast_forwards++;
       log.info(`Round ${_currentRound}: peer ${batch.author_node_id} is at round ${batch.round} — fast-forwarding`);
       _currentRound = batch.round;
+      // Following the committee is progress: a node whose own batches land late
+      // fast-forwards every round and otherwise reported sub_quorum (AZ, 2026-09-30).
+      _lastRoundAdvanceAt = nowMs();
       _resetRoundState();
       if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
       if (_nextRoundTimer) { clearTimeout(_nextRoundTimer); _nextRoundTimer = null; }
@@ -899,6 +934,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
     _roundCertificates.set(nodeId, cert);
     _myCertificateCreated = true;
+    _metrics.own_certs_sealed++;
 
     // Broadcast on CERTIFICATES topic (enforce size limit)
     try {
@@ -992,6 +1028,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
 
     _metrics.certs_received++;
+    _recordArrivalDelay(cert);
     _processVerifiedCertificate(cert);
   }
 
@@ -1334,8 +1371,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     return true;
   }
 
+  let _tailCompleteLogged = false;
+
   function _startWatchdog() {
     if (_watchdogTimer) return;
+    _tailCompleteLogged = false;
     const tick = Math.max(500, Math.floor(CONSENSUS.ROUND_TIMEOUT_MS / 2));
     _watchdogTimer = safeSetInterval(_watchdogCheck, tick, "narwhal.watchdog");
   }
@@ -1349,6 +1389,15 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_joinState !== "catching_up" || _catchingUpEnteredAt === 0) return;
     const elapsed = nowMs() - _catchingUpEnteredAt;
     if (elapsed <= STUCK_CATCHING_UP_MS) return;
+    // Tail complete, only the promotion poll pending; reverting here restarted
+    // a multi-minute snapshot on slow links.
+    if (dag.getLatestRound() >= _catchUpTarget) {
+      if (!_tailCompleteLogged) {
+        log.info(`Watchdog: cert tail reached target ${_catchUpTarget} after ${Math.floor(elapsed / 1000)}s; holding catching_up until a peer confirms the state root`);
+        _tailCompleteLogged = true;
+      }
+      return;
+    }
     log.warn(`Watchdog: catching_up stalled ${Math.floor(elapsed / 1000)}s (target=${_catchUpTarget}, dag=${dag.getLatestRound()}) — reverting to syncing for fresh snapshot`);
     _joinState = "syncing";
     _catchingUpEnteredAt = 0;
@@ -1456,6 +1505,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       catchUpTarget: _catchUpTarget,
       byzantineForkHalt: _byzantineForkHalt ? { ..._byzantineForkHalt } : null,
       metrics: { ..._metrics },
+      arrivalDelay: Object.fromEntries(
+        [..._arrivalDelay.entries()].map(([k, v]) => [k, { ...v }])
+      ),
     }),
   };
 }

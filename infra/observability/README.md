@@ -201,7 +201,6 @@ The deep consensus view. Liveness (commits, rounds, quorum margin), safety (halt
 | Event-loop stall per node (ms) | Longest thread block per node, per 1s window. The two lines mark warn (250ms) and act (1s). | `tip_process_event_loop_lag_max_ms, tip_node_registry_info` |
 | Nodes online over time | Per-node scrape success (1 = online). | `up (scrape)` |
 | Pending / parked certs | Certs parked waiting on missing parents before an anchor can commit. | `tip_narwhal_pending_certs, tip_node_registry_info` |
-| Producer-pause stuck duration (rotation boundary) | Milliseconds a node has been producer-paused at a rotation boundary with no tx to carve. Sustained > 0 means a stuck boundary; pull-repair runs and the pause is never bypassed. | `tip_consensus_producer_paused_ms, tip_node_registry_info` |
 | Anti-entropy: peers queried / gaps pulled | Anti-entropy: peers queried / gaps pulled - Anti-entropy is the pull-side safety net (#28) that runs every 4s, querying every authorized peer's sync-status and pulling missing cert (more in-panel) | `tip_antientropy_peers_queried_total, tip_node_registry_info` |
 | Cert GC (rounds pruned) | Cumulative count of certificate rows pruned by Bullshark's GC trigger (every `gc_interval_commits`, prunes certs older than `gc_depth` rounds). | `tip_bullshark_gc_runs_total, tip_node_registry_info` |
 | Offered vs committed tx rate (/min) | Federation tx funnel: offered (into mempool), batched, committed (finalized). | `tip_mempool_received_total, tip_mempool_drained_total` |
@@ -248,7 +247,6 @@ Fleet overview: registry vs online state, committee size and quorum, per-node co
 | Registered content (CTIDs) | Total registered content items in canonical state, all statuses (fleet max). | `tip_dag_content_count` |
 | Cert-DAG merkle root per node | Current certificate-DAG merkle root per node. All nodes should show the SAME root; a divergent root is a fork before anti-entropy flags it. | `tip_cert_merkle_root_info, tip_node_registry_info` |
 | Mempool size vs capacity | Per-node mempool depth against its capacity ceiling. Size approaching capacity is back-pressure. | `tip_mempool_size, tip_node_registry_info` |
-| Producer-pause per node (rotation boundary) | Milliseconds each node has been producer-paused at a rotation boundary. Sustained > 0 is a stuck boundary. | `tip_consensus_producer_paused_ms, tip_node_registry_info` |
 | Nodes online over time | Per-node scrape success (1 = online). | `up (scrape)` |
 | Narwhal current round | The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing. | `tip_narwhal_current_round, tip_node_registry_info` |
 | Txs committed (cumulative) | Running total of transactions ordered through Bullshark since this process started. | `tip_bullshark_txs_committed_total, tip_node_registry_info` |
@@ -265,13 +263,14 @@ The mesh and transport layer. Connectivity completeness, connect/disconnect flap
 | Disconnect flap (/min) | Fleet-wide peer disconnect rate. Sustained > 0 is the flap that reads as 'nodes randomly drop'. | `tip_network_peer_disconnects_total` |
 | Re-handshakes (/min) | Fleet-wide re-handshakes of connected-but-unauthorized peers (auth-window recovery). | `tip_network_rehandshakes_total` |
 | Auto-heals fired (/min) | Force-close + re-dial events that rebuild a half-dead connection. > 0 means the transport auto-heal fired (needs this branch deployed to emit). | `tip_network_force_redials_total` |
-| Per-node connectivity | Per-node mesh view: authorized vs connected peers, full-mesh flag, who each node is connected to, and churn counters. | `tip_node_registry_info, tip_network_peers_authorized` |
+| Per-node connectivity | Per-node mesh view: authorized vs connected peers, full-mesh flag, who each node is connected to, and churn counters ('drops observed' = disconnects this node saw, not drops of this node). | `tip_node_registry_info, tip_network_peers_authorized` |
 | Comms direction matrix (row can't reach column) | Consecutive heartbeat misses; rows = observing node, columns = peer. A row that is all-red while its own column stays green = that node can receive but not send (broken outbound di (more in-panel) | `tip_heartbeat_peer_consecutive_misses, tip_node_registry_info` |
 | Consecutive send failures per peer | Current consecutive outbound-send failures to a peer (resets on success or auto-heal). The first thing to climb when a node goes one-directionally deaf. | `tip_network_peer_send_consecutive_failures` |
 | Authorized peers per node | Connected + handshaked committee peers. | `tip_network_peers_authorized, tip_node_registry_info` |
 | Connectivity complete (1 = full mesh) | 1 when a node is connected to every active committee member. | `tip_network_connectivity_complete, tip_node_registry_info` |
 | Connects per node (/min) | libp2p peer:connect rate. Paired with disconnects, this is the flap that reads as 'node goes offline randomly'. | `tip_network_peer_connects_total, tip_node_registry_info` |
 | Disconnects per node (/min) | Rate of libp2p peer disconnects. | `tip_network_peer_disconnects_total, tip_node_registry_info` |
+| Disconnects by peer (who is dropping, /min) | Disconnect events attributed to the peer that dropped, summed over every observer; the flapping peer is the one with the line. | `tip_network_peer_disconnects_by_peer_total` |
 | Connection closes per node (/min) | libp2p connection:close rate (incl. pre-auth) - the rawest flap signal. | `tip_network_connection_closes_total, tip_node_registry_info` |
 | Fast re-auths per node (/min) | Reconnects restored within the 15s grace window (no full handshake). | `tip_network_fast_reauths_total, tip_node_registry_info` |
 | Re-handshakes per node (/min) | Re-handshakes of connected-but-unauthorized peers (recovery of a stale auth window). | `tip_network_rehandshakes_total, tip_node_registry_info` |
@@ -295,7 +294,6 @@ Committee rotation. Current rotation number (fleet and per node), committee_hist
 | Rotation failures (/min) | Genuine rotation rejections per minute (insufficient sigs / payload mismatch; benign re-broadcast duplicates excluded). 0 is healthy. Real health = the rotation number advancing. | `tip_committee_rotation_failures_total` |
 | Rotation proposals / commits / failures (/min) | Proposer attempts vs rotations that landed in committee_history vs commit-handler rejections. Proposals with no commits = a stuck rotation boundary. | `tip_committee_rotation_proposals_total, tip_committee_rotation_committed_total` |
 | Current rotation number per node | Each node's view of the current rotation_number. A node lagging the others has not applied the latest rotation. | `tip_committee_current_rotation_number, tip_node_registry_info` |
-| Producer-pause stuck duration per node | Milliseconds producer-paused at the boundary with no tx to carve. Sustained > 0 = the boundary is stuck; pull-repair runs without bypassing the pause. | `tip_consensus_producer_paused_ms, tip_node_registry_info` |
 
 ### TIP Snapshot & Recovery (`tip-snapshot`)
 

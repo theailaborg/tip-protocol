@@ -118,6 +118,9 @@ function setupBullshark() {
 // ═══════════════════════════════════════════════════════════════════════════
 // Bullshark commit-path GC trigger
 // ═══════════════════════════════════════════════════════════════════════════
+// Effective retention: the larger of genesis gc_depth and the node-local floor.
+const RETAIN = Math.max(CONSENSUS.GC_DEPTH, CONSENSUS.CERT_RETENTION_MIN_ROUNDS);
+
 describe("bullshark _maybeRunCertGC (commit-path trigger)", () => {
   test("anchors_committed increments on every successful commit", () => {
     const { dag, bullshark } = setupBullshark();
@@ -131,7 +134,7 @@ describe("bullshark _maybeRunCertGC (commit-path trigger)", () => {
     // there first so the cutoff is positive at each tick).
     const { dag, bullshark } = setupBullshark();
     const interval = CONSENSUS.GC_INTERVAL_COMMITS;
-    bullshark.markOrderedUpTo(CONSENSUS.GC_DEPTH);
+    bullshark.markOrderedUpTo(RETAIN);
 
     driveCommits(bullshark, dag, interval - 1);
     expect(bullshark.stats().metrics.anchors_committed).toBe(interval - 1);
@@ -149,7 +152,7 @@ describe("bullshark _maybeRunCertGC (commit-path trigger)", () => {
   test("GC fires real prune when cutoff > 0 and interval hits", () => {
     const { dag, bullshark } = setupBullshark();
     const interval = CONSENSUS.GC_INTERVAL_COMMITS;
-    const gcDepth = CONSENSUS.GC_DEPTH;
+    const gcDepth = RETAIN;
 
     // With jumpTo=gcDepth and `interval` commits driving lastCommittedRound
     // to gcDepth + interval*2, cutoff = interval*2 (e.g. 20). Seed certs
@@ -203,7 +206,7 @@ describe("bullshark _maybeRunCertGC (commit-path trigger)", () => {
     const { dag, bullshark } = setupBullshark();
     // Jump lastCommittedRound to gcDepth so after 1 interval's worth of
     // commits the cutoff is > 0 and prune would be attempted.
-    bullshark.markOrderedUpTo(CONSENSUS.GC_DEPTH);
+    bullshark.markOrderedUpTo(RETAIN);
 
     // Sabotage the prune accessor to throw.
     const originalPrune = dag.pruneCertificatesBefore;
@@ -220,3 +223,56 @@ describe("bullshark _maybeRunCertGC (commit-path trigger)", () => {
     }
   });
 });
+
+// A joiner mid-download needs every cert after its snapshot's tail; the
+// snapshot handler pins that range and GC must not cut below it.
+describe("bullshark _maybeRunCertGC honours certRetentionFloor", () => {
+  test("cutoff is lowered to the pinned floor, and restored when the pin goes", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    registerNode(dag);
+    let floor = 0;
+    const bullshark = createBullshark({
+      dag,
+      getNodeIds: () => [NODE_ID],
+      onOrderedTxs: () => { },
+      certRetentionFloor: () => floor,
+    });
+    const interval = CONSENSUS.GC_INTERVAL_COMMITS;
+    const gcDepth = RETAIN;
+    const expectedCutoff = interval * 2;
+    for (let r = 1; r < expectedCutoff + 5; r++) dag.saveCertificate(makeCert(r));
+
+    floor = expectedCutoff - 6;   // a joiner still needs rounds from here on
+    bullshark.markOrderedUpTo(gcDepth);
+    driveCommits(bullshark, dag, interval);
+    expect(bullshark.stats().metrics.gc_runs).toBe(1);
+    expect(dag.getEarliestCertRound()).toBe(expectedCutoff - 6);
+
+    floor = 0;                    // pin released: the normal window applies on the next run
+    driveCommits(bullshark, dag, interval);
+    expect(bullshark.stats().metrics.gc_runs).toBe(2);
+    expect(dag.getEarliestCertRound()).toBeGreaterThanOrEqual(expectedCutoff);
+  });
+});
+
+// gc_depth (genesis, 500 rounds) was sized for 2s rounds and covers 3.4 min at
+// 0.4s; the node-local floor keeps the recoverable outage from shrinking with round time.
+describe("bullshark _maybeRunCertGC honours CERT_RETENTION_MIN_ROUNDS", () => {
+  test("cutoff uses the larger of gc_depth and the local floor", () => {
+    const { dag, bullshark } = setupBullshark();
+    const interval = CONSENSUS.GC_INTERVAL_COMMITS;
+    const gcDepth = CONSENSUS.GC_DEPTH;
+    const floor = CONSENSUS.CERT_RETENTION_MIN_ROUNDS;
+    expect(floor).toBeGreaterThan(gcDepth);
+    // seed a cert well inside the floor but outside gc_depth: it must survive
+    const keep = floor - 10;
+    for (let r = 1; r <= 3; r++) dag.saveCertificate(makeCert(r));
+    dag.saveCertificate(makeCert(keep));
+    bullshark.markOrderedUpTo(floor + 40);
+    driveCommits(bullshark, dag, interval);
+    expect(bullshark.stats().metrics.gc_runs).toBe(1);
+    expect(dag.getCertificatesByRound(keep).length).toBe(1);
+    expect(dag.getCertificatesByRound(1).length).toBe(0);
+  });
+});
+

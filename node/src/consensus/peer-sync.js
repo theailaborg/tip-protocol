@@ -57,6 +57,12 @@ function replaySyncedTxs(dag, commitHandler, fromRound, toRound) {
   let committed = 0;
   for (let r = fromRound; r <= toRound; r++) {
     try {
+      // The live path judges a whole wave by its anchor cert's BFT time, and
+      // commit-time rules key on it. A round no anchor has committed yet is
+      // left to bullshark; replaying it here would decide it on a clock the
+      // rest of the fleet never used.
+      const certTimestamp = anchorTimestampFor(dag, r);
+      if (!(certTimestamp > 0)) continue;
       const certs = dag.getCertificatesByRound(r);
       for (const cert of certs) {
         const txs = cert.batch?.txs || [];
@@ -66,7 +72,7 @@ function replaySyncedTxs(dag, commitHandler, fromRound, toRound) {
           // so prev references are always resolvable in canonical-order
           // replay (Bullshark's total order guarantees the prev tx is
           // already committed by the time we process its referrer).
-          const res = commitHandler.commitOrderedTxs(txs, r);
+          const res = commitHandler.commitOrderedTxs(txs, r, { certTimestamp });
           committed += res.committed;
         }
       }
@@ -75,6 +81,14 @@ function replaySyncedTxs(dag, commitHandler, fromRound, toRound) {
     }
   }
   return committed;
+}
+
+/** BFT time of the anchor cert whose commit covers `round`, or 0 when none has. */
+function anchorTimestampFor(dag, round) {
+  const commit = dag.getCommitsFromRound(round)[0];
+  if (!commit) return 0;
+  const anchor = dag.getCertificate(commit.anchor_cert_hash);
+  return Number(anchor?.timestamp) || 0;
 }
 
 /**
@@ -202,6 +216,16 @@ async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatu
       log.info(`Peer ${tipNodeId}: self counter unhydrated (0) with non-empty DAG , skipping bootstrap sync, AE will decide`);
       return false;
     }
+    // Same attested state root: whatever the ordered-round gap says, the state is
+    // already here. A gap means "fetch certs" (AE does that), never "fetch state".
+    // A node in sync mode cannot advance its ordered round, so the gap alone
+    // ordered the same node into snapshots forever (AZ, 15 days).
+    const selfRoot = dag && typeof dag.stateRoot === "function" ? String(dag.stateRoot() || "") : "";
+    const peerRoot = String(peerStatus.state_merkle_root || "");
+    if (selfRoot && peerRoot && selfRoot === peerRoot) {
+      log.info(`Peer ${tipNodeId} state root matches ours (${selfRoot.slice(0, 12)}), skipping heavy sync, AE pulls any cert gap`);
+      return false;
+    }
     // A small lag heals via gossip + the light AE cert-pull; only a gap beyond the
     // tolerance warrants the heavy enterSyncMode (avoids self-suppression on jitter).
     if (peerCommitted - selfCommitted <= CONSENSUS.SYNC_FROM_PEER_TOLERANCE_ROUNDS) {
@@ -221,22 +245,26 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
 
   if (!(await shouldSyncFromPeer(peerId, tipNodeId, deps))) return;
 
-  log.notice(`Peer authorized: ${tipNodeId} — bootstrapping from ${peerId.slice(0, 12)}...`);
-
-  // Enter sync mode — suppress all round production until sync + first peer batch
-  narwhal.enterSyncMode();
+  // An install already landed: only the cert tail is missing. Re-entering
+  // sync mode here threw a finished install away on every reconnect.
+  const resumingCatchUp = typeof narwhal.joinState === "function" && narwhal.joinState() === "catching_up";
+  if (resumingCatchUp) {
+    log.notice(`Peer authorized: ${tipNodeId} — install already landed, pulling the cert tail from ${peerId.slice(0, 12)}...`);
+  } else {
+    log.notice(`Peer authorized: ${tipNodeId} — bootstrapping from ${peerId.slice(0, 12)}...`);
+    // Enter sync mode — suppress all round production until sync + first peer batch
+    narwhal.enterSyncMode();
+  }
 
   try {
-    // ── Phase 1: snapshot fast-sync (non-fatal on failure) ────────────────
-    const snapRound = await tryFastSyncSnapshot(peerId, nodeId, { snapshotHandler, bullshark });
-
-    // ── Phase 2: cert catch-up for the gap after the snapshot ─────────────
-    // fromRound = snapRound + 1 if we have a snapshot, else default (round 1
-    // for a fresh DAG, or latest+1 for a resuming node). syncFromPeer reads
-    // dag.getLatestRound() when fromRound is undefined.
-    const fromRound = snapRound > 0 ? snapRound + 1 : undefined;
+    // ── Phase 1: cert pull from what we hold. One cheap request; a snapshot only
+    // when the peer no longer has our tail (snapshot_required below). A restart
+    // used to re-download 45MB although the peer still held the missing rounds.
+    const dagTail = typeof dag.getLatestRound === "function" ? Number(dag.getLatestRound() || 0) : 0;
+    const fromRound = dagTail > 0 ? dagTail + 1 : undefined;
     let result = await syncWithRetry(peerId, syncHandler, { fromRound });
-    let effectiveSnapRound = snapRound;
+    let snapRound = 0;
+    let effectiveSnapRound = 0;
 
     // #45: peer GC'd past our requested round → cert sync returned an
     // empty payload with snapshotRequired=true. Without this branch the
@@ -250,14 +278,22 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
     // Mirrors the consumer at anti-entropy.js — a single shared signal
     // for "give up on cert sync from this peer, fall back to snapshot."
     if (result.snapshotRequired) {
+      if (resumingCatchUp) {
+        log.warn(`Sync: peer ${peerId.slice(0, 12)} no longer holds our cert tail (earliest=${result.earliestAvailableRound || "?"}); staying catching_up, AE will use the snapshot source`);
+        return;
+      }
       log.warn(
         `Sync: peer ${peerId.slice(0, 12)} signals snapshot_required ` +
-        `(earliest=${result.earliestAvailableRound || "?"}); retrying snapshot fast-sync`
+        `(earliest=${result.earliestAvailableRound || "?"}); snapshot fast-sync`
       );
       const retrySnapRound = await tryFastSyncSnapshot(peerId, nodeId, { snapshotHandler, bullshark });
       if (retrySnapRound > 0) {
+        snapRound = retrySnapRound;
         effectiveSnapRound = retrySnapRound;
-        result = await syncWithRetry(peerId, syncHandler, { fromRound: retrySnapRound + 1 });
+        // The snapshot's round is its last COMMIT; its certs run to the tail we
+        // installed, which is what the DAG reports.
+        const tailAfterInstall = typeof dag.getLatestRound === "function" ? Number(dag.getLatestRound() || 0) : 0;
+        result = await syncWithRetry(peerId, syncHandler, { fromRound: Math.max(retrySnapRound + 1, tailAfterInstall + 1) });
         // If the retry ALSO comes back snapshot_required, the peer is
         // GC-ing faster than we can sync. Don't recurse; let
         // anti-entropy or another peer's onPeerAuthorized try later.
@@ -328,4 +364,4 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
   }
 }
 
-module.exports = { syncWithRetry, replaySyncedTxs, tryFastSyncSnapshot, shouldSyncFromPeer, onPeerAuthorized };
+module.exports = { syncWithRetry, replaySyncedTxs, anchorTimestampFor, tryFastSyncSnapshot, shouldSyncFromPeer, onPeerAuthorized };

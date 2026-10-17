@@ -66,6 +66,8 @@ function fakeStats(overrides = {}) {
         equivocation_refused: 0,
         fast_forwards: 1,
         retries: 5,
+        my_batches_uncertified: 37,
+        my_batches_orphaned: 4,
       },
     },
     bullshark: {
@@ -155,6 +157,18 @@ describe("GET /metrics — Prometheus exposition format", () => {
     expect(res.text).toMatch(/^tip_narwhal_rounds_advanced_total\{node="tip:\/\/node\/self"\} 41$/m);
   });
 
+  // A registered non-committee node carries no traffic, so its batches are
+  // always empty and my_batches_orphaned stays at zero however badly it is
+  // failing. The uncertified counter is the one that shows the failure.
+  test("own-batch failures are exposed separately for empty and tx-bearing batches", async () => {
+    const app = makeApp({
+      consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
+    });
+    const res = await request(app).get("/metrics");
+    expect(res.text).toMatch(/^tip_narwhal_own_batch_uncertified_total\{node="tip:\/\/node\/self"\} 37$/m);
+    expect(res.text).toMatch(/^tip_narwhal_own_batch_orphaned_total\{node="tip:\/\/node\/self"\} 4$/m);
+  });
+
   test("gauge values reflect underlying stats()", async () => {
     const app = makeApp({
       consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
@@ -165,13 +179,18 @@ describe("GET /metrics — Prometheus exposition format", () => {
     expect(res.text).toMatch(/^tip_narwhal_mempool_size\{node="tip:\/\/node\/self"\} 7$/m);
   });
 
-  test("labels are properly formatted (node_id, version, node)", async () => {
+  test("labels are properly formatted (node_id + injected node), and the version is not one of them", async () => {
     const app = makeApp({
       consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
     });
     const res = await request(app).get("/metrics");
-    // Uptime has node_id + version + injected node label.
-    expect(res.text).toMatch(/^tip_process_uptime_seconds\{node_id="tip:\/\/node\/self",version="2\.0\.0",node="tip:\/\/node\/self"\} \d+$/m);
+    expect(res.text).toMatch(/^tip_process_uptime_seconds\{node_id="tip:\/\/node\/self",node="tip:\/\/node\/self"\} \d+$/m);
+    // A label whose value changes every release would fork the series and show
+    // one node twice for the whole lookback window; version lives on the info
+    // metric instead (2026-09-18, seen on the test cluster).
+    const uptime = res.text.split("\n").find(l => l.startsWith("tip_process_uptime_seconds{"));
+    expect(uptime).not.toMatch(/version=/);
+    expect(res.text).toMatch(/^tip_node_build_info\{node_id="tip:\/\/node\/self",version="[^"]+",commit="[^"]*",node="tip:\/\/node\/self"\} 1$/m);
   });
 
   test("consensus_divergence_total is ALWAYS present and zero when healthy", async () => {

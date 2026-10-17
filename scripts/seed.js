@@ -533,7 +533,6 @@ function buildLocalNodeEnv({ fn, slot, ip, apiPort, p2pPort, bootstrapAddr, shar
     TIP_ENABLE_MDNS: "false",
     TIP_DATA_DIR: "./data",          // container path; host ./node<slot>-env/data mounts to /app/data
     TIP_DB_PATH: "./data/tip.db",
-    TIP_LOG_DIR: "/app/node/logs",
     TIP_PUBLIC_URL: `http://localhost:${apiPort}`,
     TIP_NODE_CREDENTIALS_FILE: `genesis-data/backups/${nodeIdToFileName(fn.node_id)}`,
     DB_DRIVER: "postgres",

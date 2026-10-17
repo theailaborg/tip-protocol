@@ -62,6 +62,8 @@ function createRouter({ dag, scoring, config, consensus, network }) {
         rss: Math.round(mem.rss / 1048576),
         heap_used: Math.round(mem.heapUsed / 1048576),
         heap_total: Math.round(mem.heapTotal / 1048576),
+        external: Math.round((mem.external || 0) / 1048576),
+        array_buffers: Math.round((mem.arrayBuffers || 0) / 1048576),
       },
       timestamp: nowIso(),
     };

@@ -10,6 +10,9 @@ built from the company's registry details rather than a person's government ID.
 
 ### Ready-to-send request
 
+The same request is email 0 in `docs/partner-onboarding-emails.html`, where a country
+selector fills item 2 with the right identifier wording.
+
 Copy, fill the brackets, send. Item 2 depends on the partner's country: take
 the identifier from the table in section 2 and use the matching wording, e.g.
 
@@ -23,19 +26,34 @@ the identifier from the table in section 2 and use the matching wording, e.g.
 >
 > 1. Full legal name, exactly as registered
 > 2. [registration number wording for their country, from the section 2 table]
-> 3. Date of incorporation
-> 4. Country of registration
-> 5. Production node's static public IP (new host, not the testnet box)
-> 6. Domain the node will serve on (e.g. node.[partner].com). This gets
->    published on-chain, so it must be the address you intend to keep
-> 7. Confirmation that inbound TCP 4000 and 4001 are open to the internet
-> 8. Ops contact (name + email) for node issues
+> 3. Legal form, as printed on the certificate (Private Limited, LLP, LLC, Ltd,
+>    GmbH, ...)
+> 4. Date of incorporation
+> 5. Country of registration
+> 6. Whether the business has ever operated under a previous registration
+>    number (before a conversion or re-incorporation); if so, that number and
+>    the date of the change
+> 7. Production node's static public IP (new host, not the testnet box)
+> 8. Domain the node will serve on (e.g. node.[partner].com) and confirmation
+>    that you control its DNS. This gets published on-chain, so it must be the
+>    address you intend to keep
+> 9. Confirmation that inbound TCP 4000 and 4001 are open to the internet
+> 10. The node host's internet link: 25 Mbit/s download and upload sustained
+>     minimum, 50 recommended, ideally a dedicated line rather than the shared
+>     office connection
+> 11. Media storage: the node stores uploaded media in an S3 bucket you own.
+>     Confirm you have an AWS account we can send the setup steps for, or tell
+>     us if you need another arrangement
+> 12. Ops contact for node issues: name, email, and a phone or Signal number
+>     (the bundle comes by email, its password by phone or Signal)
 >
 > Once these arrive we'll register your org and node, and send the credentials
 > bundle.
 
-Items 5-8 apply when the organization will also run a node; drop them for an
-identity-only registration. The rest of this document explains what each answer
+Items 7-12 apply when the organization will also run a node; drop them for an
+identity-only registration. Item 3 feeds `--org-type`, item 6 is the continuity
+question section 2 requires in writing, and item 12 is what makes the password
+deliverable over a second channel (section 5). The rest of this document explains what each answer
 must look like before you act on it.
 
 ### The fields, and where they go
@@ -56,7 +74,7 @@ Worth telling them, since it pre-empts the obvious objection:
 > values are never published: only a hash goes on chain, so nobody can read your
 > registration details from the ledger.
 
-### Node details , when the organization will also run a node
+### Node details: when the organization will also run a node
 
 Ask in the same message, so registration is not blocked on a second round-trip:
 
@@ -65,6 +83,7 @@ Ask in the same message, so registration is not blocked on a second round-trip:
 | static public IP of the node host | the node's advertised address in its env; how peers dial it |
 | domain the node will serve on | published **on-chain** as their API endpoint; must be the address they intend to keep |
 | confirmation TCP 4000 and 4001 are open to the internet | 4000 API, 4001 p2p; without 4001 they never fully join |
+| internet link of the node host | 25 Mbit/s symmetric sustained minimum, 50 recommended (`NODE_REQUIREMENTS.md`); slower links install but cannot keep up with gossip |
 | ops contact name + email | who we call when their node misbehaves |
 
 The mainnet node needs its **own host**: a partner already running a testnet node
@@ -120,7 +139,7 @@ some jurisdictions make legal-form changes a new entity with a new identifier:
 
 | country | behaviour on form change | exposed? |
 |---|---|---|
-| **IN** | LLP → company conversion issues a **new CIN and a new incorporation date** | **yes , worst case** |
+| **IN** | LLP → company conversion issues a **new CIN and a new incorporation date** | **yes, worst case** |
 | **DE** | moving the company seat changes the court, so a **new HRB** (the court is part of our value) | **yes, same class** |
 | GB | company number persists through LTD→PLC and renames | robust |
 | FR / JP / AU | SIREN / Corporate Number / ACN persist through form changes | robust |
@@ -149,13 +168,13 @@ approval step does:
 | `--name` | yes | the full legal name, exactly as registered, quoted | `--name "AZLOGICS PRIVATE LIMITED"` |
 | `--reg-number` | yes | the country's accepted identifier from the table in §2, exact format, leading zeros kept | `--reg-number U72900MH2021PTC362851` |
 | `--incorporated` | yes | date of incorporation, `YYYY-MM-DD` only | `--incorporated 2021-06-28` |
-| `--region` | yes in practice | ISO-3166-1 alpha-2 country of incorporation; must be in the §2 scheme table or the run stops. Default `GB` , always pass it explicitly | `--region IN` |
+| `--region` | yes in practice | ISO-3166-1 alpha-2 country of incorporation; must be in the §2 scheme table or the run stops. Default `GB`, always pass it explicitly | `--region IN` |
 | `--org-type` | no | the legal form as the jurisdiction names it, freeform by design (forms differ per country), but must be 2-64 chars of lowercase letters, digits and hyphens. Common values: `private-limited-company`, `public-limited-company`, `llp`, `llc`, `gmbh`, `nonprofit` | `--org-type private-limited-company` |
 | `--node-url` | for mainnet | the node to register through. Default `http://localhost:4000` (local rehearsal) | `--node-url https://node.theailab.org` |
-| `--vp-file` | **for mainnet** | path to the mainnet founding VP `.tip.json`. When omitted the script picks up whatever VP sits in `genesis-data/backups`, which on a dev machine is the test VP , mainnet rejects it | `--vp-file <VP_KEY_FILE>` |
+| `--vp-file` | **for mainnet** | path to the mainnet founding VP `.tip.json`. When omitted the script picks up whatever VP sits in `genesis-data/backups`, which on a dev machine is the test VP, mainnet rejects it | `--vp-file <VP_KEY_FILE>` |
 | `--partner` | recommended | partner folder name under `generated/`; use the same value for the node registration so both land together | `--partner azlogics` |
 | `--out-dir` | no | full override of the output dir. Default `generated/<partner|slug-short-id>/org/` | `--out-dir /secure/azlogics` |
-| `--dry-run` | no | boolean, no value. Validates the identifier, builds the real proof, prints everything, registers nothing , always run this first | `--dry-run` |
+| `--dry-run` | no | boolean, no value. Validates the identifier, builds the real proof, prints everything, registers nothing; always run this first | `--dry-run` |
 
 `--org-type` note: use lowercase-hyphen spelling of the form on the certificate
 (`Private Limited` → `private-limited-company`). Anything outside
@@ -208,13 +227,22 @@ than one node: they must agree.
 ## 5. Deliver the credential
 
 The script writes `generated/<partner>/org/<tip-id>.tip.json` at mode `0600`
-(pass `--partner <slug>` so the later node registration lands in the same folder),
-containing both keys plus the registry inputs.
+(pass `--partner <slug>` so the later node registration lands in the same folder).
+The file is the VP app's export format (`tip-key-export-v2`): the public key, the
+registry inputs, and the private key **locked with the date of incorporation**
+(PBKDF2-SHA256 200k + AES-256-GCM, the date as `MMDDYYYY`, exactly how the VP app
+locks a personal download with the date of birth). The script re-reads and decrypts
+the file before reporting success, and the organization imports it into the VP app
+by entering that date.
 
-Whoever holds that file can sign as the organization, so it is treated like an SSH
-host key: stored at mode `0600`, never committed. Delivery is part of the partner
-credentials bundle , an AES-256 zip with the password sent over a separate channel;
-the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md` section 6.
+The date is public record, so the lock is one layer, not the delivery channel: a
+leaked file is not usable as-is, but anyone who knows the company can look the date
+up. Whoever holds the file and the date can sign as the organization, so it is still
+treated like an SSH host key: stored at mode `0600`, never committed. Delivery is
+part of the partner credentials bundle, an AES-256 zip with the password sent over a
+separate channel; the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md`
+section 6. The later `register-node.js --operator-key-file` run needs
+`--operator-key-date <incorporation date>` to open it.
 
 The private key is generated locally and never transmitted: registration sends only the
 public key. The planned VP-side page, where an organization generates its own keypair in
@@ -225,6 +253,16 @@ the browser and sends us only the public key, removes the delivery step entirely
 - **Leading zeros are part of the number.** `01234567` and `1234567` are different
   identities. Ask for the value "exactly as printed", and beware spreadsheets stripping
   zeros.
+- **Separators are ignored, characters are not.** Hyphens, spaces and dots are stripped
+  before the number is hashed, so a US EIN pasted the way the IRS prints it
+  (`32-0727201`) registers the same company as `320727201`. Paste the value as printed
+  and let the script normalise it. This is why a dropped leading zero still matters: the
+  script removes punctuation, never digits or letters.
+- **Nothing longer than 30 characters.** After separators are stripped the identifier
+  must fit in 30 characters, which is what the hash encodes. Longer values are refused
+  rather than truncated: two companies agreeing on the first 30 characters would
+  otherwise merge into a single permanent identity. Every listed scheme fits (an Indian
+  CIN is 21, an EIN 9); only the US state fallback can run over.
 - **Ask India entities whether they are a company or an LLP** before asking for a number.
 - **The inputs are permanent.** A one-character error yields a different hash, the proof
   still verifies, and the chain accepts it. The mistake is undetectable (the hash is

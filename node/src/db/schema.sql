@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS `minhash_band` (`profile` varchar(64) not null, `band
 
 CREATE TABLE IF NOT EXISTS `nodes` (`node_id` varchar(512), `name` text null, `status` varchar(32) not null default 'active', `api_endpoint` text null, `updated_at` bigint null, `registered_at` bigint not null, `operated_by` varchar(512) null, primary key (`node_id`));
 
+CREATE TABLE IF NOT EXISTS `org_members` (`invite_tx_id` varchar(512), `org_tip_id` varchar(512) not null, `member_tip_id` varchar(512) not null, `role` varchar(64) not null, `status` varchar(16) not null default 'invited', `invited_at` bigint not null, `accepted_at` bigint null, `add_tx_id` varchar(512) null, `removed_at` bigint null, `remove_tx_id` varchar(512) null, `removed_by` varchar(512) null, `invited_claim` bigint null, primary key (`invite_tx_id`));
+
 CREATE TABLE IF NOT EXISTS `owner_heads` (`entity_key` text, `tx_id` text not null, primary key (`entity_key`));
 
 CREATE TABLE IF NOT EXISTS `pending_domain_claims` (`domain` varchar(253), `tip_id` varchar(512) not null, `method` varchar(16) not null, `claimed_at` bigint not null, `signature` text not null, `received_at` bigint not null, primary key (`domain`));
@@ -45,7 +47,7 @@ CREATE TABLE IF NOT EXISTS `phash_code` (`tip_ctid` varchar(512) not null, `comp
 
 CREATE TABLE IF NOT EXISTS `platform_links` (`id` varchar(512), `tip_id` varchar(512) not null, `platform` varchar(50) not null, `handle` varchar(255) null, `profile_url` text not null, `status` varchar(32) not null default 'active', `linked_at` bigint not null, `verified_at` bigint not null, `unlinked_at` bigint null, `unlink_tx_id` varchar(512) null, `node_id` varchar(512) not null, `tx_id` varchar(512) not null, primary key (`id`));
 
-CREATE TABLE IF NOT EXISTS `prescan_jobs` (`job_id` varchar(128), `tip_ctid` varchar(512) not null, `payload` blob not null, `status` varchar(16) not null, `claimed_at` bigint null, `claimed_by` varchar(128) null, `retries` integer not null default '0', `last_error` text null, `created_at` bigint not null, `completed_at` bigint null, primary key (`job_id`));
+CREATE TABLE IF NOT EXISTS `prescan_jobs` (`job_id` varchar(128), `tip_ctid` varchar(512) not null, `payload` blob not null, `status` varchar(16) not null, `claimed_at` bigint null, `claimed_by` varchar(128) null, `retries` integer not null default '0', `last_error` text null, `created_at` bigint not null, `completed_at` bigint null, `retry_after` bigint not null default '0', `classifier_job_id` varchar(128) null, `classifier_job_at` bigint null, `classifier_polls` integer not null default '0', primary key (`job_id`));
 
 CREATE TABLE IF NOT EXISTS `prescan_reviews` (`review_id` varchar(128), `tip_ctid` varchar(512) not null, `creator_tip_id` varchar(512) not null, `assigned_reviewer` varchar(512) null, `triggered_at_round` integer not null, `triggered_at_ms` bigint null, `decided_at_round` integer null, `confirmed_at_round` integer null, `confirmed_at_ms` bigint null, `state` varchar(32) not null default 'triggered', `decision_note` text null, `suggested_origin` varchar(8) null, primary key (`review_id`));
 
@@ -108,6 +110,12 @@ CREATE INDEX IF NOT EXISTS `idx_id_vp` on `identities` (`vp_id`);
 CREATE INDEX IF NOT EXISTS `idx_interests_registry_category` on `interests_registry` (`category`);
 
 CREATE INDEX IF NOT EXISTS `idx_minhash_band_lookup` on `minhash_band` (`profile`, `band_idx`, `band_hash`);
+
+CREATE INDEX IF NOT EXISTS `idx_org_members_add_tx_id` on `org_members` (`add_tx_id`);
+
+CREATE INDEX IF NOT EXISTS `idx_org_members_member_status` on `org_members` (`member_tip_id`, `status`);
+
+CREATE INDEX IF NOT EXISTS `idx_org_members_org_status` on `org_members` (`org_tip_id`, `status`);
 
 CREATE INDEX IF NOT EXISTS `idx_pending_dom_tip_id` on `pending_domain_claims` (`tip_id`);
 

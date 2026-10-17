@@ -21,6 +21,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { KnexAdapter } = require("../../src/db/knex-adapter");
+const { nowMs } = require("../../../shared/time");
 
 const logStub = { info() { }, warn() { }, error() { } };
 
@@ -80,6 +81,30 @@ describe("persistenceStats + parity probe", () => {
     await a._ffChain;
     expect(a.persistenceStats().queue_depth).toBe(0);
     expect(a.persistenceStats().oldest_pending_ms).toBe(0);
+  });
+
+  // Bulk rows bypass the _ff chain; a multi-minute install left the settled clock
+  // stale and the first ordinary write afterwards read as a wedge (fail-stop).
+  test("a bulk-install flush is a settled write, install time never reads as a stall", async () => {
+    a._ffLastSettledMs = nowMs() - 200_000;
+    a.beginBulkInstall();
+    try {
+      a.setConsensusMeta("bulk_probe", "1");
+      await a.flush();
+    } finally {
+      a.endBulkInstall();
+    }
+    expect(a.persistenceStats().last_settled_age_ms).toBeLessThan(5_000);
+  });
+
+  // Boot hashes the DB value, so an unclamped write forks the root at restart.
+  test("setScore persists the clamped score the mirror holds", async () => {
+    a.setScore("tip://id/US-clamp00000000001", 1200, 0, 1790000000000);
+    a.setScore("tip://id/US-clamp00000000002", -5, 1, 1790000000001);
+    await a.flush();
+    const rows = await a.knex("scores").whereIn("tip_id", ["tip://id/US-clamp00000000001", "tip://id/US-clamp00000000002"]).orderBy("tip_id").select("score");
+    expect(rows.map((r) => r.score)).toEqual([1000, 0]);
+    expect(a.getScore("tip://id/US-clamp00000000001").score).toBe(1000);
   });
 
   test("parity probe passes when mirror and DB agree", async () => {

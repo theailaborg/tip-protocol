@@ -368,6 +368,7 @@ class KnexAdapter {
       domain_bindings: this.mirror._domainBindings.size,
       owner_heads: this.mirror._ownerHeads.size,
       platform_links: this.mirror._platformLinks.size,
+      org_members: this.mirror._orgMembers.size,
     };
   }
 
@@ -500,6 +501,10 @@ class KnexAdapter {
         last_error: row.last_error,
         created_at: row.created_at,
         completed_at: row.completed_at,
+        retry_after: Number(row.retry_after) || 0,
+        classifier_job_id: row.classifier_job_id || null,
+        classifier_job_at: row.classifier_job_at == null ? null : Number(row.classifier_job_at),
+        classifier_polls: Number(row.classifier_polls) || 0,
       });
     }
 
@@ -630,6 +635,12 @@ class KnexAdapter {
     if (!this.mirror._platformLinks) this.mirror._platformLinks = new Map();
     for (const row of plRows) {
       this.mirror._platformLinks.set(row.id, { ...row });
+    }
+
+    // Org members (canonical)
+    const omRows = await this.knex("org_members").select("*");
+    for (const row of omRows) {
+      this.mirror._orgMembers.set(row.invite_tx_id, { ...row });
     }
 
     // Pending domain claims (per-node local)
@@ -994,6 +1005,7 @@ class KnexAdapter {
   getReferencedMediaIds() { return this.mirror.getReferencedMediaIds(); }
   listContent(opts) { return this.mirror.listContent(opts); }
   getContentByAuthor(id) { return this.mirror.getContentByAuthor(id); }
+  getContentBylined(id) { return this.mirror.getContentBylined(id); }
   getContentByHash(h) { return this.mirror.getContentByHash(h); }
   getCleanRecordEligible(cutoff) { return this.mirror.getCleanRecordEligible(cutoff); }
   hasVerification(ctid, tipId) { return this.mirror.hasVerification(ctid, tipId); }
@@ -1042,6 +1054,10 @@ class KnexAdapter {
         last_error: null,
         created_at: rec.created_at,
         completed_at: null,
+        retry_after: 0,
+        classifier_job_id: null,
+        classifier_job_at: null,
+        classifier_polls: 0,
       }, "ignore"));
     }
     return fresh;
@@ -1180,10 +1196,45 @@ class KnexAdapter {
           claimed_at: null,
           claimed_by: null,
           last_error: opts.lastError || null,
+          retry_after: opts.retryAfter || 0,
         })
         .then(() => this._k("prescan_jobs")
           .where("job_id", jobId)
           .increment("retries", 1)));
+    }
+    return changed;
+  }
+  setPrescanJobClassifierRef(jobId, opts) {
+    const changed = this.mirror.setPrescanJobClassifierRef(jobId, opts);
+    if (changed) {
+      const row = this.mirror.getPrescanJob(jobId);
+      this._ff(() => this._k("prescan_jobs")
+        .where("job_id", jobId)
+        .update({ classifier_job_id: row.classifier_job_id || null, classifier_job_at: row.classifier_job_at ?? null }));
+    }
+    return changed;
+  }
+  deferPrescanJobForPoll(jobId, opts) {
+    const changed = this.mirror.deferPrescanJobForPoll(jobId, opts);
+    if (changed) {
+      this._ff(() => this._k("prescan_jobs")
+        .where("job_id", jobId)
+        .update({
+          status: "queued",
+          claimed_at: null,
+          claimed_by: null,
+          last_error: opts.note || null,
+          classifier_polls: opts.polls,
+          retry_after: opts.retryAfter || 0,
+        }));
+    }
+    return changed;
+  }
+  getPrescanJobByClassifierRef(classifierJobId) { return this.mirror.getPrescanJobByClassifierRef(classifierJobId); }
+  wakePrescanJob(jobId) {
+    const changed = this.mirror.wakePrescanJob(jobId);
+    if (changed) {
+      this._ff(() => this._k("prescan_jobs").where("job_id", jobId).update({ retry_after: 0 }));
     }
     return changed;
   }
@@ -1276,7 +1327,9 @@ class KnexAdapter {
 
   setScore(tipId, score, offenseCount, lastUpdatedISO) {
     this.mirror.setScore(tipId, score, offenseCount, lastUpdatedISO);
-    const row = { tip_id: tipId, score, offense_count: offenseCount || 0, last_updated: lastUpdatedISO };
+    // Persist what the mirror holds: it clamps to [0, 1000], and boot hashes the DB value.
+    const held = this.mirror.getScore(tipId);
+    const row = { tip_id: tipId, score: held.score, offense_count: held.offense_count, last_updated: held.last_updated };
     this._ff(() => this._dbInsert("scores", "tip_id", row, "merge"));
   }
 
@@ -1335,7 +1388,7 @@ class KnexAdapter {
       "identities", "content", "scores", "dedup_registry", "revocations",
       "verification_providers", "nodes",
       "entity_keys", // GH #60 — entity_keys is canonical state too.
-      "platform_links", "domain_bindings", "prescan_reviews", "interests_registry",
+      "platform_links", "org_members", "domain_bindings", "prescan_reviews", "interests_registry",
       "protocol_params", // #39 — canonical state, cleared + rebuilt on install
       "owner_heads",
     ];
@@ -1355,6 +1408,7 @@ class KnexAdapter {
       case "revocations": return { tip_id: row.tip_id };
       case "domain_bindings": return { domain: row.domain };
       case "platform_links": return { id: row.id };
+      case "org_members": return { invite_tx_id: row.invite_tx_id };
       case "verification_providers": return { vp_id: row.vp_id };
       case "nodes": return { node_id: row.node_id };
       case "entity_keys": return {
@@ -1459,6 +1513,32 @@ class KnexAdapter {
 
   getPlatformLink(tipId, platform) { return this.mirror.getPlatformLink(tipId, platform); }
   getPlatformLinksByTipId(tipId) { return this.mirror.getPlatformLinksByTipId(tipId); }
+
+  // ── Org members (canonical, in state_merkle_root) ─────────────────────────
+
+  saveOrgMember(rec) {
+    this.mirror.saveOrgMember(rec);
+    const row = {
+      invite_tx_id: rec.invite_tx_id,
+      org_tip_id: rec.org_tip_id,
+      member_tip_id: rec.member_tip_id,
+      role: rec.role,
+      status: rec.status,
+      invited_at: rec.invited_at,
+      invited_claim: rec.invited_claim ?? null,
+      accepted_at: rec.accepted_at ?? null,
+      add_tx_id: rec.add_tx_id ?? null,
+      removed_at: rec.removed_at ?? null,
+      remove_tx_id: rec.remove_tx_id ?? null,
+      removed_by: rec.removed_by ?? null,
+    };
+    this._ff(() => this._dbInsert("org_members", "invite_tx_id", row, "merge"));
+  }
+
+  getOrgMember(inviteTxId) { return this.mirror.getOrgMember(inviteTxId); }
+  getOrgMemberByAddTxId(addTxId) { return this.mirror.getOrgMemberByAddTxId(addTxId); }
+  getOrgMembersByOrg(orgTipId) { return this.mirror.getOrgMembersByOrg(orgTipId); }
+  getOrgMembersByMember(memberTipId) { return this.mirror.getOrgMembersByMember(memberTipId); }
 
   savePendingDomainClaim(rec) {
     this.mirror.savePendingDomainClaim(rec);
@@ -1976,6 +2056,9 @@ class KnexAdapter {
       }
       rows.length = 0;
     }
+    // Bulk rows bypass the _ff chain; a stale clock read the first post-install
+    // write as a multi-minute stall and fail-stopped a healthy node.
+    this._ffLastSettledMs = nowMs();
   }
 
   beginBulkInstall() { this._bulkInstall = new Map(); }

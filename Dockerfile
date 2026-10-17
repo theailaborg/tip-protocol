@@ -36,10 +36,18 @@ RUN npm install --omit=dev && \
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM node:24-alpine AS runtime
 
+# Build identity. Passed by the release workflow; a local build falls back to the
+# node package version, so /health never claims a release it is not.
+ARG TIP_BUILD_VERSION=""
+ARG TIP_BUILD_COMMIT=""
+ENV TIP_BUILD_VERSION=${TIP_BUILD_VERSION}
+ENV TIP_BUILD_COMMIT=${TIP_BUILD_COMMIT}
+
 # Metadata
 LABEL org.opencontainers.image.title="TIP Protocol Node"
 LABEL org.opencontainers.image.description="Trust Identity Protocol -- full node, REST API, DAG, trust scoring"
-LABEL org.opencontainers.image.version="2.0.0"
+LABEL org.opencontainers.image.version="${TIP_BUILD_VERSION}"
+LABEL org.opencontainers.image.revision="${TIP_BUILD_COMMIT}"
 LABEL org.opencontainers.image.authors="Dinesh Mendhe <chairman@theailab.org>"
 LABEL org.opencontainers.image.vendor="The AI Lab Intelligence Unobscured, Inc."
 LABEL org.opencontainers.image.url="https://theailab.org"
@@ -64,6 +72,8 @@ COPY --chown=tipnode:tipnode circuits/         ./circuits/
 # Copy browser extension zip if present (glob trick: bracket makes COPY no-op if missing)
 COPY --chown=tipnode:tipnode browser-extensio[n]/*.zip ./browser-extension/
 COPY --chown=tipnode:tipnode package.json      ./package.json
+# Pre-restart gate, run from the node image before any rolling restart.
+COPY --chown=tipnode:tipnode scripts/check-boot-root.js ./scripts/check-boot-root.js
 
 # Genesis state the node reads at boot. genesis.json is the minted, self-contained
 # block (carries protocol_constants). genesis-config.json is a seed-time input and

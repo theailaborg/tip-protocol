@@ -293,13 +293,15 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     const timeoutMs = CONSENSUS.ANTI_ENTROPY_PEER_TIMEOUT_MS;
     let stream = null;
     let timedOut = false;
+    const abort = new AbortController();   // a hung open must not dangle past the deadline
     const timer = setTimeout(() => {
       timedOut = true;
+      abort.abort();
       try { if (stream) stream.close(); } catch { /* ignore */ }
     }, timeoutMs);
 
     try {
-      stream = await network.openStream(peerId, SYNC_STATUS_PROTOCOL);
+      stream = await network.openStream(peerId, SYNC_STATUS_PROTOCOL, { signal: abort.signal });
 
       // Send empty request.
       const request = encode("SyncStatusRequest", {});
@@ -487,6 +489,17 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // it and leave Bullshark waiting for parent certs it never receives.
       const certFillFromRound = (installed.peer_committed_round || targetRound) + 1;
       if (targetRound > 0 && syncHandler && typeof syncHandler.syncFromPeer === "function") {
+        // The source first: it pinned the tail it shipped; others may have GC'd it.
+        try {
+          const fill = await syncHandler.syncFromPeer(peerId, { fromRound: certFillFromRound });
+          if (fill?.snapshotRequired) {
+            _log.warn(`anti-entropy: post-snapshot cert-fill: source ${peerId.slice(0, 12)} no longer holds rounds ${certFillFromRound}+ (earliest=${fill.earliestAvailableRound || "?"})`);
+          } else if (fill?.imported > 0) {
+            _log.info(`anti-entropy: post-snapshot cert-fill from source ${peerId.slice(0, 12)}: ${fill.imported} certs (rounds ${fill.fromRound}-${fill.toRound})`);
+          }
+        } catch (e) {
+          _log.warn(`anti-entropy: post-snapshot cert-fill from source ${peerId.slice(0, 12)} failed: ${e.message}`);
+        }
         let allPeerIds = [];
         try {
           if (network && typeof network.authorizedPeers === "function") {
@@ -1152,6 +1165,23 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           narwhal.exitSyncMode(selfCommitted);
         }
         return "behind";
+      }
+
+      // A joiner on a thin link is always the last pull's worth of rounds behind
+      // at poll time, so it never hits the exact-equality promotion below. With
+      // the tail past its target and the same state root, a gap inside the sync
+      // tolerance is caught up: promote, and let live gossip close the rest.
+      if (
+        _joinStBehind === "catching_up"
+        && typeof narwhal.markCaughtUp === "function"
+        && String(peerStatus.join_state || "ready") === "ready"
+        && selfRoot && peerRoot && selfRoot === peerRoot
+        && peerCommitted - selfCommitted <= CONSENSUS.SYNC_FROM_PEER_TOLERANCE_ROUNDS
+        && selfCommitted >= (typeof narwhal.catchUpTarget === "function" ? narwhal.catchUpTarget() : 0)
+        && !_peerWithHigherAttestedHead(selfState)
+      ) {
+        _log.info(`anti-entropy: catch-up within tolerance (${peerCommitted - selfCommitted} rounds behind ${peerStatus.node_id || peerId.slice(0, 12)}, same root), promoting to ready`);
+        narwhal.markCaughtUp(selfCommitted);
       }
 
       // We're behind. Pull the gap via existing sync protocol. fromRound
