@@ -103,6 +103,7 @@ function _seedCanonicalState(dag) {
     tip_id_type: "organization",
     status: "active",
     registered_at: T,
+    biometric_commit: "e".repeat(64),
   });
   dag.saveIdentity({
     tip_id: "tip://id/US-canontest-reviewer",
