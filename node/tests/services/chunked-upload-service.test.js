@@ -908,3 +908,115 @@ describe("presigned chunked upload: monthly media allowance", () => {
     expect(quota.calls.record).toEqual([]);
   });
 });
+
+describe("presigned chunked upload: session token", () => {
+  const SECRET = "test-secret";
+
+  test("init token shape; status omits it", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const { init } = await _upload(fx, _png(1024), "image/png");
+    expect(init.upload_pass).toMatch(/^[0-9a-f]{64}$/);
+    const st = await fx.svc.status(init.session_id);
+    expect(st.upload_pass).toBeUndefined();
+    expect(JSON.stringify(st)).not.toContain(init.upload_pass);
+  });
+
+  test("complete with token", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const file = _png(1024);
+    const { init, parts, contentHash } = await _upload(fx, file, "image/png");
+    const out = await fx.svc.complete(init.session_id, { signer_tip_id: TIP, parts, upload_pass: init.upload_pass });
+    expect(out.media_id).toBe(contentHash);
+    expect(out.signer_tip_id).toBe(TIP);
+  });
+
+  test("complete without auth is refused", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const { init, parts } = await _upload(fx, _png(1024), "image/png");
+    await expect(fx.svc.complete(init.session_id, { signer_tip_id: TIP, parts }))
+      .rejects.toMatchObject({ status: 400, code: "timestamp_invalid" });
+    await expect(fx.svc.complete(init.session_id, { signer_tip_id: TIP, parts, timestamp: nowMs(), signature: "00" }))
+      .rejects.toMatchObject({ status: 403, code: "signature_invalid" });
+    expect(fx.storage._assembledCount()).toBe(0);
+  });
+
+  test("complete with a bad token is refused", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const { init, parts } = await _upload(fx, _png(1024), "image/png");
+    const flipped = (init.upload_pass[0] === "a" ? "b" : "a") + init.upload_pass.slice(1);
+    for (const bad of [flipped, "f".repeat(64), "not-hex", "", 12345, init.upload_pass.slice(0, 63)]) {
+      await expect(fx.svc.complete(init.session_id, { signer_tip_id: TIP, parts, upload_pass: bad }))
+        .rejects.toMatchObject({ status: 403, code: "upload_pass_invalid" });
+    }
+    expect(fx.storage._assembledCount()).toBe(0);
+  });
+
+  test("token is bound to its session", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const a = await _upload(fx, _png(1024), "image/png");
+    const b = await _upload(fx, _png(2048), "image/png");
+    await expect(fx.svc.complete(b.init.session_id, { signer_tip_id: TIP, parts: b.parts, upload_pass: a.init.upload_pass }))
+      .rejects.toMatchObject({ status: 403, code: "upload_pass_invalid" });
+  });
+
+  test("token is bound to its signer", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const { init, parts } = await _upload(fx, _png(1024), "image/png");
+    await expect(fx.svc.complete(init.session_id, {
+      signer_tip_id: "tip://id/US-bbbbbbbbbbbbbbbb", parts, upload_pass: init.upload_pass,
+    })).rejects.toMatchObject({ status: 403, code: "signer_mismatch" });
+  });
+
+  test("token does not bypass the re-hash", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const file = _png(1024);
+    const { init, session } = await _upload(fx, file, "image/png");
+    const other = _png(1024); other[500] = 0x01;
+    const parts = [{ part_number: 1, etag: fx.storage._put(session.upload_id, 1, other) }];
+    await expect(fx.svc.complete(init.session_id, { signer_tip_id: TIP, parts, upload_pass: init.upload_pass }))
+      .rejects.toMatchObject({ code: "hash_mismatch" });
+  });
+
+  test("signed complete still works", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const { init, parts, contentHash } = await _upload(fx, _png(1024), "image/png");
+    const out = await fx.svc.complete(init.session_id, _completeArgs(fx, init.session_id, parts));
+    expect(out.media_id).toBe(contentHash);
+  });
+
+  test("abort with token", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const { init, session } = await _upload(fx, _png(1024), "image/png");
+    await expect(fx.svc.abort(init.session_id, { signer_tip_id: TIP, upload_pass: "0".repeat(64) }))
+      .rejects.toMatchObject({ status: 403, code: "upload_pass_invalid" });
+    expect(fx.dag.getUploadSession(init.session_id)).not.toBeNull();
+    await fx.svc.abort(init.session_id, { signer_tip_id: TIP, upload_pass: init.upload_pass });
+    expect(fx.storage._aborted.some(a => a.uploadId === session.upload_id)).toBe(true);
+  });
+
+  test("token across restarts", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const { init, parts, contentHash } = await _upload(fx, _png(1024), "image/png");
+    const other = createChunkedUploadService({ storage: fx.storage, dag: fx.dag, log: { info() {}, warn() {} }, uploadPassSecret: "another-node-key" });
+    await expect(other.complete(init.session_id, { signer_tip_id: TIP, parts, upload_pass: init.upload_pass }))
+      .rejects.toMatchObject({ code: "upload_pass_invalid" });
+    const restarted = createChunkedUploadService({ storage: fx.storage, dag: fx.dag, log: { info() {}, warn() {} }, uploadPassSecret: SECRET });
+    const out = await restarted.complete(init.session_id, { signer_tip_id: TIP, parts, upload_pass: init.upload_pass });
+    expect(out.media_id).toBe(contentHash);
+  });
+
+  test("token without a configured secret", async () => {
+    const fx = _setup();
+    const { init, parts, contentHash } = await _upload(fx, _png(1024), "image/png");
+    const out = await fx.svc.complete(init.session_id, { signer_tip_id: TIP, parts, upload_pass: init.upload_pass });
+    expect(out.media_id).toBe(contentHash);
+  });
+
+  test("repeat complete with token", async () => {
+    const fx = _setup({ uploadPassSecret: SECRET });
+    const { init, parts } = await _upload(fx, _png(1024), "image/png");
+    const first = await fx.svc.complete(init.session_id, { signer_tip_id: TIP, parts, upload_pass: init.upload_pass });
+    const again = await fx.svc.complete(init.session_id, { signer_tip_id: TIP, parts, upload_pass: init.upload_pass });
+    expect(again.media_id).toBe(first.media_id);
+  });
+});

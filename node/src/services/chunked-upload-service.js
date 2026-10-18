@@ -36,6 +36,15 @@ const {
 
 const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const COMPLETE_DRIFT_MS = 5 * 60 * 1000;      // ±5min on the completion/abort timestamp
+const UPLOAD_PASS_LABEL = "TIP_UPLOAD_PASS:v1";
+
+function _resolvePassKey(secret) {
+  if (Buffer.isBuffer(secret) && secret.length >= 16) return secret;
+  if (typeof secret === "string" && secret.length > 0) {
+    return crypto.createHash("sha256").update(`${UPLOAD_PASS_LABEL}:${secret}`).digest();
+  }
+  return crypto.randomBytes(32);
+}
 
 function _resolveSessionTtlMs() {
   const raw = parseInt(process.env.TIP_CHUNKED_UPLOAD_SESSION_TTL_MS || "", 10);
@@ -53,9 +62,23 @@ function createChunkedUploadService({
   completeSyncWaitMs = CHUNKED_COMPLETE_SYNC_WAIT_MS,
   rehashRetryMs = CHUNKED_REHASH_RETRY_MS,
   mediaQuota = null,    // optional media-quota-client; null or disabled => no allowance check
+  uploadPassSecret = null,
 }) {
   if (!storage) throw new Error("chunked-upload-service: storage required");
   if (!dag) throw new Error("chunked-upload-service: dag required");
+  const passKey = _resolvePassKey(uploadPassSecret);
+
+  function _passFor(session) {
+    return crypto.createHmac("sha256", passKey)
+      .update(`${UPLOAD_PASS_LABEL}:${session.session_id}:${session.signer_tip_id}:${session.content_hash}:${session.created_at}`)
+      .digest("hex");
+  }
+
+  function _passMatches(session, pass) {
+    if (typeof pass !== "string" || !/^[0-9a-f]{64}$/.test(pass)) return false;
+    const want = Buffer.from(_passFor(session), "hex");
+    return crypto.timingSafeEqual(want, Buffer.from(pass, "hex"));
+  }
 
   async function _verifySignature({ challenge, signature, publicKey }) {
     const pool = cryptoPoolRef && cryptoPoolRef.current ? cryptoPoolRef.current : null;
@@ -115,9 +138,13 @@ function createChunkedUploadService({
   // complete/abort require the session owner's fresh signature over
   // `${verb}:${sessionId}:${timestamp}:${signer_tip_id}` — the session_id alone is
   // not a bearer token for finalizing.
-  async function _verifyOwnerAction(verb, sessionId, session, { signer_tip_id, signature, timestamp }) {
+  async function _verifyOwnerAction(verb, sessionId, session, { signer_tip_id, signature, timestamp, upload_pass }) {
     if (signer_tip_id !== session.signer_tip_id) {
       throw schemaError(403, "Signer does not own this upload session", "signer_mismatch");
+    }
+    if (upload_pass !== undefined && upload_pass !== null) {
+      if (_passMatches(session, upload_pass)) return;
+      throw schemaError(403, "Upload pass does not match this upload session", "upload_pass_invalid");
     }
     if (!Number.isInteger(timestamp) || Math.abs(nowMs() - timestamp) > COMPLETE_DRIFT_MS) {
       throw schemaError(400, "timestamp missing or out of range", "timestamp_invalid");
@@ -234,6 +261,7 @@ function createChunkedUploadService({
       checksum,
       parts,
       expires_at: session.expires_at,
+      upload_pass: _passFor(session),
     };
   }
 
@@ -292,10 +320,10 @@ function createChunkedUploadService({
     };
   }
 
-  async function complete(sessionId, { signer_tip_id, signature, timestamp, parts }) {
+  async function complete(sessionId, { signer_tip_id, signature, timestamp, parts, upload_pass }) {
     const session = await dag.getUploadSession(sessionId);
     if (!session) throw schemaError(404, "Upload session not found or expired", "session_not_found");
-    await _verifyOwnerAction("MEDIA_UPLOAD_COMPLETE", sessionId, session, { signer_tip_id, signature, timestamp });
+    await _verifyOwnerAction("MEDIA_UPLOAD_COMPLETE", sessionId, session, { signer_tip_id, signature, timestamp, upload_pass });
     const state = session.state || UPLOADING;
     if (state === COMPLETE) return session.result;
     if (state === FAILED) throw _failureError(session.result);

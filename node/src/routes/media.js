@@ -103,6 +103,7 @@ function createRouter({ mediaService, chunkedUploadService }) {
       signature: req.body.signature,
       timestamp: req.body.timestamp,
       parts: req.body.parts,
+      upload_pass: req.body.upload_pass,
     });
     res.status(result.state === UPLOAD_SESSION_STATE.FINALIZING ? 202 : 201).json(result);
   }));
@@ -113,6 +114,7 @@ function createRouter({ mediaService, chunkedUploadService }) {
       signer_tip_id: req.body.signer_tip_id,
       signature: req.body.signature,
       timestamp: req.body.timestamp,
+      upload_pass: req.body.upload_pass,
     });
     res.status(200).json(result);
   }));
