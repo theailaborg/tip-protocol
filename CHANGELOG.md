@@ -9,6 +9,26 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+**Node 2.7.7: a flagged post is no longer reassigned to reviewers forever**
+- A HIGH/CRITICAL post whose assigned reviewers kept missing the 48 h SLA was
+  reassigned every window with no end: one mainnet post went through 48
+  assignments in three months, nobody acted, and nothing downstream could
+  fire because escalation only follows a reviewer's decision. Once a post
+  carries `PRESCAN_REVIEW_CAP.MAX_NO_SHOWS` (3) `sla_expired` recusals, the
+  trigger stops assigning and emits a node-signed `PRESCAN_REVIEW_CONFIRMED`
+  (`auto: true`, no reviewer, suggested origin AG). That opens the creator's
+  existing 24 h window: accept the correction (-10) or let the existing
+  auto-escalation file the dispute. History counts, so a post already past
+  the cap closes on the first round after activation.
+- A no-show auto-confirm pays no reviewer bonus on accept-correction, and the
+  jury's reviewer bonus/clawback already skip a review without a reviewer.
+- Commit rule change, gated on the round's cert timestamp:
+  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-10-22 00:00 UTC), every node on
+  2.7.7 before then. `TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS` overrides it on an
+  isolated cluster (warning-logged).
+
 ### Added
 
 **Node 2.7.6: optional biometric commitment on identity registration**

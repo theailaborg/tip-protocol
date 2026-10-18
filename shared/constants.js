@@ -1070,6 +1070,20 @@ const REGISTER_CREDIT = Object.freeze({
 // rule, so gated on tx.timestamp to keep a mixed fleet from forking.
 const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15:00:00 UTC
 
+// Stage-1 review no-show cap. A flagged post whose assigned reviewers kept
+// missing the SLA was reassigned every window with no end (48 rounds on one
+// mainnet post). Once a post carries MAX_NO_SHOWS sla_expired recusals, the
+// trigger emits a node-signed auto PRESCAN_REVIEW_CONFIRMED instead of another
+// assignment; the creator's decision window and the existing escalation then
+// close the case. New commit rule, so gated on the round's cert timestamp
+// like the others (TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS on an isolated cluster).
+const PRESCAN_REVIEW_CAP = Object.freeze({
+  MAX_NO_SHOWS: 3,
+  ACTIVATION_MS: 1792627200000, // 2026-10-22 00:00:00 UTC
+  AUTO_DECISION_NOTE: "reviewer_pool_no_show",
+  AUTO_SUGGESTED_ORIGIN: "AG",
+});
+
 // Organization roster (org_members). An org invites a registered personal
 // TIP-ID; the invite is usable for INVITE_TTL_MS after its tx.timestamp and
 // never consumes a seat; acceptance does. Seats have two layers. Consensus
@@ -1164,6 +1178,7 @@ module.exports = {
   STATS_SCORING_CACHE_MS,
   REGISTER_CREDIT,
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
+  PRESCAN_REVIEW_CAP,
   ORG_MEMBERS,
   KEY_RETIREMENT_GRACE_MS,
   KEY_RETIREMENT_ACTIVATION_MS,

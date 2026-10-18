@@ -240,8 +240,9 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
 
     // Reviewer's "case closed without dispute" bonus. The creator
     // accepting the CONFIRM is the reviewer's call being validated —
-    // settles immediately, no Stage-2 path needed.
-    const reviewerScoreTx = scoring.buildScoreUpdateTx({
+    // settles immediately, no Stage-2 path needed. A no-show auto-confirm
+    // has no reviewer, so nobody is paid.
+    const reviewerScoreTx = review.assigned_reviewer ? scoring.buildScoreUpdateTx({
       tipId: review.assigned_reviewer,
       delta: REVIEWER.CORRECT_BONUS,
       reason: `review_accepted_private:${reviewId}`,
@@ -249,10 +250,10 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       relatedTxId: updateTx.tx_id,
       timestamp,
       config,
-    });
+    }) : null;
 
-    submitBatch([updateTx, creatorScoreTx, reviewerScoreTx]);
-    log.info(`Accept-correction proposed: review=${reviewId} ctid=${review.ctid} ${content.origin_code} → ${new_origin_code} (creator=${REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA}, reviewer=+${REVIEWER.CORRECT_BONUS})`);
+    submitBatch(reviewerScoreTx ? [updateTx, creatorScoreTx, reviewerScoreTx] : [updateTx, creatorScoreTx]);
+    log.info(`Accept-correction proposed: review=${reviewId} ctid=${review.ctid} ${content.origin_code} → ${new_origin_code} (creator=${REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA}, reviewer=${reviewerScoreTx ? `+${REVIEWER.CORRECT_BONUS}` : "none"})`);
 
     return {
       review_id: reviewId,
@@ -260,10 +261,10 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       old_origin_code: content.origin_code,
       new_origin_code,
       score_delta: REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA,
-      reviewer_bonus: REVIEWER.CORRECT_BONUS,
+      reviewer_bonus: reviewerScoreTx ? REVIEWER.CORRECT_BONUS : 0,
       tx_id: updateTx.tx_id,
       score_tx_id: creatorScoreTx.tx_id,
-      reviewer_score_tx_id: reviewerScoreTx.tx_id,
+      reviewer_score_tx_id: reviewerScoreTx ? reviewerScoreTx.tx_id : null,
       confirmation: "proposed",
     };
   }

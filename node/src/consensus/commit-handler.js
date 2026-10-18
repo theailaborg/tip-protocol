@@ -20,7 +20,7 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS, KEY_RETIREMENT_GRACE_MS, KEY_RETIREMENT_ACTIVATION_MS } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS, KEY_RETIREMENT_GRACE_MS, KEY_RETIREMENT_ACTIVATION_MS, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -865,6 +865,14 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const inBatch = validated.find(t =>
           TERMINAL_TYPES.includes(t.tx_type) && t.data?.review_id === d.review_id);
         if (inBatch) return { valid: false, error: `duplicate prescan-review terminal decision in batch for ${d.review_id}` };
+        // The no-show auto-confirm opens a new review on the content and
+        // flips its status, so it takes the same content-status conflict
+        // guard as a trigger.
+        if (tx.tx_type === TX_TYPES.PRESCAN_REVIEW_CONFIRMED && d.auto && d.ctid) {
+          const sibling = validated.find(t =>
+            CONTENT_STATUS_MUTATORS.includes(t.tx_type) && t.data?.ctid === d.ctid);
+          if (sibling) return { valid: false, error: `content-status conflict in batch: ${sibling.tx_type} already accepted for ${d.ctid}` };
+        }
         return { valid: true };
       }
 
@@ -1184,6 +1192,9 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
       case TX_TYPES.PRESCAN_REVIEW_CONFIRMED: {
+        if (d.auto && !_reviewCapActive(certTimestamp)) {
+          return { valid: false, error: `auto review confirm for ${d.ctid} before the no-show cap activation` };
+        }
         const r = prescanReviewConfirmedSchema.verifyTx(tx, dag);
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
@@ -1268,6 +1279,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
 
   function _keyRetirementActive(certTimestamp) {
     const gate = config && Number.isFinite(config.keyRetirementActivationMs) ? config.keyRetirementActivationMs : KEY_RETIREMENT_ACTIVATION_MS;
+    return certTimestamp > 0 && certTimestamp >= gate;
+  }
+
+  function _reviewCapActive(certTimestamp) {
+    const gate = config && Number.isFinite(config.prescanReviewCapActivationMs) ? config.prescanReviewCapActivationMs : PRESCAN_REVIEW_CAP.ACTIVATION_MS;
     return certTimestamp > 0 && certTimestamp >= gate;
   }
 
@@ -1455,6 +1471,30 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // trigger can compute the window deterministically across nodes.
         // content.status stays PENDING_REVIEW — the creator is now deciding
         // accept-private (Option 1) vs auto-escalation at h=R+24 (Option 2).
+        if (d.auto) {
+          // No-show cap: the node opens the creator's window itself, in a
+          // fresh review slot with no reviewer, and the content goes back
+          // to PENDING_REVIEW so verification stays blocked meanwhile.
+          dag.savePrescanReview({
+            review_id: d.review_id,
+            ctid: d.ctid,
+            creator_tip_id: d.creator_tip_id,
+            assigned_reviewer: null,
+            triggered_at_round: d.triggered_at_round ?? round,
+            triggered_at_ms: _committedCertTimestamp || null,
+            state: PRESCAN_REVIEW_STATES.CONFIRMED,
+            decided_at_round: round,
+            confirmed_at_round: round,
+            confirmed_at_ms: _committedCertTimestamp || null,
+            decision_note: d.decision_note || PRESCAN_REVIEW_CAP.AUTO_DECISION_NOTE,
+            suggested_origin: d.suggested_origin,
+          });
+          const content = dag.getContent(d.ctid);
+          if (content && content.status === CONTENT_STATUS.REGISTERED) {
+            dag.updateContentStatus(d.ctid, CONTENT_STATUS.PENDING_REVIEW);
+          }
+          break;
+        }
         const review = dag.getPrescanReview(d.review_id);
         if (review) {
           dag.savePrescanReview({
