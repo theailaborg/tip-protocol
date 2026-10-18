@@ -11,6 +11,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.7.7: fewer fingerprint prompts during media upload.**
+
 **Node 2.7.6: optional biometric commitment on identity registration**
 - `REGISTER_IDENTITY` accepts an optional VP-signed `biometric_commit` (64-char
   lowercase hex, a SHAKE-256 commitment the VP computes over its off-DAG face
