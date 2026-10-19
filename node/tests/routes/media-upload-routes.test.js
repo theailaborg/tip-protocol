@@ -31,7 +31,7 @@ function _app() {
       return { state: "uploading", checksum: "crc32", parts: parts.map(p => ({ ...p, url: `u${p.part_number}` })) };
     },
     async complete(id, args) { calls.push(["complete", id, args]); return { state: "finalizing", session_id: id, poll_after_ms: 5000 }; },
-    async abort(id) { calls.push(["abort", id]); return { aborted: true }; },
+    async abort(id, args) { calls.push(["abort", id, args]); return { aborted: true }; },
   };
   const app = express();
   app.use("/v1", mediaRoutes.createRouter({ mediaService: {}, chunkedUploadService }));
@@ -76,5 +76,15 @@ describe("media upload routes forward every request field", () => {
     const res = await request(app).post("/v1/media/upload-complete/s1").send({ signer_tip_id: "tip://id/US-1", timestamp: 1, signature: "sig", parts });
     expect(res.status).toBe(202);
     expect(calls[0][2].parts).toEqual(parts);
+  });
+
+  test("upload-complete and upload-abort forward upload_pass", async () => {
+    const { app, calls } = _app();
+    const pass = "ab".repeat(32);
+    const parts = [{ part_number: 1, etag: "\"e1\"" }];
+    expect((await request(app).post("/v1/media/upload-complete/s1").send({ signer_tip_id: "tip://id/US-1", parts, upload_pass: pass })).status).toBe(202);
+    expect(calls[0][2]).toMatchObject({ signer_tip_id: "tip://id/US-1", upload_pass: pass, parts });
+    expect((await request(app).post("/v1/media/upload-abort/s1").send({ signer_tip_id: "tip://id/US-1", upload_pass: pass })).status).toBe(200);
+    expect(calls[1][2]).toMatchObject({ signer_tip_id: "tip://id/US-1", upload_pass: pass });
   });
 });

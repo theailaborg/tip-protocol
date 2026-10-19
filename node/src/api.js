@@ -83,6 +83,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
     mediaLimits: config.mediaLimits,
     log: getLogger("tip.media.chunked"),
     mediaQuota,
+    uploadPassSecret: config.nodePrivateKey || null,
   });
 
   const mediaService = createMediaService({
