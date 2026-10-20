@@ -109,14 +109,37 @@ describe("prescan", () => {
     ]);
   });
 
-  test("non-OH origin → locally skipped without round-trip (default)", async () => {
-    const { client, fetch } = clientWith(() => ({ body: { error: "should-not-be-called" } }));
-    const r = await client.prescan({ originCode: "AG", text: "x" });
-    expect(fetch.calls).toHaveLength(0);
-    expect(r.flagged).toBe(false);
-    expect(r.probability).toBe(0);
-    expect(r.provider_used).toBe("skipped_locally");
-    expect(r.locally_skipped).toBe(true);
+  test("non-OH origin hits the classifier by default", async () => {
+    const saved = process.env.TIP_CLASSIFIER_SCAN_NON_OH;
+    delete process.env.TIP_CLASSIFIER_SCAN_NON_OH;
+    try {
+      const { client, fetch } = clientWith(
+        () => ({ body: { flagged: false, probability: 0.79, modality_results: [], provider_used: "ensemble" } }),
+      );
+      const r = await client.prescan({ originCode: "AG", text: "self-disclosed AI" });
+      expect(fetch.calls).toHaveLength(1);
+      expect(r.locally_skipped).toBeUndefined();
+      expect(r.probability).toBe(0.79);
+    } finally {
+      if (saved !== undefined) process.env.TIP_CLASSIFIER_SCAN_NON_OH = saved;
+    }
+  });
+
+  test("non-OH origin → locally skipped without round-trip when TIP_CLASSIFIER_SCAN_NON_OH=false", async () => {
+    const saved = process.env.TIP_CLASSIFIER_SCAN_NON_OH;
+    process.env.TIP_CLASSIFIER_SCAN_NON_OH = "false";
+    try {
+      const { client, fetch } = clientWith(() => ({ body: { error: "should-not-be-called" } }));
+      const r = await client.prescan({ originCode: "AG", text: "x" });
+      expect(fetch.calls).toHaveLength(0);
+      expect(r.flagged).toBe(false);
+      expect(r.probability).toBe(0);
+      expect(r.provider_used).toBe("skipped_locally");
+      expect(r.locally_skipped).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.TIP_CLASSIFIER_SCAN_NON_OH;
+      else process.env.TIP_CLASSIFIER_SCAN_NON_OH = saved;
+    }
   });
 
   test("non-OH origin DOES hit the classifier when scanNonOH=true (opts override)", async () => {
