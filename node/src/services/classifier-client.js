@@ -104,7 +104,7 @@ function createClassifierClient(opts = {}) {
   const mediaLimits = opts.mediaLimits ?? opts.config?.mediaLimits ?? MEDIA_LIMITS;
   const scanNonOH = opts.scanNonOH !== undefined
     ? !!opts.scanNonOH
-    : _envBool(process.env.TIP_CLASSIFIER_SCAN_NON_OH, false);
+    : _envBool(process.env.TIP_CLASSIFIER_SCAN_NON_OH, true);
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     throw new Error("classifier-client: fetch implementation not available");
@@ -191,11 +191,10 @@ function createClassifierClient(opts = {}) {
         message: `origin_code must be one of: OH, AA, AG, MX (got "${originCode}")`,
       };
     }
-    // Non-OH origins (AA/AG/MX): self-disclose AI involvement, so the
-    // classifier's job (catch undisclosed AI) doesn't apply. Default to
-    // short-circuiting locally — saves latency + classifier load.
-    // Override via TIP_CLASSIFIER_SCAN_NON_OH=true (or opts.scanNonOH)
-    // when you want to fact-check self-disclosure / seed training data.
+    // Non-OH origins (AA/AG/MX) self-disclose AI involvement, so their scan is
+    // information only (never a review trigger). Scanned by default so the
+    // record carries a real verdict; TIP_CLASSIFIER_SCAN_NON_OH=false (or
+    // opts.scanNonOH) short-circuits locally to save classifier load.
     if (originCode !== "OH" && !scanNonOH) {
       return _skippedResponse(originCode);
     }
