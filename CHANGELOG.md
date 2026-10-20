@@ -9,6 +9,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+**Node 2.7.8: posts self-disclosed as AA/AG/MX are scanned too**
+- The prescan skipped every non-OH registration and wrote the neutral 0.5
+  verdict (`classifier_providers_used: skipped_locally`), which the public
+  record shows as a plain 0.5 nobody can tell from "uncertain". The
+  classifier now scores every origin; the result is information only, non-OH
+  posts are never sent to a reviewer. `TIP_CLASSIFIER_SCAN_NON_OH` defaults to
+  `true` in the template and the client; `false` restores the skip.
+
 ### Added
 
 **Node 2.7.7: fewer fingerprint prompts during media upload.**

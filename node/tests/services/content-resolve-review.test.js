@@ -63,9 +63,9 @@ function _setup() {
   return { dag, service };
 }
 
-function _seedContent(dag, { status = CONTENT_STATUS.REGISTERED, origin_code = "OH" } = {}) {
+function _seedContent(dag, { status = CONTENT_STATUS.REGISTERED, origin_code = "OH", ctid = CTID } = {}) {
   dag.saveContent({
-    ctid: CTID, origin_code,
+    ctid, origin_code,
     content_hash: "ab".repeat(32),
     author_tip_id: CREATOR, signer_tip_id: CREATOR,
     authors: [{ tip_id: CREATOR, tip_id_type: "personal" }],
@@ -191,5 +191,28 @@ describe("content-service.resolve — review_history + consensus", () => {
     expect(out.prescan.actions_available).toContain("retract");
     // No reviewer step pending — the trigger SQL excludes non-OH rows.
     expect(out.prescan.next_step_if_kept).toBe("none");
+    expect(out.prescan.review_applicable).toBe(false);
+  });
+
+  test("declared AG at registration with a HIGH scan → information only: no window, no actions, no reviewer step", async () => {
+    const fx = _setup();
+    const agCtid = "tip://c/AG-22222222222222-0002";
+    _seedContent(fx.dag, { origin_code: "AG", ctid: agCtid });
+    const out = await fx.service.resolve(agCtid);
+    expect(out.origin_changed).toBe(false);
+    expect(out.prescan.tier).toBe("high");
+    expect(out.prescan.flagged).toBe(true);
+    expect(out.prescan.review_applicable).toBe(false);
+    expect(out.prescan.actions_available).toEqual([]);
+    expect(out.prescan.consequence_if_confirmed).toBe("none");
+    expect(out.prescan.next_step_if_kept).toBe("none");
+    expect(out.prescan.decision_window_ends_at).toBeUndefined();
+  });
+
+  test("declared OH keeps review_applicable=true", async () => {
+    const fx = _setup();
+    _seedContent(fx.dag, { origin_code: "OH" });
+    const out = await fx.service.resolve(CTID);
+    expect(out.prescan.review_applicable).toBe(true);
   });
 });
