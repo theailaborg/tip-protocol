@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-**Node: posts self-disclosed as AA/AG/MX are scanned too**
+**Node 2.7.8: posts self-disclosed as AA/AG/MX are scanned too**
 - The prescan skipped every non-OH registration and wrote the neutral 0.5
   verdict (`classifier_providers_used: skipped_locally`), which the public
   record shows as a plain 0.5 nobody can tell from "uncertain". The
