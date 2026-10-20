@@ -328,15 +328,28 @@ function createTxSubmitter(consensusRef) {
  */
 function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChanged = false }) {
   const tier = preScan?.tier || PRESCAN_TIERS.LOW;
+  // Only a post still declared human-made can be sent to a reviewer; the
+  // scan of a self-disclosed AA/AG/MX post is information, never a warning.
+  const reviewApplicable = originCode === ORIGIN.OH;
   const base = {
     tier,
     confidence_label: CONFIDENCE_LABELS[tier] || tier,
     probability: typeof preScan?.probability === "number" ? preScan.probability : 0,
     flagged: !!preScan?.flagged,
+    review_applicable: reviewApplicable,
   };
 
   // LOW — nothing more to surface; the FE shouldn't render any banner.
   if (tier === PRESCAN_TIERS.LOW) return base;
+
+  if (!reviewApplicable && !originChanged) {
+    return {
+      ...base,
+      actions_available: [],
+      consequence_if_confirmed: PRESCAN_CONSEQUENCES.NONE,
+      next_step_if_kept: PRESCAN_NEXT_STEPS.NONE,
+    };
+  }
 
   const registeredMs = registeredAt ? registeredAt : nowMs();
 
