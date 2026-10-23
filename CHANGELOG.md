@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-**Node: built-in status page and public node registry**
+**Node 2.7.9: built-in status page and public node registry**
 - `GET /status` on every node: one page, no key, refreshed every 3 s, showing
   this node (id, version, uptime, join state, endpoint, memory, chain id),
   the chain (round, committed round, state root, committee, mempool), a
