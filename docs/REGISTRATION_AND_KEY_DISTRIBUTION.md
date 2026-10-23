@@ -331,6 +331,32 @@ repo checkout, and `deliveries/` is gitignored as a backstop.
 
 Email wording: `partner-onboarding-emails.html`, mainnet card.
 
+### 6.5 Issue the log-shipping label and password
+
+The bundle does not carry log-shipping settings; the partner creates
+`promtail.env` from `PARTNER_LOG_SHIPPING.md`, and we issue the two values it
+needs. Do this with the bundle delivery, not after the first incident.
+
+- **Node label** (`NODE_LABEL`): the organisation slug, lowercase, hyphens,
+  unique across the federation (`ss-software`, `az-logics`, `rooverse`). Our
+  own nodes are `node1`, `node2`, `node3`. It becomes `node="<label>"` on every
+  log line, so the dashboards only show what is sent under exactly that label.
+  Put the label in the onboarding email next to the zip name.
+- **Username**: `promtail`, fixed in the agent config; nothing to issue.
+- **Password** (`LOKI_PASSWORD`): the current Loki push password. It is one
+  shared credential for every node today (the plaintext of the Caddy
+  `basic_auth` hash on the observability host; the same value is in each Lab
+  node's `promtail.env`). Send it on the same separate channel as the zip
+  password, never in the email. A leak means rotating it on every node, ours
+  and partners', so treat it like a node key.
+- **Record** the label, the date and who received it in the partner's entry in
+  the private notes; the password itself is only ever in `promtail.env` files
+  and the Caddy hash.
+
+Verification after their agent starts: the node appears under its label in
+the federation dashboard within a minute; a `401` in `docker logs tip-promtail`
+means the password does not match the hash.
+
 ## 7. Partner boots, we verify
 
 Partner side: `DEPLOYMENT.md`, section *[Joining an Existing Federation (partner
