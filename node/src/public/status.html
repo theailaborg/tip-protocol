@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>TIP node status</title>
+  <style>
+    :root {
+      --bg: #fbfaf7; --fg: #1c1c1e; --muted: #6b6b73; --line: #e6e3da; --code: #f3efe6;
+      --ok: #1a8a5c; --warn: #b67a00; --bad: #b03030; --card: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #15161a; --fg: #e8e8ed; --muted: #9a9aa3; --line: #2c2d33; --code: #1d1e23; --card: #1a1b20; }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color: var(--fg); background: var(--bg); -webkit-font-smoothing: antialiased; }
+    main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 72px; }
+    header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 20px; }
+    h1 { font-size: 22px; margin: 0; font-weight: 600; }
+    h2 { font-size: 15px; margin: 0 0 10px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--muted); }
+    .muted { color: var(--muted); }
+    code { background: var(--code); padding: 1px 6px; border-radius: 4px; font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; word-break: break-all; }
+    .banner { display: flex; align-items: center; gap: 14px; padding: 16px 18px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); margin-bottom: 20px; }
+    .dot { width: 18px; height: 18px; border-radius: 50%; flex: 0 0 18px; background: var(--muted); }
+    .ok .dot { background: var(--ok); } .warn .dot { background: var(--warn); } .bad .dot { background: var(--bad); }
+    .banner strong { font-size: 18px; }
+    .banner .reasons { color: var(--muted); font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 20px; }
+    .card { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 16px 18px; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+    dt { color: var(--muted); } dd { margin: 0; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+    th { color: var(--muted); font-weight: 600; font-size: 13px; }
+    td:first-child { white-space: normal; min-width: 260px; }
+    td code { white-space: nowrap; word-break: normal; }
+    .tbl { overflow-x: auto; }
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+    .pill.ok { color: var(--ok); border-color: var(--ok); } .pill.warn { color: var(--warn); border-color: var(--warn); } .pill.bad { color: var(--bad); border-color: var(--bad); }
+    .pill.genesis { color: #2563a8; border-color: #2563a8; }
+    ul.checks { list-style: none; padding: 0; margin: 0; }
+    ul.checks li { padding: 4px 0; display: flex; gap: 10px; align-items: baseline; }
+    ul.checks .mark { width: 1.2em; text-align: center; font-weight: 700; }
+    .ok-t { color: var(--ok); } .warn-t { color: var(--warn); } .bad-t { color: var(--bad); }
+    footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+    footer a { color: inherit; }
+    @media (prefers-reduced-motion: reduce) { * { transition: none; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">TIP node status</h1>
+    <span class="muted" id="refreshed">loading…</span>
+  </header>
+
+  <section class="banner" id="banner" aria-live="polite">
+    <span class="dot"></span>
+    <div><strong id="verdict">Checking…</strong><div class="reasons" id="reasons"></div></div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>This node</h2>
+      <dl id="self"></dl>
+    </section>
+    <section class="card">
+      <h2>Chain</h2>
+      <dl id="chain"></dl>
+    </section>
+    <section class="card">
+      <h2>Checks</h2>
+      <ul class="checks" id="checks"></ul>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Peers <span class="muted" id="peercount"></span></h2>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Node</th><th>Round</th><th>Committed</th><th>State root</th><th>Agrees</th><th>Checked</th></tr></thead>
+        <tbody id="peers"></tbody>
+      </table>
+    </div>
+    <p class="muted" id="registry-note"></p>
+  </section>
+
+  <footer>
+    Live view from this node only, refreshed every 3 s. Raw data:
+    <a href="/ready">/ready</a> · <a href="/v1/health">/v1/health</a> · <a href="/v1/sync-status">/v1/sync-status</a> · <a href="/v1/nodes">/v1/nodes</a> · <a href="/v1/state-root">/v1/state-root</a>
+  </footer>
+</main>
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const REFRESH_MS = 3000;
+  const ROUND_STALE_MS = 15000;
+
+  async function getJson(path) {
+    try {
+      const r = await fetch(path, { cache: "no-store" });
+      const j = await r.json();
+      return { status: r.status, data: j && j.data !== undefined ? j.data : j };
+    } catch (e) {
+      return { status: 0, data: null, error: String(e) };
+    }
+  }
+
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const short = (h) => (typeof h === "string" && h.length > 12 ? h.slice(0, 8) + "…" : (h || "-"));
+  const shortId = (id) => (typeof id === "string" ? id.replace("tip://node/", "") : "-");
+  const ago = (iso) => {
+    const t = Date.parse(iso || ""); if (!Number.isFinite(t)) return "-";
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    return s < 60 ? s + " s ago" : Math.round(s / 60) + " min ago";
+  };
+  const dur = (sec) => {
+    if (!Number.isFinite(sec)) return "-";
+    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${sec % 60}s`;
+  };
+  function dl(rows) {
+    return rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
+  }
+
+  async function refresh() {
+    const [ready, health, sync, nodes] = await Promise.all([
+      getJson("/ready"), getJson("/v1/health"), getJson("/v1/sync-status"), getJson("/v1/nodes"),
+    ]);
+    const rd = ready.data || {}, hd = health.data || {}, sd = sync.data || {}, nd = nodes.data || {};
+    const nar = (hd.consensus && hd.consensus.narwhal) || {};
+    const registry = new Map((nd.nodes || []).map((n) => [n.node_id, n]));
+    const founding = new Set(nd.founding_node_ids || []);
+    const selfId = hd.node_id || nd.self || "-";
+    const selfReg = registry.get(selfId) || {};
+    const self = sd.self || {};
+    const peers = Array.isArray(sd.peers) ? sd.peers : [];
+
+    // Checks. Red: this node is not serving the chain. Amber: it serves but
+    // something to look at. Green: all good.
+    const unreachable = health.status === 0;
+    const dbOk = rd.db_ok !== false && hd.status !== "degraded";
+    const halted = rd.halted === true || hd.status === "halted";
+    const joinState = rd.join_state || nar.joinState || "unknown";
+    const forkHalt = sd.byzantine_fork_halt || nar.byzantineForkHalt || null;
+    const peerCount = Number((hd.peers && hd.peers.connected) || 0);
+    const foundingPeers = peers.filter((p) => founding.has(p.node_id)).length;
+    const selfIsFounding = founding.has(selfId);
+    const agreeing = peers.filter((p) => p.state_merkle_root && p.state_merkle_root === self.state_merkle_root).length;
+    const lastAdvance = Date.parse(nar.lastRoundAdvanceAt || "");
+    const roundFresh = Number.isFinite(lastAdvance) ? (Date.now() - lastAdvance) < ROUND_STALE_MS : true;
+    const endpoint = selfReg.api_endpoint || null;
+
+    const checks = [
+      ["Node reachable", unreachable ? "bad" : "ok", unreachable ? "no answer from /v1/health" : `version ${esc(hd.version || "-")}`],
+      ["Database readable", dbOk ? "ok" : "bad", dbOk ? `${esc(hd.dag_count ?? "-")} transactions` : "db check failed"],
+      ["Consensus running", halted ? "bad" : "ok", halted ? "halted" : (nar.running === false ? "not running" : "running")],
+      ["Caught up with the federation", joinState === "ready" ? "ok" : "warn", `join state: ${esc(joinState)}`],
+      ["No fork halt", forkHalt ? "bad" : "ok", forkHalt ? esc(JSON.stringify(forkHalt)).slice(0, 120) : "roots consistent"],
+      ["Connected to peers", peerCount > 0 ? "ok" : "bad", `${peerCount} connected`],
+      ["Connected to a genesis node", (foundingPeers > 0 || selfIsFounding) ? "ok" : "warn",
+        selfIsFounding ? "this node is a genesis node" : `${foundingPeers} of ${founding.size} genesis nodes in the peer list`],
+      ["Peers agree on state root", peers.length === 0 ? "warn" : (agreeing === peers.length ? "ok" : (agreeing > 0 ? "warn" : "bad")),
+        peers.length ? `${agreeing} of ${peers.length} share root ${short(self.state_merkle_root)}` : "no peer data yet"],
+      ["Rounds advancing", roundFresh ? "ok" : "warn", nar.lastRoundAdvanceAt ? `last advance ${ago(nar.lastRoundAdvanceAt)}` : "no consensus stats"],
+      ["Public endpoint announced", endpoint ? "ok" : "warn", endpoint ? esc(endpoint) : "none on chain (POST /v1/node/endpoint/announce)"],
+    ];
+    if (joinState !== "ready" && (nar.running === false || halted)) checks[3][1] = "bad";
+
+    const worst = checks.some((c) => c[1] === "bad") ? "bad" : checks.some((c) => c[1] === "warn") ? "warn" : "ok";
+    const banner = $("banner"); banner.className = "banner " + worst;
+    $("verdict").textContent = worst === "ok" ? "All good" : worst === "warn" ? "Serving, with something to look at" : "Not healthy";
+    $("reasons").textContent = checks.filter((c) => c[1] !== "ok").map((c) => c[0] + " (" + c[2].replace(/<[^>]+>/g, "") + ")").join(" · ") || "every check passes";
+    $("checks").innerHTML = checks.map((c) => `<li><span class="mark ${c[1]}-t">${c[1] === "ok" ? "✓" : c[1] === "warn" ? "!" : "✕"}</span><span>${esc(c[0])} <span class="muted">${c[2]}</span></span></li>`).join("");
+
+    $("title").textContent = selfReg.name ? selfReg.name : "TIP node status";
+    $("self").innerHTML = dl([
+      ["Node id", `<code>${esc(selfId)}</code>${selfIsFounding ? ' <span class="pill genesis">genesis</span>' : ""}`],
+      ["Version", `${esc(hd.version || "-")} <span class="muted">protocol ${esc(hd.protocol || "-")}</span>`],
+      ["Uptime", esc(dur(hd.uptime_seconds))],
+      ["Join state", `<span class="pill ${joinState === "ready" ? "ok" : "warn"}">${esc(joinState)}</span>`],
+      ["Endpoint", endpoint ? `<code>${esc(endpoint)}</code>` : '<span class="muted">not announced</span>'],
+      ["P2P peer id", `<code>${esc((hd.p2p && hd.p2p.peer_id) || "-")}</code>`],
+      ["Memory", hd.memory_mb ? `${esc(hd.memory_mb.rss)} MB rss, heap ${esc(hd.memory_mb.heap_used)} MB` : "-"],
+      ["Chain id", nd.genesis_hash ? `<code>${esc(String(nd.genesis_hash).slice(0, 16))}</code>` : "-"],
+    ]);
+    $("chain").innerHTML = dl([
+      ["Round", esc(self.round ?? nar.round ?? "-")],
+      ["Committed round", esc(self.committed_round ?? "-")],
+      ["State root", `<code title="${esc(self.state_merkle_root || "")}">${esc(self.state_merkle_root || "-")}</code>`],
+      ["Consensus index", esc(self.consensus_index ?? "-")],
+      ["Committee", `quorum ${esc(nar.quorum ?? "-")}, active ${esc(nar.activeParticipants ?? "-")}, registered ${esc(nar.registeredNodes ?? "-")}`],
+      ["This round", `${esc(nar.batchesThisRound ?? "-")} batches, ${esc(nar.certificatesThisRound ?? "-")} certificates, ${esc(nar.pendingCerts ?? "-")} pending`],
+      ["Mempool", esc(nar.mempoolSize ?? "-")],
+      ["Last round advance", nar.lastRoundAdvanceAt ? esc(ago(nar.lastRoundAdvanceAt)) : "-"],
+    ]);
+
+    $("peercount").textContent = peers.length ? `(${peers.length} reporting, ${peerCount} p2p connections)` : `(${peerCount} p2p connections)`;
+    $("peers").innerHTML = peers.length ? peers.map((p) => {
+      const reg = registry.get(p.node_id) || {};
+      const agrees = p.state_merkle_root && p.state_merkle_root === self.state_merkle_root;
+      return `<tr>
+        <td>${esc(reg.name || shortId(p.node_id))}${founding.has(p.node_id) ? ' <span class="pill genesis">genesis</span>' : ""}<br><code>${esc(shortId(p.node_id))}</code>${reg.api_endpoint ? `<br><span class="muted">${esc(reg.api_endpoint)}</span>` : ""}</td>
+        <td>${esc(p.round ?? "-")}</td>
+        <td>${esc(p.committed_round ?? "-")}</td>
+        <td><code title="${esc(p.state_merkle_root || "")}">${esc(short(p.state_merkle_root))}</code></td>
+        <td><span class="pill ${agrees ? "ok" : "bad"}">${agrees ? "✓ same root" : "✕ differs"}</span>${p.in_sync ? ' <span class="pill ok">in sync</span>' : ""}</td>
+        <td class="muted">${esc(ago(p.checked_at))}</td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="6" class="muted">No peer status yet. A node reports peers after its first sync round; zero peers for more than a minute usually means the bootstrap address or the genesis is wrong.</td></tr>`;
+
+    const offline = (nd.nodes || []).filter((n) => n.node_id !== selfId && !peers.some((p) => p.node_id === n.node_id));
+    $("registry-note").textContent = offline.length
+      ? `Registered on chain but not in this node's peer list: ${offline.map((n) => n.name || shortId(n.node_id)).join(", ")}.`
+      : (nd.nodes ? "Every registered node is in the peer list." : "");
+
+    $("refreshed").textContent = "refreshed " + new Date().toLocaleTimeString();
+  }
+
+  let timer = null;
+  function schedule() { clearTimeout(timer); timer = setTimeout(tick, REFRESH_MS); }
+  async function tick() { if (!document.hidden) { try { await refresh(); } catch (e) { $("verdict").textContent = "Page error: " + e; } } schedule(); }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+  tick();
+})();
+</script>
+</body>
+</html>
