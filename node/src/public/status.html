@@ -32,10 +32,12 @@
     dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
     dt { color: var(--muted); } dd { margin: 0; }
     table { border-collapse: collapse; width: 100%; }
-    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
     th { color: var(--muted); font-weight: 600; font-size: 13px; }
+    td:first-child { white-space: normal; min-width: 260px; }
+    td code { white-space: nowrap; word-break: normal; }
     .tbl { overflow-x: auto; }
-    .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); color: var(--muted); }
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
     .pill.ok { color: var(--ok); border-color: var(--ok); } .pill.warn { color: var(--warn); border-color: var(--warn); } .pill.bad { color: var(--bad); border-color: var(--bad); }
     .pill.genesis { color: #2563a8; border-color: #2563a8; }
     ul.checks { list-style: none; padding: 0; margin: 0; }
@@ -205,7 +207,7 @@
         <td>${esc(p.round ?? "-")}</td>
         <td>${esc(p.committed_round ?? "-")}</td>
         <td><code title="${esc(p.state_merkle_root || "")}">${esc(short(p.state_merkle_root))}</code></td>
-        <td><span class="pill ${agrees ? "ok" : "bad"}">${agrees ? "same root" : "differs"}</span>${p.in_sync ? ' <span class="pill ok">in sync</span>' : ""}</td>
+        <td><span class="pill ${agrees ? "ok" : "bad"}">${agrees ? "✓ same root" : "✕ differs"}</span>${p.in_sync ? ' <span class="pill ok">in sync</span>' : ""}</td>
         <td class="muted">${esc(ago(p.checked_at))}</td>
       </tr>`;
     }).join("") : `<tr><td colspan="6" class="muted">No peer status yet. A node reports peers after its first sync round; zero peers for more than a minute usually means the bootstrap address or the genesis is wrong.</td></tr>`;
