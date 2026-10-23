@@ -457,6 +457,13 @@ Equal `state_merkle_root` at equal `round` means the node's entire state is
 byte-identical to the rest of the federation. Rounds advance every ~2s, so
 compare matching round numbers rather than two snapshots taken seconds apart.
 
+The same checks, kept green on one page: open `https://<your-node-host>/status`
+(or `http://localhost:4000/status`). It shows every connected peer with its
+round and state root, whether a genesis node is among them, and a checklist
+that is only all-green when the node is reachable, caught up, not halted,
+connected, in agreement on the state root and announcing its endpoint. It reads
+only the public endpoints above, so there is nothing to configure.
+
 **7. Announce the public endpoint** once DNS resolves to this host. It is
 optional at registration and updated any time afterwards, signed by the node's
 own key with no council re-approval:
