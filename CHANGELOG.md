@@ -9,6 +9,21 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+**Node: built-in status page and public node registry**
+- `GET /status` on every node: one page, no key, refreshed every 3 s, showing
+  this node (id, version, uptime, join state, endpoint, memory, chain id),
+  the chain (round, committed round, state root, committee, mempool), a
+  checklist that turns green only when the node is reachable, the database
+  reads, consensus runs, it is caught up, there is no fork halt, it has peers,
+  at least one of them is a genesis node, every peer shares its state root,
+  rounds advance and its endpoint is announced, and a peer table with the
+  registry name, rounds, root and whether it agrees with this node.
+- `GET /v1/nodes`: the on-chain node registry (id, name, status, endpoint,
+  operator, founding flag, registered_at), never keys. Feeds the page and
+  replaces the hand-kept node sheet.
+
 ### Changed
 
 **Node 2.7.8: posts self-disclosed as AA/AG/MX are scanned too**

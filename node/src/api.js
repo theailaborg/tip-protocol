@@ -45,6 +45,7 @@ const { createSeatAllowanceClient } = require("./services/seat-allowance-client"
 
 // Routes
 const healthRoutes = require("./routes/health");
+const nodesRoutes = require("./routes/nodes");
 const statsRoutes = require("./routes/stats");
 const metricsRoutes = require("./routes/metrics");
 const identityRoutes = require("./routes/identity");
@@ -127,6 +128,9 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use("/v1/zk", express.static(path.resolve(__dirname, "../../circuits")));
   app.use("/download", express.static(path.resolve(__dirname, "../../browser-extension")));
   app.get("/scoring", (req, res) => res.sendFile(path.resolve(__dirname, "public/scoring.html")));
+  // Operator status page: peers, rounds, state root, sync state. Public, no
+  // key; reads only the public endpoints it links to.
+  app.get("/status", (req, res) => res.sendFile(path.resolve(__dirname, "public/status.html")));
 
   // Middleware
   app.use(requestId);
@@ -230,6 +234,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, reviewRoutes.createRouter({ reviewService }));
   app.use(API_VERSION, mediaRoutes.createRouter({ mediaService, chunkedUploadService }));
   app.use(API_VERSION, dagRoutes.createRouter(ctx));
+  app.use(API_VERSION, nodesRoutes.createRouter({ dag, config }));
 
   // ── 404 catch-all (after all routes, before error handler) ─────────────────
   app.use((req, res) => {
