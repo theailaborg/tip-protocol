@@ -194,11 +194,11 @@ const SCHEMA = {
   },
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: {
     // GH #51: reviewer's signature lives at tx.signature, not tx.data.
-    required: ["review_id", "reviewer_tip_id", "suggested_origin"],
-    types: {
-      review_id: "string", reviewer_tip_id: "string",
-      suggested_origin: "string",
-    },
+    // reviewer_tip_id is reviewer-confirm only; the node-emitted no-show
+    // auto-confirm (data.auto = true) carries node_id instead, and the
+    // schema module's getSignatureContract branches on data.auto.
+    required: ["review_id", "suggested_origin"],
+    types: { review_id: "string", suggested_origin: "string" },
   },
   [TX_TYPES.COMMITTEE_ROTATION]: {
     // Chain-of-trust rotation event. Deeper validation (rotation_number

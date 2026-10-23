@@ -41,8 +41,9 @@
 
 const { shake256, computeTxId, signTransaction } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
-const { TX_TYPES, PRESCAN_REVIEW_STATES, RECUSAL_REASONS } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, RECUSAL_REASONS, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
 const { selectReviewer } = require("../reviewer-selection");
+const { countNoShows } = require("../schemas/prescan-review-confirmed");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.prescan-review-trigger");
@@ -62,6 +63,15 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
 
   const _myNodeId = config?.nodeRegisteredId || config?.nodeId;
   const _nodePrivateKey = config?.nodePrivateKey;
+  const _capActivationMs = Number.isFinite(config?.prescanReviewCapActivationMs)
+    ? config.prescanReviewCapActivationMs : PRESCAN_REVIEW_CAP.ACTIVATION_MS;
+  if (_capActivationMs !== PRESCAN_REVIEW_CAP.ACTIVATION_MS) {
+    log.warn(`TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS=${_capActivationMs} overrides the network activation (${PRESCAN_REVIEW_CAP.ACTIVATION_MS}); every node must use the same value or this node forks`);
+  }
+
+  function _capActive(certTimestamp) {
+    return certTimestamp >= _capActivationMs;
+  }
 
   function _isMyRoundLeader(round) {
     if (typeof getCommittee !== "function") return true;
@@ -96,6 +106,26 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
 
     for (const content of candidates) {
       try {
+        // No-show cap: after MAX_NO_SHOWS SLA recusals the post stops
+        // being reassigned; the node opens the creator's decision window
+        // itself (auto-confirm) and the existing escalation closes the case.
+        if (_capActive(certTimestamp) && countNoShows(dag, content.ctid) >= PRESCAN_REVIEW_CAP.MAX_NO_SHOWS) {
+          const tx = _buildAutoConfirmTx({
+            reviewId: _deriveAutoReviewId(content.ctid, round),
+            ctid: content.ctid,
+            creatorTipId: content.author_tip_id,
+            round,
+          });
+          try {
+            submitTx(tx);
+            log.info(`Review no-show cap reached for ${content.ctid}; auto-confirm proposed (review_id=${tx.data.review_id})`);
+          } catch (err) {
+            const reason = err?.error || err?.message || String(err);
+            log.debug(`Auto-confirm submission deferred for ${content.ctid}: ${reason}`);
+          }
+          continue;
+        }
+
         const reviewId = _deriveReviewId(content.ctid, round);
         const { reviewer, pass, poolSize } = selectReviewer(dag, scoring, {
           reviewId, ctid: content.ctid, round,
@@ -176,6 +206,25 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         assigned_reviewer_tip_id: assignedReviewerTipId,
         node_id: _myNodeId,
         triggered_at_round: round,
+      },
+    };
+    txBody.tx_id = computeTxId(txBody);
+    return signTransaction(txBody, _nodePrivateKey);
+  }
+
+  function _buildAutoConfirmTx({ reviewId, ctid, creatorTipId, round }) {
+    const txBody = {
+      tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
+      timestamp: nowMs(),
+      data: {
+        review_id: reviewId,
+        ctid,
+        auto: true,
+        node_id: _myNodeId,
+        creator_tip_id: creatorTipId,
+        triggered_at_round: round,
+        suggested_origin: PRESCAN_REVIEW_CAP.AUTO_SUGGESTED_ORIGIN,
+        decision_note: PRESCAN_REVIEW_CAP.AUTO_DECISION_NOTE,
       },
     };
     txBody.tx_id = computeTxId(txBody);
@@ -277,4 +326,11 @@ function _deriveReviewId(ctid, round) {
   return `pr_${h}`;
 }
 
-module.exports = { createPrescanReviewTrigger, _deriveReviewId };
+// Distinct namespace so a no-show auto-confirm never collides with a
+// reviewer assignment derived for the same ctid and round.
+function _deriveAutoReviewId(ctid, round) {
+  const h = shake256(`prescan_review_auto:${ctid}:${round}`).slice(0, 32);
+  return `pr_${h}`;
+}
+
+module.exports = { createPrescanReviewTrigger, _deriveReviewId, _deriveAutoReviewId };
