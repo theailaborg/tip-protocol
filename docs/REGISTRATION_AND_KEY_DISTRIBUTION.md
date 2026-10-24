@@ -9,6 +9,9 @@ character in a registration mints a second, permanent identity that can never be
 reconciled with the real company. Nothing in section 4 onward is reversible, so
 every gate in section 2 must be green before you run anything.
 
+On a Mac, run `setopt interactivecomments` once in each new terminal: the worked
+examples contain `#` comment lines, which zsh otherwise rejects when pasted.
+
 Run everything from the designated registration machine, never from a shared or
 day-to-day development box: the commands below handle the founding VP key and
 mint partner private keys. Every command runs **from the repo root** (`cd` into
@@ -168,12 +171,14 @@ non-negotiables:
      --org-type <legal-form> \
      --partner <partner-slug> \
      --node-url https://node.theailab.org \
-     --vp-file <VP_KEY_FILE>   # .../tip-vp-US-0e7db4040667073a.tip.json
+     --vp-file <VP_KEY_FILE>
    ```
 
 3. **Verify from two different nodes**: they must agree. Set the ID on its own
    line first (no trailing backslash: pasting the assignment and the loop as
    one line is a shell parse error):
+
+   *Run on: any machine with internet access, any folder.*
 
    ```bash
    ORG_ID='tip://id/<REGION>-<id>'
@@ -232,7 +237,7 @@ carries the test genesis: `git checkout -- genesis-data/genesis.json`, then
 confirm `d4666ce1`):
 
 ```bash
-python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:8])"   # d4666ce1
+python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:8])"
 ```
 
 **1. Dry run.** Same command as the real run plus `--dry-run`; it signs
@@ -246,7 +251,7 @@ node scripts/register-node.js \
   --operated-by "tip://id/<REGION>-<org-id>" \
   --operator-key-file generated/<partner-slug>/org/<org-tip-id>.tip.json \
   --operator-key-date <incorporation date, YYYY-MM-DD> \
-  --vp-file <VP_KEY_FILE>   # .../tip-vp-US-0e7db4040667073a.tip.json \
+  --vp-file <VP_KEY_FILE> \
   --production \
   --port 4000 \
   --api-endpoint "https://<their-node-domain>" \
@@ -347,6 +352,8 @@ curl -s https://node2.theailab.org/v1/nodes | python3 -m json.tool | grep -B2 -A
 
 `"<Partner> Node"` is the exact `--name` value, quotes included; any other
 spelling and grep prints nothing. Example for the SS node, live on mainnet:
+
+*Run on: any machine with internet access, any folder.*
 
 ```bash
 curl -s https://node.theailab.org/v1/nodes | python3 -m json.tool | grep -B2 -A6 '"SS Software Node"'
@@ -466,9 +473,11 @@ TIP_CORS_ORIGINS=https://theailab.org,https://www.theailab.org,https://vp.theail
 Second, the two secrets are filled, checked without printing them:
 
 ```bash
-grep -cE '^(TIP_CLASSIFIER_KEY|TIP_METRICS_TOKEN)=.+' generated/<partner>/node/<slug>.env   # 2 (0 before you filled them)
-grep -c certtest generated/<partner>/node/<slug>.env                                      # 0
+grep -cE '^(TIP_CLASSIFIER_KEY|TIP_METRICS_TOKEN)=.+' generated/<partner>/node/<slug>.env
+grep -c certtest generated/<partner>/node/<slug>.env
 ```
+
+The first must print `2` (it prints `0` before you fill the secrets), the second `0`.
 
 **Media storage is not in the env.** Every mainnet node writes media to its own
 S3 bucket with SSE-KMS; the generated env ships `TIP_MEDIA_BACKEND=fs`, which
@@ -526,9 +535,13 @@ the first 16 hex of the zip's sha256, which is how you pick the right password
 when several zips exist for the same partner:
 
 ```bash
-shasum -a 256 "generated/deliveries/The Prescient Pachyderm-credentials.zip" | cut -c1-16   # must appear on the log line
-7zz l -p"<password>" "generated/deliveries/The Prescient Pachyderm-credentials.zip" | grep -c '\.tip\.json\|node.env\|README'   # 4
+shasum -a 256 "generated/deliveries/The Prescient Pachyderm-credentials.zip" | cut -c1-16
+7zz l -p"<password>" "generated/deliveries/The Prescient Pachyderm-credentials.zip" | grep -c '\.tip\.json\|node.env\|README'
 ```
+
+The first prints 16 hex characters that must appear on the zip's line in
+`ZIP-PASSWORDS.md`; the second must print `4` (the password opens the zip and all
+four files are inside).
 
 ### 6.4 Deliver
 
@@ -597,6 +610,8 @@ Our side: four checks, in this order. Each proves something different:
    correct chain.
 3. **All data correct, the definitive check.** Their
    `/v1/state-root` matches ours at the same round:
+
+   *Run on: any machine with internet access, any folder.*
 
    ```bash
    curl -s https://<their-domain>/v1/state-root
@@ -715,8 +730,8 @@ curl -s http://localhost:4100/v1/nodes | python3 -m json.tool | grep -B2 -A6 '"P
 ```bash
 # R6: rehearse the bundle. One command, staged straight from the partner dir
 scripts/make-secure-bundle.sh generated/pachyderm Pachyderm
-ls -la generated/deliveries/             # the zip; password was printed + logged
-rm -rf generated/pachyderm generated/deliveries generated/ZIP-PASSWORDS.md   # rehearsal cleanup
+ls -la generated/deliveries/
+rm -rf generated/pachyderm generated/deliveries generated/ZIP-PASSWORDS.md
 ```
 
 The same flow on mainnet, with the real target, the real VP key file and the
