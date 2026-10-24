@@ -39,6 +39,18 @@ the region they choose, which avoids editing a founding node's bucket policy; C
 is the quicker option when sharing is fine. With A, tell the classifier team the
 new bucket host so it may download from it; with C nothing changes there.
 
+### Where each command runs
+
+| what | machine | directory |
+|---|---|---|
+| path A | a Lab operator's laptop with the repo checked out | a **new folder per bucket**, e.g. `~/tip-s3/<partner>` (A step 1 creates it) |
+| path B | a Lab operator's laptop | any folder; the JSON files it writes (`trust_ec2.json`, `node_policy.json`, `bucket_policy.json`) land there |
+| path C | a Lab operator's laptop | any folder, **one terminal** for all of C.0 to C.7 (the steps share variables; C.0 makes its own private work folder, no repo needed) |
+| putting the values in `.env` | the node host | `~/tip-protocol/.env`, then `cd ~/tip-protocol && sudo docker compose up -d --force-recreate tip-node` |
+| smoke tests 1 and 2 | a Lab operator's laptop | any folder |
+| smoke tests 3 and 4 | the VP app or extension; the log check on the node host | `~/tip-protocol` |
+| smoke test 5 | the node host | `~/tip-protocol` |
+
 ---
 
 ## Before you start (every path)
@@ -160,6 +172,10 @@ then hand the node the two new lines. Verify with **§ Smoke test** below.
 ---
 
 ## B. AWS Console / CLI path
+
+Run on a Lab operator's laptop, in one terminal, from an empty folder
+(`mkdir -p ~/tip-s3/<name> && cd ~/tip-s3/<name>`): the steps share
+variables and write their JSON files into the current folder.
 
 If you're standing up a one-off bucket or evaluating, the steps below
 provision the same resources without Terraform.
@@ -473,6 +489,10 @@ was revoked and the bucket policy came back byte-identical.
 
 ### C.0 Log in, set the variables, make a private work folder
 
+Run all of section C on a Lab operator's laptop, in **one terminal** (any
+folder; nothing from the repo is needed). Every later step uses the variables
+set here, so a new terminal means running C.0 again.
+
 Log in first (see *Before you start*). Then pick the bucket the partner writes
 to. Sharing a founding node's bucket keeps the classifier allow-list unchanged.
 
@@ -725,7 +745,8 @@ minute from a laptop; tests 3 and 4 need the node already running on the bucket
 and the VP app or extension; test 5 is a log check on the node host. All five
 were run against the test cluster's bucket on 2026-10-24 with the results shown.
 
-Set the bucket once in your terminal:
+Tests 1 and 2 run on a Lab operator's laptop from any folder. Set the bucket
+once in that terminal:
 
 ```bash
 aws sso login --profile tip
@@ -784,7 +805,8 @@ bucket's key.
 
 **How:** in the VP app or extension pointed at the node, attach an image to a
 new post. Behind the scenes: `upload-init` on the node, the image PUT straight
-to a presigned S3 URL, then `upload-complete`. Then on the node host:
+to a presigned S3 URL, then `upload-complete`. Then on the node host, in
+`~/tip-protocol`:
 
 ```bash
 sudo docker compose logs --since 10m tip-node | grep -ciE "AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch|s3.*error"
@@ -852,7 +874,7 @@ because each node serves media from its own bucket; that is normal.
 **Checks:** the node's retention job runs against S3 and removes media whose
 retention period has ended.
 
-**How** (on the node host):
+**How** (on the node host, in `~/tip-protocol`):
 
 ```bash
 sudo docker compose logs tip-node | grep "Media retention started"

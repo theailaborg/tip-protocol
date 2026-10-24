@@ -9,6 +9,10 @@ The container runs as **uid 1001** (`tipnode`); every file it reads or writes
 must be owned by `1001`. The genesis is **baked into the image**, so rebuild
 after any genesis change. Deploy code with **git**, never a code copy.
 
+Steps 1 to 7 run on each node host (step 3's `scp` runs on the operator's
+laptop, from the folder holding the key and env files); step 8 runs on the
+observability host. On a node host every command runs in `~/tip-protocol`.
+
 Prereqs: one Ubuntu host per node (4-core / 8 GB, stable Elastic IP), one obs
 host, the genesis already minted and merged to `main`, and the per-node key
 files `genesis-data/backups/tip-node-<id>.tip.json` (gitignored).

@@ -42,6 +42,10 @@ everyone else. The AI Lab team has already registered your organization and
 your node on chain and sent you the bundle; the zip password arrives on a
 separate channel.
 
+Every command in this section runs **on your node host, in `~/tip-protocol`**
+(step 1 creates it), unless the step says otherwise. Copy the bundle to the node
+host first and unzip it there; `<bundle>` below is that unzipped folder.
+
 **1. Clone and place the credentials.**
 
 ```bash
@@ -273,7 +277,8 @@ Tell The AI Lab team the bucket host so the classifier may download from it.
 Lab gave you, then:
 
 ```bash
-cd infra/observability/agent && docker compose -f docker-compose.promtail.yml up -d
+cd ~/tip-protocol/infra/observability/agent && docker compose -f docker-compose.promtail.yml up -d
+cd ~/tip-protocol
 ```
 
 ```text
