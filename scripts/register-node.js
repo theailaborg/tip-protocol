@@ -37,9 +37,9 @@
  *                                classifier URL, CORS origins, strict classifier
  *                                fallback, mainnet rate limit and prescan
  *                                concurrency, and container-relative data/log paths
- *   --reg-credit-activation-ms N CONSENSUS GATE: must equal what the rest of the
- *                                fleet runs or the node forks. Read it off a node
- *                                already in the network
+ *   --reg-credit-activation-ms N Override the reg-credit cap epoch (consensus gate).
+ *                                Mainnet uses the code default; pass only for a
+ *                                network that activated at a different time
  *   --dry-run                    Render the env and print the plan; register nothing
  *   --operated-by tip://id/...   Identity responsible for this node (optional)
  *   --operator-key-file ./x.json That identity's .tip.json; required with --operated-by,
@@ -434,12 +434,6 @@ async function main() {
   });
   fs.writeFileSync(envPath, envContent, { mode: 0o600 });
   ok(`Env file: ${outDir}/${envFileName}`);
-  if (isProduction && !regCreditActivationMs) {
-    warn("TIP_REG_CREDIT_CAP_ACTIVATION_MS is unset. It is a consensus gate: a node");
-    warn("  that disagrees with the fleet forks. Read it off a node already in the");
-    warn("  network (grep TIP_REG_CREDIT_CAP_ACTIVATION_MS .env) and re-run with");
-    warn("  --reg-credit-activation-ms <value>, or set it by hand before first boot.");
-  }
 
   // 8. Print setup instructions
   const envRel = envRelForLaunch;

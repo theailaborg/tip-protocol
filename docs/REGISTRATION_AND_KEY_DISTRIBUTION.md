@@ -25,10 +25,6 @@ mint partner private keys.
 - [ ] `7zz` installed for the bundle step (`brew install sevenzip` / `apt install 7zip`)
 - [ ] The live mainnet `TIP_CLASSIFIER_KEY` and `TIP_METRICS_TOKEN` values available
       (from the production node configuration, not from any test environment)
-- [ ] The fleet's `TIP_REG_CREDIT_CAP_ACTIVATION_MS`, read off a node already in the
-      network (`grep TIP_REG_CREDIT_CAP_ACTIVATION_MS .env`). It is a consensus
-      gate: a node that disagrees with the fleet forks, and nothing exposes it
-      over HTTP, so it can only be matched, never discovered
 
 ## 2. Gates: all must be true before anything is registered
 
@@ -162,7 +158,6 @@ node scripts/register-node.js \
   --vp-file <mainnet VP .tip.json> \
   --production \
   --port 4000 \
-  --reg-credit-activation-ms <fleet value from section 1> \
   --api-endpoint "https://<their-node-domain>" \
   --public-url "https://<their-node-domain>" \
   --public-ip <their-static-ip> \
@@ -183,7 +178,6 @@ Flag by flag:
 | `--port` | the partner's node serves API on 4000 (p2p follows on 4001); the script default is 4100, which is for extra local nodes |
 | `--api-endpoint` | their domain; the node announces it **on-chain** at first boot after probing that the URL answers `/health` as itself |
 | `--public-url` / `--public-ip` | what the API surfaces / what peers dial back. Omitted under `--production` they become `CHANGE_ME` placeholders rather than silently shipping `localhost` / `127.0.0.1` |
-| `--reg-credit-activation-ms` | the fleet's consensus gate from section 1. Omitted, the node falls back to a code constant that a fleet with a pinned activation is **not** running, and the mismatch forks it. The script warns when `--production` runs without it |
 | `--dry-run` | render and print, register nothing |
 
 The script generates the env **only** from `.env.example` plus these flags; it
@@ -286,14 +280,14 @@ warns on empty values but does not fail):
 - `TIP_BOOTSTRAP_PEERS`: **verify, usually auto-filled**: the generator reads it
   from the `--node-url` target's `/health`. If the run warned it could not, fill
   it from `curl -s https://node2.theailab.org/health` → `data.p2p.bootstrap_addr`
-- `TIP_REG_CREDIT_CAP_ACTIVATION_MS`: must equal the fleet's value. Written for
-  you by `--reg-credit-activation-ms`; confirm it is present and matches
+- No `TIP_*_ACTIVATION_MS` line: the code defaults are the mainnet epochs. A
+  value here is only right on a network that activated a rule at another time
 
 Then confirm the placeholders are still placeholders and nothing carries a value
 it should not:
 
 ```bash
-grep -E '^(TIP_PUBLIC_IP|TIP_PUBLIC_URL|DB_PASSWORD|TIP_CORS_ORIGINS|TIP_CLASSIFIER_FALLBACK|TIP_REG_CREDIT_CAP_ACTIVATION_MS)=' <slug>.env
+grep -E '^(TIP_PUBLIC_IP|TIP_PUBLIC_URL|DB_PASSWORD|TIP_CORS_ORIGINS|TIP_CLASSIFIER_FALLBACK)=' <slug>.env
 ```
 
 `TIP_PUBLIC_IP`, `TIP_PUBLIC_URL` and `DB_PASSWORD` read `CHANGE_ME_*` unless you
