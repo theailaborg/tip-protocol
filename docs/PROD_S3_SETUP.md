@@ -720,103 +720,159 @@ TIP_MEDIA_S3_KMS_KEY_ID=arn:aws:kms:us-west-2:111111111111:key/...
 
 ## Smoke test
 
-Run after any new bucket or any credential change. Tests 1 and 2 need only a
-laptop; tests 3 to 5 need the node running on the new bucket. All five were run
-against the test cluster's bucket on 2026-10-24 with the results shown.
+Run these after any new bucket or any credential change. Tests 1 and 2 take a
+minute from a laptop; tests 3 and 4 need the node already running on the bucket
+and the VP app or extension; test 5 is a log check on the node host. All five
+were run against the test cluster's bucket on 2026-10-24 with the results shown.
+
+Set the bucket once in your terminal:
 
 ```bash
+aws sso login --profile tip
 export BUCKET=<bucket> REGION=<region> AWS_PROFILE=tip AWS_REGION=<region>
 ```
 
-### 1. Nobody gets in without a signature, and never over plain HTTP
+### 1. Strangers cannot get in
+
+**Checks:** nobody on the internet can download a file without a valid signed
+link, and plain `http://` is refused outright.
+
+**How** (any machine, no login needed):
 
 ```bash
 curl -sI "https://$BUCKET.s3.$REGION.amazonaws.com/media/aa/test.bin" | head -1
 curl -sI "http://$BUCKET.s3.$REGION.amazonaws.com/media/aa/test.bin"  | head -1
 ```
 
+**Pass:**
+
 ```text
 HTTP/1.1 403 Forbidden
 HTTP/1.1 403 Forbidden
 ```
 
+**If not:** `200` means the bucket is public (public access block missing:
+redo B.2 / rerun path A); a `200` or redirect on `http://` means the
+`DenyInsecureTransport` statement is missing from the bucket policy.
+
 ### 2. Even our admins cannot read or write media
 
-The bucket policy lets only the node's role or user touch objects. Run as your
-admin login:
+**Checks:** only the node's role or key may touch files. Our admin login can
+list file names (Terraform needs that, and the names are only hashes) but must
+not read or upload content.
+
+**How** (as your admin login):
 
 ```bash
+aws s3 ls s3://$BUCKET/media/ | head -2
 aws s3api head-object --bucket $BUCKET --key media/aa/test.bin 2>&1 | tail -1
 echo x > /tmp/x.txt && aws s3 cp /tmp/x.txt s3://$BUCKET/media/smoke-admin.txt 2>&1 | tail -1
 ```
 
-Both must fail (`403 Forbidden`, `upload failed ... AccessDenied`). Listing
-`media/` **does** work for admins, on purpose: Terraform needs it, and the file
-names are only content hashes.
+**Pass:** the listing prints a few `PRE xx/` lines (allowed); the read ends in
+`Forbidden`; the upload ends in `upload failed ... AccessDenied`.
 
-### 3. The node can upload
+**If not:** a successful read or upload means `DenyDataAccessExceptNodeRole`
+is missing or lists the wrong principals; compare the bucket policy with B.5.
 
-Upload one image through the node the normal way: the VP app or the extension
-pointed at that node (this also proves the bucket CORS, which only a browser
-exercises). The upload goes `upload-init` on the node, the image straight to a
-presigned S3 URL, then `upload-complete`, and the app shows the image attached.
-Confirm the object with the node's own credentials (path C: the partner key, as
-in C.5), since admins cannot read objects:
+### 3. The node can store a file
+
+**Checks:** the node can mint upload links with its credentials, the browser
+can send the image straight to the bucket (this also proves the bucket CORS,
+which only a browser exercises), and the stored file is encrypted with the
+bucket's key.
+
+**How:** in the VP app or extension pointed at the node, attach an image to a
+new post. Behind the scenes: `upload-init` on the node, the image PUT straight
+to a presigned S3 URL, then `upload-complete`. Then on the node host:
 
 ```bash
-MEDIA_ID=<media_id the upload returned>
+sudo docker compose logs --since 10m tip-node | grep -ciE "AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch|s3.*error"
+```
+
+Optionally confirm the object with the node's own credentials (path C: the
+partner key, as in C.5; admins cannot read objects):
+
+```bash
+MEDIA_ID=<media_id of the upload>
 aws s3api head-object --bucket $BUCKET --key "media/${MEDIA_ID:0:2}/${MEDIA_ID:2}.bin" \
   --query '[ContentLength,ServerSideEncryption,SSEKMSKeyId]' --output text
 ```
 
-```text
-684	aws:kms	arn:aws:kms:ap-south-1:<account>:key/<id>
-```
+**Pass:** the image shows as attached in the app; the error count is `0`; the
+object reads `<size>  aws:kms  <the bucket's key ARN>`.
 
-and the node logged no S3 error:
+**If not:**
 
-```bash
-sudo docker compose logs --since 10m tip-node | grep -ciE "AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch|s3.*error"   # 0
-```
+| symptom | cause |
+|---|---|
+| the app's upload fails, a script upload works | bucket CORS missing or the app's origin not in it (B.2 CORS step) |
+| `AccessDenied` in the node log | the node's role or user is missing from the bucket policy (B.5 / C.3) or lacks the KMS permission (B.3 / C.2) |
+| `InvalidAccessKeyId` / `SignatureDoesNotMatch` | wrong or deactivated `AWS_*` key in the node's `.env` (path C) |
+| `410` on `POST /v1/media/upload` | expected: S3 nodes only take the presigned path |
 
-S3-backed nodes refuse the old direct `POST /v1/media/upload` with `410`; that
-is expected.
+### 4. The right people can open it, and links expire
 
-### 4. The author can fetch it through a presigned URL
+**Checks:** when an allowed person opens the media, the node hands out a
+short-lived signed link that works; it stops working after 5 minutes; anyone
+else is refused. Allowed: the post's author, its assigned reviewer, a disputer,
+a juror, an expert reviewer.
 
-Register a post with that image, then open it as its author (or as its assigned
-reviewer, a disputer, a juror or an expert reviewer; anyone else gets `403`).
-The node answers `GET /v1/content/<ctid>/media/0`, signed by the requester, with:
+**How:** register the post from test 3 and open it in the app as its author:
+the image must display. Copy the image's address from the browser (it points
+at `<bucket>.s3.<region>.amazonaws.com/...X-Amz-...`), wait 5 minutes, open it
+again. Then open the post as an unrelated account.
+
+What the app receives from `GET /v1/content/<ctid>/media/0` (signed by the
+requester):
 
 ```json
 { "ok": true, "status": 200, "data": {
   "media_id": "8e209f39...", "mime": "image/png",
   "presigned_url": "https://<bucket>.s3.<region>.amazonaws.com/media/8e/209f39....bin?X-Amz-...",
-  "expires_at": "2026-10-24T16:05:12.000Z" } }
+  "expires_at": "2026-10-24T16:15:44.155Z" } }
 ```
 
-Downloading `presigned_url` returns the image (its SHAKE-256 equals the
-`media_id`); changing one character of its signature gives `403`; the same URL
-after 5 minutes (`TIP_MEDIA_PRESIGN_TTL_SEC=300`) gives `403`. Asked on a node
-that did not receive the upload, the request is redirected (`307`) to the node
-that did, because each node serves media from its own bucket.
+**Pass:** the image displays for the author; the copied link gives
+`AccessDenied` after 5 minutes (`TIP_MEDIA_PRESIGN_TTL_SEC=300`); the unrelated
+account gets `403 Not authorised to fetch this media`. Asked on a node that did
+not receive the upload, the request is redirected (`307`) to the node that did,
+because each node serves media from its own bucket; that is normal.
 
-### 5. The retention sweep runs
+**If not:**
 
-Every node logs at boot, at `NOTICE`:
+| symptom | cause |
+|---|---|
+| `410 media_unavailable` | the file was removed by retention, or never reached the bucket |
+| the link still works after 5 minutes | `TIP_MEDIA_PRESIGN_TTL_SEC` set too high on that node |
+| `303` with `available_at_node_id` | the origin node has not announced its `api_endpoint`, so the redirect has no target |
+
+### 5. Old files get cleaned up
+
+**Checks:** the node's retention job runs against S3 and removes media whose
+retention period has ended.
+
+**How** (on the node host):
+
+```bash
+sudo docker compose logs tip-node | grep "Media retention started"
+sudo grep -h "Media retention swept" logs/node-1/*/info.log | tail -2
+```
+
+**Pass:**
 
 ```text
 Media retention started: interval=21600000ms backend=s3
+Media retention swept: content { deleted=.. skipped_active=.. ... } orphan { deleted=.. kept_referenced=.. ... }
 ```
 
-and every 6 hours, at `INFO` in `logs/node-1/<date>/info.log`:
+The `swept` line appears every 6 hours; right after a restart there is none yet
+(the first sweep waits the full interval), which is normal.
 
-```text
-Media retention swept: content { deleted=.. skipped_active=.. skipped_cooling=.. shared=.. } orphan { deleted=.. kept_referenced=.. kept_recent=.. kept_no_meta=.. }
-```
-
-The first sweep after a boot waits the full interval. `Media retention sweep
-failed` in `error.log` usually means the node lost `s3:ListBucket` on `media/`.
+**If not:** `backend=fs` means `TIP_MEDIA_BACKEND` is not `s3`; `Media
+retention sweep failed` in `error.log` usually means the node lost
+`s3:ListBucket` on `media/`; `Media retention NOT started` means the backend
+cannot list.
 
 ---
 
