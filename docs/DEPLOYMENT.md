@@ -56,9 +56,17 @@ Which `.env` you use depends on what you are running:
   peer with. Do not start from `.env.example`: a key you mint yourself is not on
   chain and the node will never find a peer. Skip the rest of this step and
   follow [Joining an Existing Federation](#joining-an-existing-federation-partner-node).
-- **Your own development node** (local, not connected to mainnet): start from
-  the template and set the values below; the node key is minted by the seed in
-  Step 5.
+- **Your own development chain** (local, not connected to mainnet): use the
+  local cluster in [`TESTING_RUNBOOK.md`](./TESTING_RUNBOOK.md) (`npm run
+  seed:local` mints a private genesis and three node keys). The values below
+  are what that flow fills in.
+
+Nobody seeds to *run* a node. The image carries the mainnet genesis, a node
+boots on it and its state arrives by sync. `scripts/seed.js` mints a brand-new
+chain and is only for the first node of a new federation (see Production
+Federation Deploy) or a local development cluster; run on a node that joins an
+existing network it leaves the node with a different `genesis_hash`, zero
+peers and `join_state: syncing` forever.
 
 ```bash
 cp .env.example .env
@@ -131,35 +139,7 @@ the image carries, read the baked genesis directly:
 python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"
 ```
 
-### Step 5: Seed the genesis block (FOUNDING node only)
-
-> **Do not run this if you are joining an existing network.** Seeding mints a
-> new genesis and a new founding VP. A node that seeds has a different
-> `genesis_hash` from the fleet, so the p2p handshake rejects it, it peers with
-> nobody, and it sits at `join_state: syncing` forever. There is no clean
-> "wrong network" error and `scripts/seed.js` will not stop you. Partners
-> joining mainnet skip straight to Step 6: the genesis is already baked into
-> the image and state arrives by sync.
-
-```bash
-docker compose exec tip-node node scripts/seed.js
-```
-
-This mints the genesis block, registers the founding VP, and writes the
-genesis ring members to the DAG. Only the first node of a **brand new** chain
-does this.
-
-After seeding:
-
-```bash
-curl http://localhost:4000/health
-# dag_count should now be greater than 0
-
-curl http://localhost:4000/v1/dag/stats
-# Should show identity_count, content_count, vp_count
-```
-
-### Step 6: View logs
+### Step 5: View logs
 
 ```bash
 docker compose logs -f tip-node
@@ -202,16 +182,6 @@ npm install -g pm2
 pm2 start src/index.js --name tip-node
 pm2 save
 pm2 startup
-```
-
-### Step 4: Seed (development node only)
-
-Only for a node of its own, on its own chain. Never on a node joining mainnet or
-the test cluster: seeding mints a new genesis and the node peers with nobody.
-
-```bash
-cd ..
-npm run seed
 ```
 
 ---
@@ -508,10 +478,11 @@ log files only.
 the token in your `.env`.
 
 **11. Upgrades** follow [Upgrading a Running Federation](#upgrading-a-running-federation-rolling)
-below: pull, build, stop, run the root gate (`scripts/check-boot-root.js`)
-against an untouched founding node, start only on `MATCH`. On a macOS Docker
-host add `-e NODE_OPTIONS=--dns-result-order=ipv4first` to the gate command, or
-its peer fetch fails on IPv6-first DNS.
+below: `scripts/upgrade-node.sh <tag> https://node.theailab.org` rebuilds,
+runs the root gate against that untouched founding node and starts only on
+`MATCH`. On a macOS Docker host prefix it with
+`NODE_OPTIONS=--dns-result-order=ipv4first`, or the gate's peer fetch fails on
+IPv6-first DNS.
 
 ---
 
@@ -522,8 +493,23 @@ chain must keep quorum throughout, so nodes go one at a time and each is
 verified before the next is touched. With 3 nodes quorum is 2, so exactly one
 node may be down at a time. Never two.
 
-Per node, in order (leave the seed until last so peers always have a bootstrap
-target):
+**What we run, per node, in order** (node 3, then 2, then 1, so the bootstrap
+node is touched last). Releases are tags on `main` (`v2.7.9`); the peer is a
+node not being upgraded right now:
+
+```bash
+cd ~/tip-protocol && git fetch --tags origin
+scripts/upgrade-node.sh v2.7.9 https://node.theailab.org
+```
+
+It prints `== genesis unchanged`, `== build ok`, the gate's per-table roots
+ending in `MATCH: safe to restart`, then `== READY after NNs` and
+`RestartCount=0`. On `GATE FAILED` it leaves the node stopped on the new tag;
+do not start it (see MISMATCH below). On a macOS Docker host run it as
+`NODE_OPTIONS=--dns-result-order=ipv4first scripts/upgrade-node.sh ...`.
+Then run the checks listed after the manual steps before touching the next node.
+
+The script is these steps:
 
 ```bash
 # 1. back up genesis BEFORE touching git; a checkout can clobber a local edit
