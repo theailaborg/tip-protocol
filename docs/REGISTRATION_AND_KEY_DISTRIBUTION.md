@@ -571,7 +571,7 @@ means the password does not match the hash.
 
 Partner side: `DEPLOYMENT.md`, section *[Joining an Existing Federation (partner
 node)](./DEPLOYMENT.md#joining-an-existing-federation-partner-node)*. Not
-*Production Federation Deploy*, which is a cold start for a new chain and tells
+`FOUNDING_FEDERATION.md`, which is a cold start for a new chain and tells
 them to seed. The three classic stumbles: the container runs as uid 1001,
 `logs/` must be chown'd before first boot, and the node key has to be moved into
 `genesis-data/backups/` where `TIP_NODE_CREDENTIALS_FILE` points.

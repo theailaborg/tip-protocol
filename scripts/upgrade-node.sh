@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gated upgrade of ONE running node: checkout the tag, rebuild, stop, prove the
+# Gated upgrade of ONE running node: check out the tag, rebuild, stop, prove the
 # database rebuilds to the live root of an untouched peer, start only on MATCH.
 # Run it on the node host, one node at a time, never two nodes down at once.
 #
@@ -11,17 +11,19 @@ TAG="${1:-}"; PEER="${2:-}"
 cd "$(dirname "$0")/.."
 
 if docker info >/dev/null 2>&1; then DOCKER=docker; else DOCKER="sudo docker"; fi
-READY_TRIES=60
+GENESIS=genesis-data/genesis.json
+hash() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['genesis_hash'][:8])" "$1"; }
 
 echo "== [$(hostname)] upgrading to $TAG, gate peer $PEER"
-cp genesis-data/genesis.json /tmp/genesis-backup.json
-# A checkout must never replace the genesis this node runs on.
-git stash push -q genesis-data/genesis.json 2>/dev/null || true
+# The node must run the committed genesis; a local edit means this is not a
+# plain federation node and the upgrade needs a human, not this script.
+git diff --quiet -- "$GENESIS" || { echo "== $GENESIS is locally modified; refusing" >&2; exit 4; }
+BEFORE=$(hash "$GENESIS")
 git fetch -q --tags origin
 git checkout -q "$TAG"
-git stash pop -q 2>/dev/null || true
-diff -q genesis-data/genesis.json /tmp/genesis-backup.json
-echo "== genesis unchanged; at $(git describe --tags --always)"
+AFTER=$(hash "$GENESIS")
+[ "$BEFORE" = "$AFTER" ] || { echo "== genesis changed $BEFORE -> $AFTER at $TAG; refusing to build" >&2; exit 4; }
+echo "== genesis unchanged ($AFTER); at $(git describe --tags --always)"
 
 $DOCKER compose build tip-node </dev/null > /tmp/build.log 2>&1 && echo "== build ok" || { tail -20 /tmp/build.log; exit 2; }
 $DOCKER compose stop tip-node </dev/null
@@ -37,7 +39,7 @@ fi
 
 $DOCKER compose up -d --no-deps --force-recreate tip-node </dev/null
 echo "== started; waiting for /ready"
-for i in $(seq 1 $READY_TRIES); do
+for i in $(seq 1 60); do
   R=$(curl -s -m 3 http://localhost:4000/ready || true)
   echo "$R" | grep -q '"ready":true' && { echo "== READY after $((i*10))s: $R"; break; }
   sleep 10
