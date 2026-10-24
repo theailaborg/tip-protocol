@@ -1,57 +1,147 @@
 # Prod S3 setup for TIP media
 
-This guide deploys the S3 backend the TIP node uses for media bytes
-(`media-storage-s3.js`). Two paths are documented:
+When someone uploads an image or video through a node, the node stores the file.
+By default it writes to its own disk (`TIP_MEDIA_BACKEND=fs`). In production the
+file goes to Amazon S3 instead: private, encrypted with our own KMS key, and the
+classifier fetches it through a short-lived signed link. This guide sets that up.
 
-- **A.** Terraform module (`infra/s3-media/`) — recommended for
-  reproducible / version-controlled infra.
-- **B.** AWS Console / CLI — for one-off setups where Terraform isn't
-  available.
-- **C.** A partner node that is not on EC2 (no instance role): an IAM
-  user with an access key on one of our existing buckets.
+Whatever the path, the node ends up with these lines in its `.env`:
 
-Both paths yield the same posture. The application reads four env vars
-regardless:
-
-```
-TIP_MEDIA_BACKEND        = s3
-TIP_MEDIA_S3_BUCKET      = <bucket name>
-TIP_MEDIA_S3_REGION      = <region>
-TIP_MEDIA_S3_KMS_KEY_ID  = <KMS key ARN>
+```text
+TIP_MEDIA_BACKEND=s3
+TIP_MEDIA_S3_BUCKET=<bucket name>
+TIP_MEDIA_S3_REGION=<bucket region>
+TIP_MEDIA_S3_KMS_KEY_ID=<KMS key ARN>
 ```
 
-The node's IAM credentials come from the AWS SDK default chain (the
-EC2 instance role in production, `aws sso login` for local dev). Never put
-long-lived `AWS_ACCESS_KEY_ID` in the node's environment.
+and its permission to use the bucket comes from **one** of two places:
+
+- an **instance role** attached to its EC2 server: nothing secret in `.env`
+  (our mainnet nodes);
+- an **access key** of a dedicated IAM user, as two more lines
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in `.env`: for a node that is not
+  on EC2 (a Mac, bare metal, another cloud). It is a long-lived secret, so it is
+  scoped to the bucket's `media/` folder only and rotated every 90 days.
 
 ---
 
-## TL;DR: one command
+## Pick a path
+
+| path | use it when | it creates | you get | the node's `.env` gets |
+|---|---|---|---|---|
+| **A. One command** (Terraform, `setup.sh`) | a **new** bucket, the normal way | bucket, KMS key, bucket policy, and either an EC2 role (`trust_mode=ec2`) or an IAM user with a key (`trust_mode=keys`) | the env block printed at the end; with `ec2` also an instance-profile name to attach | the four lines; with `keys` also the two `AWS_*` lines |
+| **B. By hand** (console / CLI) | a new bucket for an EC2 node, without Terraform | the same as A with `ec2`, one resource at a time | the same values, collected as you go | the four lines |
+| **C. Share an existing Lab bucket** | a partner node off EC2 that should write into one of our buckets (how the SS node runs) | only an IAM user, its policy and its key; the bucket already exists | an access key | the four lines of that bucket plus the two `AWS_*` lines |
+
+Mainnet nodes 1-3 were built with A (`ec2`). SS uses C on node 1's bucket. For a
+new partner off EC2, A with `trust_mode=keys` gives them **their own** bucket in
+the region they choose, which avoids editing a founding node's bucket policy; C
+is the quicker option when sharing is fine. With A, tell the classifier team the
+new bucket host so it may download from it; with C nothing changes there.
+
+---
+
+## Before you start (every path)
+
+1. **Install** the AWS CLI v2 (`brew install awscli`), plus for path A
+   Terraform 1.5 or newer (`brew install hashicorp/tap/terraform`) and `python3`.
+2. **Log in to AWS** as a user that can create IAM, KMS and S3 resources in our
+   account. We use SSO with the profile `tip`:
+
+   ```bash
+   aws sso login --profile tip          # opens the browser; first time ever: aws configure sso
+   export AWS_PROFILE=tip
+   aws sts get-caller-identity --query Arn --output text
+   ```
+
+   The last command must print your identity
+   (`arn:aws:sts::<account>:assumed-role/...`). `Token has expired` means run
+   `aws sso login` again.
+
+---
+
+## A. One command (Terraform)
+
+**1. Make a working folder for this bucket.** Terraform remembers what it
+created in a `terraform.tfstate` file in the folder it runs in. One folder per
+bucket: never reuse the repo's `infra/s3-media/` folder (it already tracks a dev
+bucket, and changing its `bucket_name` would make Terraform try to replace that
+bucket).
 
 ```bash
-cd infra/s3-media
-cp terraform.tfvars.example terraform.tfvars   # 3 values: bucket_name, region, trust_mode
+mkdir -p ~/tip-s3/rooverse && cd ~/tip-s3/rooverse
+cp ~/tip-protocol/infra/s3-media/{*.tf,setup.sh,terraform.tfvars.example} .
+cp terraform.tfvars.example terraform.tfvars
+```
+
+**2. Fill three values** in `terraform.tfvars`:
+
+```hcl
+bucket_name = "tip-rooverse-media-eu-west-2"   # globally unique
+region      = "eu-west-2"                      # closest to the node
+trust_mode  = "keys"                           # "ec2" for a node on EC2
+```
+
+**3. Set the browser origins**, or the script writes `*` into the bucket CORS
+and the printed env block:
+
+```bash
+export TIP_CORS_ORIGINS=https://theailab.org,https://www.theailab.org,https://vp.theailab.org
+```
+
+**4. Run it:**
+
+```bash
 ./setup.sh
 ```
 
-Use `trust_mode=ec2` for a node on EC2 (`dev` for a laptop). Prints the env block for the node and the single
-mode-specific wiring step. The sections below describe what it does and
-the manual console/CLI path for operators who prefer that.
+What it does, in order:
 
-## A. Terraform path (recommended)
+1. checks Terraform and the AWS CLI are installed and the three values are set;
+2. checks your AWS login (tries `aws sso login` once if the token expired) and
+   prints `> AWS identity: ...`;
+3. runs `terraform init` and `terraform apply`, which creates: the bucket with
+   public access blocked, versioning, encryption by the new KMS key, CORS, a
+   lifecycle rule and a bucket policy that denies everyone but the node; the KMS
+   key and its alias; and the node's identity, which is an IAM role plus instance
+   profile for `ec2`, or an IAM user with a scoped policy and an access key for
+   `keys`; plus a CloudWatch alarm if the key is used by anyone else;
+4. prints the env block and the one wiring step for the mode.
 
-See `infra/s3-media/README.md` for the full module reference. Quick
-start:
+It ends like this (`keys` mode):
 
-```bash
-cd infra/s3-media/examples/ec2
-terraform init
-terraform plan -out plan.bin
-terraform apply plan.bin
-terraform output -json env_vars    # → wire into your deployment
+```text
+> DONE. Add this to the node's .env:
+--------------------------------------------------------------
+TIP_MEDIA_BACKEND=s3
+TIP_MEDIA_S3_BUCKET=tip-rooverse-media-eu-west-2
+TIP_MEDIA_S3_REGION=eu-west-2
+TIP_MEDIA_S3_KMS_KEY_ID=arn:aws:kms:eu-west-2:<account>:key/<id>
+TIP_CORS_ORIGINS=https://theailab.org,https://www.theailab.org,https://vp.theailab.org
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+--------------------------------------------------------------
 ```
 
-Skip to **§ Smoke test** below to verify.
+With `ec2` there are no `AWS_*` lines; instead it prints an instance-profile
+name to attach to the node's EC2 instance (console: EC2, the instance, Actions,
+Security, Modify IAM role).
+
+**5. Use the output.** Put the printed lines into the node's `.env` (for a
+partner: the bundle's `node.env` before zipping; `TIP_CORS_ORIGINS` is already
+there). Treat the `AWS_*` lines as a password.
+
+**6. Keep the folder.** Its `terraform.tfstate` is how the bucket is changed or
+rotated later, and in `keys` mode it also contains the secret key, so store the
+folder with our other credentials, never in a repo. Rotate the key every 90 days
+from that folder:
+
+```bash
+terraform apply -replace='aws_iam_access_key.media_node[0]'
+terraform output -raw node_access_key_id ; terraform output -raw node_secret_access_key
+```
+
+then hand the node the two new lines. Verify with **§ Smoke test** below.
 
 ---
 
@@ -328,15 +418,13 @@ aws ec2 create-vpc-endpoint \
 
 ---
 
-## C. Partner node without an instance role (Lab-provided bucket)
+## C. Share an existing Lab bucket (partner node off EC2)
 
-Paths A and B give the node an **instance role**, which only exists on EC2.
-A partner node running anywhere else (a Mac, a bare-metal box, another cloud)
-cannot have one. For those we give the node access to the `media/` folder of
-one of our existing buckets through a dedicated **IAM user** with an access
-key. This is what the SS Software node runs on (user `tip-ss-node-media` on
-node 1's bucket). The access key is a long-lived secret, so this path is the
-exception: a partner on EC2 should run path A in their own account instead.
+A node off EC2 cannot have an instance role. Here, instead of creating a new
+bucket (path A with `keys`), we give the node access to the `media/` folder of
+one of our **existing** buckets through a dedicated IAM user with an access key.
+This is how the SS Software node runs (user `tip-ss-node-media` on node 1's
+bucket).
 
 Everything below happens in **our** AWS account, run by a Lab operator with
 admin rights. The partner only receives the access key and four env values.
@@ -529,13 +617,14 @@ already uploaded stays in the bucket.
 
 ---
 
-## Wiring the TIP node (paths A and B)
+## Wiring an EC2 node (path A with `ec2`, or path B)
 
 Attach the instance profile to the node's EC2 instance (output
 `instance_profile_name` from the Terraform module, or `$ROLE_NAME` from the CLI
 path), then put the four values in the node's `.env` and recreate the container
 (`docker compose up -d --force-recreate tip-node`). No AWS keys: the instance
-role signs. Path C nodes use the six lines in C.6 instead.
+role signs. Nodes with an access key (path A `keys`, path C) take the extra
+`AWS_*` lines instead and need no attaching.
 
 ```
 TIP_MEDIA_BACKEND=s3
