@@ -391,43 +391,19 @@ itself from whatever the registrations produced:
 └── README.md                                  <- the partner-root README
 ```
 
-No genesis ships in the bundle: the repo the partner clones already carries the
-mainnet genesis. Their verification (and ours) is the hash, not a file copy:
+What to expect from the bundler: a credential that is not there is reported as
+`WARNING: not in this bundle: ...` and skipped, so an org-only or node-only
+delivery is normal; a folder with no credentials at all refuses to build. No
+genesis ships in the bundle: the repo the partner clones carries the mainnet
+genesis, and the hash check is theirs (`DEPLOYMENT.md`).
 
-```bash
-python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"
-# must print the production genesis prefix, and they must never run npm run seed
-```
-
-Anything absent is reported with a WARNING and skipped, so an org-only or
-node-only delivery also works; a directory with no credentials at all refuses to
-build. The `NODE-KEY__` / `ORG-IDENTITY__` prefixes exist so the partner cannot
-confuse the two: the node key lives on the node host; the org identity stays
-**off** the node host entirely.
-
-**Where each file has to end up.** The zip is flat; the node will not find the
-key where it lands. `node.env` sets
-
-```
-TIP_NODE_CREDENTIALS_FILE=genesis-data/backups/tip-node-<id>.tip.json
-```
-
-so the key must be moved there, renamed back (drop the `NODE-KEY__` prefix), and
-given to uid 1001, which is the container user. `docker-compose.yml` mounts that
-directory read-only at `/app/genesis-data/backups`, and `WORKDIR` is `/app`, so
-the relative path resolves onto the mount:
-
-```bash
-cd ~/tip-protocol
-cp <bundle>/NODE-KEY__tip-node-<id>.tip.json genesis-data/backups/tip-node-<id>.tip.json
-cp <bundle>/node.env .env                 # compose reads .env, not node.env
-mkdir -p data logs/node-1
-sudo chown -R 1001:1001 genesis-data/backups data logs
-sudo chmod 600 genesis-data/backups/tip-node-<id>.tip.json
-```
-
-A key left in the home directory, or owned by root, boots to a fail-stop: the
-node cannot read its own identity. The org identity is NOT copied to this host.
+The `NODE-KEY__` / `ORG-IDENTITY__` prefixes are ours, so the partner cannot
+confuse the two files: the node key goes on the node host, the org identity
+stays **off** the node host entirely. Where each file ends up on their host
+(key renamed into `genesis-data/backups/`, owned by uid 1001, `node.env` copied
+to `.env`) is the partner's step in `DEPLOYMENT.md`, section *Joining an
+Existing Federation*, and the bundle README repeats it; nothing in it is done
+from our side.
 
 ### 6.2 Hand-fill the secrets in `node.env`
 
