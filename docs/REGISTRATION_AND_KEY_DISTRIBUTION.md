@@ -102,9 +102,53 @@ non-negotiables:
      --dry-run
    ```
 
-   Check the output: identifier accepted under the right scheme, name exact,
-   date right. A country not in the scheme table stops the run; that is a
-   feature; see `ORG_REGISTRATION.md` before adding a country.
+   Pass `--node-url` and `--vp-file` on the dry run too (they are printed, not
+   used), so the output you check is the output the real run will produce. A
+   good dry run looks like this (THE PRESCIENT PACHYDERM LTD, public
+   Companies House data):
+
+   ```text
+   Register organization identity
+
+     ✓ GB identifier: company number (Companies House) (16846775)
+     ✓ Approving VP: tip://vp/US-0e7db4040667073a
+     ✓ Keypair generated: tip://id/GB-e9b2794d13d6c080
+     ℹ Generating ZK dedup proof (Groth16)...
+     ✓ Dedup hash: 158935866912253872021836...
+     ✓ VP attestation signed
+
+       Organization          THE PRESCIENT PACHYDERM LTD
+       TIP-ID                tip://id/GB-e9b2794d13d6c080
+       Region                GB
+       Reg number            16846775 (company number (Companies House))
+       Incorporated          2025-11-11
+       Org type              private-limited-company
+       Target                https://node.theailab.org
+
+     ! --dry-run: nothing was registered and no files were written
+   ```
+
+   Check, line by line, against the partner's registration certificate:
+
+   | line | must be | why it matters |
+   |---|---|---|
+   | `identifier:` | the scheme that matches the document the partner sent (Companies House number, EIN, CIN, ...) and the number exactly as printed with separators stripped (`32-0727201` shows as `320727201`), leading zeros kept | the number is hashed into the identity; a dropped zero or the wrong scheme is a different, permanent org |
+   | `Approving VP:` | `tip://vp/US-0e7db4040667073a` (the mainnet founding VP) | any other VP means the test key was picked up; mainnet rejects it and a local target would mint a throwaway |
+   | `Organization` | the legal name character for character, including suffix and case (`LTD`, `LLC`, `PRIVATE LIMITED`) | stored as `creator_name`, shown on every post; there is no rename |
+   | `Region` | the country of incorporation, not the office or the founder | part of the TIP-ID prefix and of the dedup hash |
+   | `Incorporated` | the date on the certificate, `YYYY-MM-DD` | hashed, and it is the password of the key file the partner receives |
+   | `Org type` | the legal form in lowercase-hyphen spelling (`llc`, `private-limited-company`, `llp`, `gmbh`, `nonprofit`); never `(none)` for a real run | immutable today and shown to users; see #343 |
+   | `Target` | `https://node.theailab.org` | a local target silently registers on the laptop cluster |
+
+   Two things in the dry run are **not** the final values: the `TIP-ID` and
+   the keypair are regenerated on the real run, so do not record them anywhere.
+   The `Dedup hash` on the other hand is derived only from reg number, date
+   and region, so it is already the real one: if the org was registered before
+   with the same inputs, the prefix matches the `dedup_hash` in its key file
+   (the example above reproduces Pachyderm's), and the real run would answer
+   `409 Identity already registered`. A country not in the scheme table stops
+   the run; that is a feature; see `ORG_REGISTRATION.md` before adding a
+   country.
 
 2. **The real run must name the mainnet VP and the mainnet node.** Without
    `--vp-file` the script picks up whatever VP key sits in
@@ -130,12 +174,41 @@ non-negotiables:
    ```bash
    ORG_ID='tip://id/<REGION>-<id>'
    ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$ORG_ID")
-   curl -s "https://node.theailab.org/v1/identity/$ENC"  | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"org_type"'
-   curl -s "https://node2.theailab.org/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"region"|"status"|"org_type"'
+   curl -s "https://node.theailab.org/v1/identity/$ENC"  | python3 -m json.tool | grep -E '"tip_id"|"creator_name"|"region"|"status"|"org_type"|"vp_id"|"registered_at"'
+   curl -s "https://node2.theailab.org/v1/identity/$ENC" | python3 -m json.tool | grep -E '"tip_id"|"creator_name"|"region"|"status"|"org_type"|"vp_id"|"registered_at"'
    ```
 
-   `status` must be `active`, `org_type` the expected legal form (the API does not return `tip_id_type`), `creator_name`
-   exact.
+   A verified, correct registration prints the same block from both nodes
+   (SS SOFTWARE SOLUTIONS LLC, live on mainnet):
+
+   ```text
+       "status": 200,
+           "tip_id": "tip://id/US-b4f0805cf87ce2f0",
+           "region": "US",
+           "vp_id": "tip://vp/US-0e7db4040667073a",
+           "status": "active",
+           "registered_at": "2026-09-23T09:50:57.212Z",
+           "creator_name": "SS SOFTWARE SOLUTIONS LLC",
+           "org_type": "llc",
+   ```
+
+   What each line proves:
+
+   | line | must be | if not |
+   |---|---|---|
+   | first `"status": 200` | `200` | `404` within the first seconds is normal (tx still committing, retry); `404` after a minute means the tx was rejected, read the register-org output |
+   | `tip_id` | the ID the real run printed | a different ID means you are looking at the wrong row |
+   | `region` | the country passed as `--region` | wrong input; the identity is permanent, register again with the right values and never hand out this one |
+   | `vp_id` | `tip://vp/US-0e7db4040667073a` | another VP id cannot happen on mainnet (the node refuses non-founding VPs); seeing one means the target was not mainnet |
+   | `"status": "active"` | `active` | anything else: stop, the org cannot sign |
+   | `registered_at` | the time of the real run, UTC | an older time means the org already existed (the run returned 409) |
+   | `creator_name` | the legal name exactly as on the certificate | typo: permanent, see `region` |
+   | `org_type` | the legal form passed as `--org-type` | missing means the flag was omitted; there is no update tx yet (#343) |
+
+   The two nodes must print identical values; a difference is a sync problem,
+   not a registration problem (check `/status` on the lagging node). The API
+   does not return `tip_id_type`; the `org_type` line is what tells an
+   organization row from a person's (`creator_name` exists on both).
 
 4. The org key file lands in `generated/<partner-slug>/org/` at mode 0600.
    Leave it there for now; it is needed in section 5 (cosign) and section 6 (bundle).
