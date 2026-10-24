@@ -419,9 +419,18 @@ warns on empty values but does not fail):
   without rotating every node at once
 - `TIP_METRICS_TOKEN`: the production metrics token (a 64-char random value; a
   token starting `certtest` is a test-network token and must never appear here)
-- `TIP_BOOTSTRAP_PEERS`: **verify, usually auto-filled**: the generator reads it
-  from the `--node-url` target's `/health`. If the run warned it could not, fill
-  it from `curl -s https://node2.theailab.org/health` → `data.p2p.bootstrap_addr`
+- `TIP_CLASSIFIER_CALLBACK_SECRET`: the callback secret the classifier team
+  issued with the key. Optional: empty means the node polls for verdicts instead
+  of receiving callbacks (slower, still correct)
+- `TIP_BOOTSTRAP_PEERS`: the generator writes node 1 only. Replace it with all
+  three founding peers, comma-separated, so a restart does not depend on one box:
+
+  ```text
+  /ip4/54.86.250.48/tcp/4001/p2p/12D3KooWFFwHuj68SBoL6DaCnZWaa4QxjY4dnKKfMgQpBNqAz2jn,/ip4/3.228.92.23/tcp/4001/p2p/12D3KooWEbJH8E1J7Zpsghu48DXiowTeFsREDpk8SQKkjJeFUie9,/ip4/44.205.65.32/tcp/4001/p2p/12D3KooWES4aitBSBGFBBQ8mDFkpDq7tJ6Zy6V5h7jYSqdihbZHh
+  ```
+
+  (each is `data.p2p.bootstrap_addr` from that node's `/health`; re-read them if
+  a founding node is ever re-keyed)
 - No `TIP_*_ACTIVATION_MS` line: the code defaults are the mainnet epochs. A
   value here is only right on a network that activated a rule at another time
 
@@ -429,12 +438,13 @@ Then two checks on the finished file. First, the values that must not carry
 anything unexpected:
 
 ```bash
-grep -E '^(TIP_PUBLIC_IP|TIP_PUBLIC_URL|DB_PASSWORD|TIP_CORS_ORIGINS|TIP_CLASSIFIER_FALLBACK)=' generated/<partner>/node/<slug>.env
+grep -E '^(TIP_NODE_CREDENTIALS_FILE|TIP_PUBLIC_IP|TIP_PUBLIC_URL|DB_PASSWORD|TIP_CORS_ORIGINS|TIP_CLASSIFIER_FALLBACK)=' generated/<partner>/node/<slug>.env
 ```
 
-prints five lines; for the Rooverse env generated in section 5:
+prints six lines; for the Rooverse env generated in section 5:
 
 ```text
+TIP_NODE_CREDENTIALS_FILE=genesis-data/backups/tip-node-<id>.tip.json
 TIP_PUBLIC_URL=https://node.rooverse.example
 TIP_PUBLIC_IP=203.0.113.10
 DB_PASSWORD=CHANGE_ME_STRONG_DB_PASSWORD
@@ -444,6 +454,7 @@ TIP_CORS_ORIGINS=https://theailab.org,https://www.theailab.org,https://vp.theail
 
 | line | good |
 |---|---|
+| `TIP_NODE_CREDENTIALS_FILE` | `tip-node-<id>` is the id the real run printed, the same as the key file in `generated/<partner>/node/`; a different id means the env is from a dry run |
 | `TIP_PUBLIC_URL` / `TIP_PUBLIC_IP` | the partner's domain and static IP you passed; `CHANGE_ME_*` only if you did not pass them (then the partner fills them before first boot) |
 | `DB_PASSWORD` | **stays** `CHANGE_ME_STRONG_DB_PASSWORD`; the partner sets it, we never know it |
 | `TIP_CLASSIFIER_FALLBACK` | `0` |
@@ -459,8 +470,12 @@ grep -c certtest generated/<partner>/node/<slug>.env                            
 **Media storage is not in the env.** Every mainnet node writes media to its own
 S3 bucket with SSE-KMS; the generated env ships `TIP_MEDIA_BACKEND=fs`, which
 writes media bytes to the node disk instead. Provision the bucket, KMS key and
-instance role per [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md) and set the four
-`TIP_MEDIA_S3_*` values before the node serves real traffic.
+instance role per [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md), then set
+`TIP_MEDIA_BACKEND=s3` and the three values `TIP_MEDIA_S3_BUCKET`,
+`TIP_MEDIA_S3_REGION`, `TIP_MEDIA_S3_KMS_KEY_ID` (plus `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` only when the host has no instance role) before the
+node serves real traffic. This is usually done by the partner on their host, not
+in the bundle.
 
 ### 6.3 Build the encrypted zip
 
