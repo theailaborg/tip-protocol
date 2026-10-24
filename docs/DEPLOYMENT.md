@@ -88,10 +88,26 @@ curl -s http://localhost:4000/ready | python3 -m json.tool
 a snapshot (minutes). A dropped transfer restarts it; repeated restarts mean an
 unstable link, not a broken node.
 
-**5. Verify.** Open `https://<your-node-domain>/status` (or
-`http://localhost:4000/status`): it is all green only when the node is reachable,
-caught up, not halted, connected to a genesis node and agreeing on the state
-root. The same three facts by hand:
+**5. Verify on the status page.** Open `http://localhost:4000/status` (later
+`https://<your-node-domain>/status`). It refreshes every 3 s, needs no login,
+and the banner reads **All good** only when all ten checks pass:
+
+| check | must say | if not |
+|---|---|---|
+| Node reachable | `version 2.7.x` | the container is not up: `docker compose ps`, `docker compose logs tip-node` |
+| Database readable | `N transactions` | PostgreSQL not healthy or `DB_PASSWORD` changed after first start |
+| Consensus running | `running` | `halted`: see Troubleshooting |
+| Caught up with the federation | `join state: ready` | `syncing` / `catching_up` is normal for the first minutes after start |
+| No fork halt | `roots consistent` | the node rebuilt a different state than the fleet: stop, see Troubleshooting |
+| Connected to peers | `N connected`, N ≥ 1 | zero peers means wrong genesis, empty `TIP_BOOTSTRAP_PEERS` or 4001 blocked |
+| Connected to a genesis node | `K of 3 genesis nodes in the peer list`, K ≥ 1 | your bootstrap peers are not the founding nodes |
+| Peers agree on state root | all peers `✓ same root` in the table below | one peer differing is their problem; all differing is yours |
+| Rounds advancing | `last advance` a few seconds ago | the federation is stalled or your node lost its peers |
+| Public endpoint announced | your `https://` URL | expected `none on chain` until step 6 |
+
+The peers table under the checks lists every connected node with its round and
+state root; the three founding nodes carry a `genesis` pill. The same facts by
+hand, if you prefer curl:
 
 ```bash
 curl -s http://localhost:4000/ready       # ready:true, halted:false
