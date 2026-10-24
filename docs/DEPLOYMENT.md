@@ -367,6 +367,11 @@ sudo chmod 600 genesis-data/backups/tip-node-<id>.tip.json
 The `ORG-IDENTITY__*.tip.json` from the same bundle does **not** belong on this
 host. It signs as the company, not as the node; keep it offline.
 
+Host notes from real deployments: Docker Engine without Docker Desktop also
+needs the `docker-buildx` plugin for `compose build`; on a host without `sudo`,
+create `data/` and `logs/node-1/` yourself before the first start so the
+container user can write them.
+
 **2. Confirm the chain before starting anything.**
 
 ```bash
@@ -398,6 +403,14 @@ sudo docker compose build tip-node
 sudo docker compose up -d
 docker compose logs -f tip-node
 ```
+
+**No static IP or no inbound 4001?** The node still works, outbound-only: it
+dials the federation, nobody can dial it, and the API reaches the internet
+through a tunnel (Cloudflare Tunnel to `localhost:4000`, as one partner runs).
+Then `TIP_PUBLIC_IP` stays empty and `TIP_BOOTSTRAP_PEERS` **must list all three
+founding nodes**, otherwise the two it did not dial never learn it exists. This
+is a degraded setup (`NODE_REQUIREMENTS.md` asks for a static IP and open
+4000/4001); agree it with the AI Lab team before choosing it.
 
 **5. Watch it sync.** A joining node downloads a snapshot before it can
 participate, which takes minutes on a live chain. Progress, not speed, is what
@@ -437,17 +450,68 @@ that is only all-green when the node is reachable, caught up, not halted,
 connected, in agreement on the state root and announcing its endpoint. It reads
 only the public endpoints above, so there is nothing to configure.
 
-**7. Announce the public endpoint** once DNS resolves to this host. It is
-optional at registration and updated any time afterwards, signed by the node's
-own key with no council re-approval:
+**7. Put TLS in front, then announce the endpoint.** Your node domain must
+serve `https://<your-node-domain>/health`, `/metrics` and `/status`
+(terminating TLS in front of `:4000` with a reverse proxy or a tunnel): the
+federation stores that URL on chain, the AI Lab scrapes `/metrics` through it
+with the token already in your `.env`, and users open `/status`. Once DNS
+resolves to it, announce it. It is optional at registration and can be re-run
+any time, signed by the node's own key with no council re-approval:
 
 ```bash
 curl -X POST http://localhost:4000/v1/node/endpoint/announce
 ```
 
-**8. Before real traffic**, provision S3 media storage per
-[`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md). The generated env ships
-`TIP_MEDIA_BACKEND=fs`, which writes media bytes to the node disk.
+The node probes its own domain first. If that fails with `fetch failed` right
+after you created the DNS record, the container has cached the earlier
+"no such name" answer; wait for it to expire or recreate the container, then
+announce again. Success shows your URL as `api_endpoint` in
+`https://node.theailab.org/v1/nodes`.
+
+**8. Media storage before real traffic.** The delivered env ships
+`TIP_MEDIA_BACKEND=fs`, which writes media bytes to the node disk. Production
+nodes use S3 with SSE-KMS, in one of two ways:
+
+- *Your own bucket* (recommended): provision bucket, KMS key and instance role
+  per [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md), then set
+  `TIP_MEDIA_BACKEND=s3`, `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`,
+  `TIP_MEDIA_S3_KMS_KEY_ID`. No AWS keys in the env: the instance role signs.
+- *A Lab-provided bucket*: the AI Lab team creates an IAM user scoped to the
+  `media/` prefix of one of its buckets and hands you an access key; set the
+  same four values plus `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, and
+  rotate that key every 90 days.
+
+Recreate the container (`docker compose up -d --force-recreate tip-node`),
+upload one image through the VP app or extension against your node, and confirm
+the object appears under `media/` in the bucket with `0` S3 errors in the logs.
+Also tell the AI Lab team the bucket host, so the classifier is allowed to
+download from it.
+
+**9. Ship logs.** Follow
+[`PARTNER_LOG_SHIPPING.md`](./PARTNER_LOG_SHIPPING.md): create
+`infra/observability/agent/promtail.env` with `LOKI_URL=logs.theailab.org`, the
+`NODE_LABEL` and the `LOKI_PASSWORD` the AI Lab team gave you with the bundle,
+then
+
+```bash
+cd infra/observability/agent && docker compose -f docker-compose.promtail.yml up -d
+```
+
+Your node appears under its label in the federation dashboard within a minute;
+a `401` in `docker logs tip-promtail` means the password does not match. On a
+macOS Docker host, drop the Docker-socket and container-log mounts from the
+agent compose file (they live inside Docker's VM there) and ship the four node
+log files only.
+
+**10. Metrics** need nothing from you beyond step 7: the AI Lab team adds
+`<your-node-domain>:443` to its Prometheus targets and scrapes `/metrics` with
+the token in your `.env`.
+
+**11. Upgrades** follow [Upgrading a Running Federation](#upgrading-a-running-federation-rolling)
+below: pull, build, stop, run the root gate (`scripts/check-boot-root.js`)
+against an untouched founding node, start only on `MATCH`. On a macOS Docker
+host add `-e NODE_OPTIONS=--dns-result-order=ipv4first` to the gate command, or
+its peer fetch fails on IPv6-first DNS.
 
 ---
 
