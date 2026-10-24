@@ -1,70 +1,35 @@
 # TIP Protocol Deployment Guide
 
-This document is for operators who want to run a TIP Protocol node. It
-covers all three node types, the difference between a full node and a VP
-node, and step-by-step instructions for getting from zero to a live node
+This document is for operators who want to run a TIP Protocol node: what a
+node is, and step-by-step instructions for getting from zero to a live node
 in under 30 minutes.
 
 ---
 
-## Three Node Types
+## One Node Type
 
-| Type | Who Runs It | What It Does | Requires Accreditation? |
-|------|-------------|-------------|------------------------|
-| **Full Node** | Anyone | Validates transactions, stores the DAG, serves the REST API, participates in gossip | No |
-| **VP Node** | Accredited Verification Providers | Everything a full node does, plus issues TIP-IDs to verified humans | Yes |
-| **Archive Node** | Research institutions, compliance teams | Full node plus complete historical snapshots and long-term data retention | No |
+Every TIP node is a **full node**: it validates transactions, stores the DAG,
+serves the REST API and takes part in consensus and gossip. There is no other
+node type today; `TIP_NODE_TYPE` stays `full` (the value is only echoed in the
+boot log and `/health`).
 
-**If you are running a node for the first time, you are running a full node.**
-That is the default. A VP node is a full node running with additional
-configuration (`TIP_NODE_TYPE=vp`, `TIP_VP_ID=...`) and an external
-biometric pipeline that you build and operate separately.
-
----
-
-## Full Node vs VP Node: The Critical Difference
-
-The source code is identical. The same repository, the same `npm start`,
-the same Docker image runs both.
-
-What makes a VP node different is not the software. It is:
-
-1. **An accredited VP keypair** issued by The AI Lab Intelligence Unobscured,
-   Inc. at accreditation. Without this keypair, the node cannot sign
-   `REGISTER_IDENTITY` transactions and cannot issue TIP-IDs.
-
-2. **An external biometric verification pipeline** that you build and operate.
-   The TIP Protocol reference implementation does not include biometric
-   hardware or software. It provides the REST endpoint that receives the
-   *output* of your biometric pipeline. Your pipeline must:
-   - Verify government ID documents (OCR, NFC chip, tamper detection)
-   - Run 3D facial liveness detection
-   - Complete FIDO2/WebAuthn device binding
-   - Compute the peppered dedup hash inside a device secure enclave
-   - Generate the ZK uniqueness proof
-   - Sign the resulting payload with the VP keypair
-   - Call `POST /v1/identity/register` on the TIP node
-
-3. **VP accreditation** from The AI Lab Intelligence Unobscured, Inc.
-   Contact: accreditation@theailab.org
-
-If you are running a full node, none of the above applies. You sync the
-DAG, serve the REST API, and participate in the network. That is it.
+Issuing TIP-IDs to verified humans is **not** a node role. It is done by the
+Verification Provider application (`tip-vp`, a separate repository and service
+run by The AI Lab), which submits `REGISTER_IDENTITY` transactions to a node
+like any other client. Running a node never involves a VP keypair or a
+biometric pipeline.
 
 ---
 
 ## Prerequisites
 
-| Item | Full Node | VP Node |
-|------|-----------|---------|
-| Node.js 24+ | Required | Required |
-| Docker and Docker Compose (optional) | Recommended | Recommended |
-| Public IP address | Recommended for gossip | Required |
-| Open ports 4000 (REST) and 4001 (gossip) | Recommended | Required |
-| PostgreSQL | Recommended for production | Required |
-| VP keypair from The AI Lab | Not needed | Required |
-| Biometric hardware and pipeline | Not needed | Required |
-| TIP VP accreditation | Not needed | Required |
+| Item | |
+|------|---|
+| Node.js 24+ | Required |
+| Docker and Docker Compose | Recommended (Option A) |
+| Static public IP address | Required for a federation node (peers store it) |
+| Open ports 4000 (REST) and 4001 (gossip) | Required for a federation node |
+| PostgreSQL | Required for production (the compose stack provides it) |
 
 ---
 
@@ -223,32 +188,6 @@ pm2 startup
 ```bash
 cd ..
 node scripts/seed.js
-```
-
----
-
-## Option C: Manual Setup (Python), UNMAINTAINED
-
-> `python/` is no longer maintained and does not track the Node implementation.
-> It has not been validated against the current genesis, schema migrations or
-> consensus code, so it must not be used for a mainnet or test-cluster node.
-> Kept for reference only; use Option A or B.
-
-```bash
-git clone https://github.com/theailaborg/tip-protocol.git
-cd tip-protocol/python
-pip install cryptography click fastapi "uvicorn[standard]" pydantic websockets
-
-cp ../.env.example ../.env
-# Edit ../.env
-
-python -m tip_node.main
-```
-
-Seed (first launch only):
-
-```bash
-python -m scripts.seed
 ```
 
 ---
@@ -573,46 +512,6 @@ mainnet bootstrap peers, complete this checklist.
 - [ ] Uptime monitoring configured (alert if `/health` stops responding)
 - [ ] Log aggregation configured (CloudWatch, Grafana Loki, or equivalent)
 - [ ] Disk space monitoring on the data volume (DAG grows over time)
-
----
-
-## VP Node Additional Configuration
-
-If you are an accredited Verification Provider, add the following to your
-`.env` after receiving your VP keypair and VP ID from The AI Lab.
-
-```bash
-TIP_NODE_TYPE=vp
-TIP_VP_MODE=true
-TIP_VP_ID=tip://id/VP-XX-yourorganisation
-TIP_NODE_PRIVATE_KEY=<your_vp_private_key_hex>
-TIP_NODE_PUBLIC_KEY=<your_vp_public_key_hex>
-```
-
-Your node will then be able to sign `REGISTER_IDENTITY` transactions.
-Your biometric pipeline should call `POST /v1/identity/register` with
-the following fields after completing all four biometric verification
-layers for a user:
-
-```json
-{
-  "tip_id":          "tip://id/XX-<16hex>",
-  "region":          "XX",
-  "public_key":      "<hex ML-DSA-65 public key>",
-  "vp_id":           "tip://id/VP-XX-yourorganisation",
-  "dedup_hash":      "<hex 64-char peppered hash>",
-  "zk_dedup_proof":  "zkp:<64hex>",
-  "vp_signature":    "<hex signature by VP private key over tip_id+dedup_hash>",
-  "attested":        false
-}
-```
-
-The `dedup_hash` is checked server-side for uniqueness and never written
-to the DAG. Only the `zk_dedup_proof` (starting with `zkp:`) is published
-to the DAG.
-
-For the complete VP integration specification, contact:
-accreditation@theailab.org
 
 ---
 
