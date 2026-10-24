@@ -438,30 +438,36 @@ A node off EC2 cannot have an instance role. Here, instead of creating a new
 bucket (path A with `keys`), we give the node access to the `media/` folder of
 one of our **existing** buckets through a dedicated IAM user with an access key.
 This is how the SS Software node runs (user `tip-ss-node-media` on node 1's
-bucket).
+bucket). Everything below happens in **our** AWS account; the partner only
+receives the four `TIP_MEDIA_*` lines and the two `AWS_*` lines.
 
-Everything below happens in **our** AWS account, run by a Lab operator with
-admin rights. The partner only receives the access key and four env values.
+Validated end to end on the test cluster's bucket on 2026-10-24: user created,
+access checks passed, a test node uploaded media with the key, then the user
+was revoked and the bucket policy came back byte-identical.
 
-### C.0 Decide and set the variables
+### C.0 Log in, set the variables, make a private work folder
 
-Pick the bucket the partner writes to. Sharing one of the founding nodes'
-buckets is the norm (SS shares node 1's); the bucket's host is then already on
-the classifier's download allow-list, so nothing changes there.
+Log in first (see *Before you start*). Then pick the bucket the partner writes
+to. Sharing a founding node's bucket keeps the classifier allow-list unchanged.
 
 ```bash
+export AWS_PROFILE=tip
 export PARTNER=rooverse                                   # short slug
 export USER_NAME=tip-$PARTNER-node-media                  # e.g. tip-rooverse-node-media
 export BUCKET=tip-mainnet-1-media-us-east-1               # the shared bucket
 export REGION=us-east-1                                   # that bucket's region
-export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export AWS_REGION=$REGION                                 # our profile defaults to another region
 export KMS_KEY_ARN=$(aws s3api get-bucket-encryption --bucket $BUCKET \
   --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.KMSMasterKeyID' --output text)
+export W=$(mktemp -d) && chmod 700 "$W"                   # holds the key file later; never /tmp directly
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text > "$W/policy.original.json"
 echo "$USER_NAME -> $BUCKET ($REGION), key $KMS_KEY_ARN"
 ```
 
-The last line must print a full `arn:aws:kms:...:key/...`. If it prints `None`,
-the bucket is not SSE-KMS and this is the wrong bucket.
+The last line must print a full `arn:aws:kms:<region>:<account>:key/<id>`. `None`
+means the bucket is not SSE-KMS (wrong bucket); a KMS or S3 error usually means
+`AWS_REGION` is not the bucket's region. Keep this terminal open: every later
+step uses these variables.
 
 ### C.1 Create the IAM user
 
@@ -469,19 +475,23 @@ No console password, no group, no other policy:
 
 ```bash
 aws iam create-user --user-name $USER_NAME \
-  --tags Key=purpose,Value=tip-partner-node-media Key=partner,Value=$PARTNER
+  --tags Key=purpose,Value=tip-partner-node-media Key=partner,Value=$PARTNER --query User.UserName --output text
 export USER_ARN=$(aws iam get-user --user-name $USER_NAME --query User.Arn --output text)
-echo $USER_ARN      # arn:aws:iam::<ACCOUNT_ID>:user/tip-rooverse-node-media
+echo $USER_ARN
+```
+
+```text
+tip-rooverse-node-media
+arn:aws:iam::<account>:user/tip-rooverse-node-media
 ```
 
 ### C.2 Give it exactly the node's permissions
 
-The same three statements the node role has (B.3): objects under `media/`,
-listing only that prefix, and the bucket's KMS key, usable only through S3 in
-that region.
+The same three statements the node role has: objects under `media/`, listing
+only that prefix, and the bucket's KMS key, usable only through S3 in that region.
 
 ```bash
-cat > /tmp/$USER_NAME-policy.json <<EOF
+cat > "$W/user-policy.json" <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -500,134 +510,167 @@ cat > /tmp/$USER_NAME-policy.json <<EOF
 }
 EOF
 aws iam put-user-policy --user-name $USER_NAME \
-  --policy-name media-bucket-access --policy-document file:///tmp/$USER_NAME-policy.json
+  --policy-name media-bucket-access --policy-document file://"$W/user-policy.json"
+aws iam list-user-policies --user-name $USER_NAME --output text     # POLICYNAMES  media-bucket-access
 ```
 
 No KMS key-policy change is needed: the key policy's `EnableRootPermissions`
-statement delegates key access to IAM, so the user policy above is enough.
+statement hands key access to IAM, so the user policy above is enough.
 
 ### C.3 Let the user past the bucket policy
 
-The bucket policy denies everyone except the node role, so the user's own
-policy is not enough on its own. Add the user ARN to the **three** statements
-that name the role. Download, edit, upload:
+The bucket policy denies everyone except the bucket's own node, so the user's
+policy alone is not enough. The user ARN must be added to the three statements
+that name the node: `DenyDataAccessExceptNodeRole` (the list of who is **not**
+denied), `AllowNodeRole` and `AllowNodeRoleListMediaPrefix`. This script does
+exactly that and refuses if it cannot find all three:
 
 ```bash
-aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text \
-  | python3 -m json.tool > /tmp/$BUCKET-policy.json
-cp /tmp/$BUCKET-policy.json /tmp/$BUCKET-policy.before.json      # keep the original
-```
-
-In `/tmp/$BUCKET-policy.json`:
-
-| statement (`Sid`) | change |
-|---|---|
-| `DenyDataAccessExceptNodeRole` | append `"$USER_ARN"` to the `aws:PrincipalArn` list in its condition (the list of who is **not** denied) |
-| `AllowNodeRole` | turn `"Principal": {"AWS": "<role arn>"}` into `"Principal": {"AWS": ["<role arn>", "<user arn>"]}` |
-| `AllowNodeRoleListMediaPrefix` | the same change to its `Principal` |
-
-`DenyInsecureTransport` stays untouched. With every existing user added the
-same way (SS's user is already in those three lists), the condition looks like:
-
-```json
-"aws:PrincipalArn": [
-  "arn:aws:iam::<ACCOUNT_ID>:role/tip-mainnet-1-media-us-east-1-node-role",
-  "arn:aws:iam::<ACCOUNT_ID>:root",
-  "arn:aws:iam::<ACCOUNT_ID>:user/tip-ss-node-media",
-  "arn:aws:iam::<ACCOUNT_ID>:user/tip-rooverse-node-media"
-]
-```
-
-Then apply it and confirm the user is in all three statements:
-
-```bash
-aws s3api put-bucket-policy --bucket $BUCKET --policy file:///tmp/$BUCKET-policy.json
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text > "$W/policy.json"
+python3 - "$W/policy.json" "$USER_ARN" <<'EOF'
+import json, sys
+path, user = sys.argv[1], sys.argv[2]
+p = json.load(open(path)); done = []
+def add(v):
+    lst = v if isinstance(v, list) else [v]
+    return lst if user in lst else lst + [user]
+for s in p["Statement"]:
+    if s["Sid"] == "DenyDataAccessExceptNodeRole":
+        c = s["Condition"]["StringNotEqualsIfExists"]; c["aws:PrincipalArn"] = add(c["aws:PrincipalArn"]); done.append(s["Sid"])
+    elif s["Sid"] in ("AllowNodeRole", "AllowNodeRoleListMediaPrefix"):
+        s["Principal"]["AWS"] = add(s["Principal"]["AWS"]); done.append(s["Sid"])
+assert len(done) == 3, f"expected 3 statements, found {done}"
+json.dump(p, open(path, "w"), indent=2); print("added to:", ", ".join(done))
+EOF
+aws s3api put-bucket-policy --bucket $BUCKET --policy file://"$W/policy.json"
 aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | grep -o "user/$USER_NAME" | wc -l
 ```
 
 ```text
+added to: DenyDataAccessExceptNodeRole, AllowNodeRole, AllowNodeRoleListMediaPrefix
 3
 ```
 
 > **Terraform caveat.** The founding buckets were created by the Terraform
 > module, which does not know about partner users. A later `terraform apply`
 > on that bucket rewrites the bucket policy and silently removes every partner
-> user. Before any re-apply, add the user ARNs to the module's
-> `DenyDataAccessExceptNodeRole` / `AllowNodeRole*` principals, or redo C.3
-> afterwards.
+> user. Before any re-apply, add the user ARNs to the module's principals, or
+> run C.3 again afterwards for each partner.
 
 ### C.4 Create the access key
 
 ```bash
-aws iam create-access-key --user-name $USER_NAME > /tmp/$USER_NAME-key.json
-python3 -c "import json;k=json.load(open('/tmp/$USER_NAME-key.json'))['AccessKey'];print(k['AccessKeyId'])"
+( umask 077; aws iam create-access-key --user-name $USER_NAME > "$W/key.json" )
+export KID=$(python3 -c "import json;print(json.load(open('$W/key.json'))['AccessKey']['AccessKeyId'])")
+export KSEC=$(python3 -c "import json;print(json.load(open('$W/key.json'))['AccessKey']['SecretAccessKey'])")
+echo "AccessKeyId $KID, secret ${#KSEC} characters"
 ```
 
-The JSON holds `AccessKeyId` and `SecretAccessKey`. AWS shows the secret
-**once**; store the file with the partner's other credentials (mode 0600, never
-in a repo or chat) and delete the `/tmp` copies after C.6.
+AWS shows the secret **once**; it now lives only in `$W/key.json` (mode 0600)
+and these two shell variables. Never paste it into chat or a ticket.
 
-### C.5 Check the user can do exactly what the node needs, and nothing more
+### C.5 Check the key does exactly what the node needs, and nothing more
 
-Use the new key in a throwaway profile, from any machine:
+A new key is rejected for a few seconds after creation, so wait for it first.
+`as_user` runs a command with the partner key instead of your login, without
+writing the key into `~/.aws`:
 
 ```bash
-aws configure set aws_access_key_id     <AccessKeyId>     --profile $USER_NAME
-aws configure set aws_secret_access_key <SecretAccessKey> --profile $USER_NAME
-aws configure set region $REGION --profile $USER_NAME
-P="--profile $USER_NAME"
+as_user() { env -u AWS_PROFILE AWS_ACCESS_KEY_ID=$KID AWS_SECRET_ACCESS_KEY=$KSEC AWS_REGION=$REGION aws "$@"; }
+until as_user sts get-caller-identity --query Arn --output text 2>/dev/null; do sleep 5; done
 
-echo test > /tmp/c5.txt
-aws s3 cp /tmp/c5.txt s3://$BUCKET/media/c5-check-$PARTNER.txt $P     # upload: allowed
-aws s3 cp s3://$BUCKET/media/c5-check-$PARTNER.txt - $P               # read: prints "test"
-aws s3 ls s3://$BUCKET/media/ $P | head -3                             # list media/: allowed
-aws s3 rm s3://$BUCKET/media/c5-check-$PARTNER.txt $P                 # delete: allowed
-aws s3 cp /tmp/c5.txt s3://$BUCKET/outside-media.txt $P               # outside media/: must FAIL
-aws s3 ls s3://$BUCKET/ $P                                             # list the root: must FAIL
+echo test > "$W/c5.txt"
+as_user s3 cp "$W/c5.txt" s3://$BUCKET/media/c5-check-$PARTNER.txt            # 1 upload: allowed
+as_user s3 cp s3://$BUCKET/media/c5-check-$PARTNER.txt -                      # 2 read: prints test
+as_user s3api head-object --bucket $BUCKET --key media/c5-check-$PARTNER.txt \
+  --query '[ServerSideEncryption,SSEKMSKeyId]' --output text                  # 3 encrypted with the bucket key
+as_user s3 ls s3://$BUCKET/media/ | head -3                                    # 4 list media/: allowed
+as_user s3 rm s3://$BUCKET/media/c5-check-$PARTNER.txt                        # 5 delete: allowed
+as_user s3 cp "$W/c5.txt" s3://$BUCKET/outside-media.txt                      # 6 outside media/: must FAIL
+as_user s3 ls s3://$BUCKET/                                                    # 7 list the root: must FAIL
 ```
 
-Expected: the first four succeed (`upload:`, `test`, a few `media/...` lines,
-`delete:`); the last two end in `An error occurred (AccessDenied)`. Then confirm
-the bucket's own node is unaffected: its `/status` stays **All good** and
-uploads through that node still work.
+Expected: the identity line `arn:aws:iam::<account>:user/tip-<partner>-node-media`;
+then 1 `upload:`, 2 `test`, 3 `aws:kms` with the same key ARN as C.0, 4 a few
+`PRE xx/` lines, 5 `delete:`; 6 and 7 end in `AccessDenied ... no identity-based
+policy allows`. Then confirm the bucket's own node still shows **All good** on
+its `/status`.
 
-Remove the profile afterwards (`aws configure` has no delete, so edit
-`~/.aws/credentials` and `~/.aws/config` and drop the `[$USER_NAME]` /
-`[profile $USER_NAME]` blocks).
+Use the partner key, not your admin login, for any check that reads objects:
+the bucket policy denies object reads even to our administrators, by design
+(`403 Forbidden` on `head-object` as admin is expected).
 
 ### C.6 Hand over
 
-The partner's `.env` gets (in the bundle's `node.env` before zipping, or sent
-on the same separate channel as the zip password):
+These six lines go into the partner's `.env`, in the bundle's `node.env`
+before zipping:
 
-```text
+```bash
+cat <<EOF
 TIP_MEDIA_BACKEND=s3
-TIP_MEDIA_S3_BUCKET=<BUCKET>
-TIP_MEDIA_S3_REGION=<REGION>
-TIP_MEDIA_S3_KMS_KEY_ID=<KMS_KEY_ARN>
-AWS_ACCESS_KEY_ID=<AccessKeyId>
-AWS_SECRET_ACCESS_KEY=<SecretAccessKey>
+TIP_MEDIA_S3_BUCKET=$BUCKET
+TIP_MEDIA_S3_REGION=$REGION
+TIP_MEDIA_S3_KMS_KEY_ID=$KMS_KEY_ARN
+AWS_ACCESS_KEY_ID=$KID
+AWS_SECRET_ACCESS_KEY=$KSEC
+EOF
 ```
 
-Their side (recreate, upload one image, see it under `media/`) is
-`DEPLOYMENT.md` step 7. Record in the partner's private notes: user name,
-bucket, key id (not the secret), date issued.
+On their node that is all: replace `TIP_MEDIA_BACKEND=fs` with these lines and
+recreate the container; `DEPLOYMENT.md` step 7 is their upload check. Record in
+the partner's private notes: user name, bucket, key id (not the secret), date.
+Then delete the work folder, which holds the secret:
+
+```bash
+rm -rf "${W:?}"; unset KSEC
+```
 
 ### C.7 Rotate every 90 days, revoke at offboarding
 
 Rotation, without downtime:
 
 ```bash
-aws iam create-access-key --user-name $USER_NAME          # second key, deliver it
+aws iam create-access-key --user-name $USER_NAME          # second key, deliver it as in C.6
 # partner swaps the two AWS_* lines and recreates the container; then:
 aws iam update-access-key --user-name $USER_NAME --access-key-id <OLD_ID> --status Inactive
 aws iam delete-access-key --user-name $USER_NAME --access-key-id <OLD_ID>
 ```
 
-Revocation (partner leaves, or a key leaks): set the key `Inactive` at once,
-then delete the key, the inline policy and the user, and remove the user ARN
-from the three bucket-policy statements (C.3 in reverse). Media the partner
-already uploaded stays in the bucket.
+Revocation (partner leaves, or the key leaks). **Order matters:** take the user
+out of the bucket policy *before* deleting it. When an IAM user is deleted, AWS
+rewrites its ARN inside bucket-policy principals into an internal id
+(`AIDA...`), and the removal script below no longer finds it.
+
+```bash
+aws iam list-access-keys --user-name $USER_NAME --query 'AccessKeyMetadata[].AccessKeyId' --output text
+aws iam update-access-key --user-name $USER_NAME --access-key-id <ID> --status Inactive   # 1 the key stops working within seconds
+
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text > "$W/policy.json"   # 2 out of the bucket policy
+python3 - "$W/policy.json" "arn:aws:iam::<account>:user/$USER_NAME" <<'EOF'
+import json, sys
+path, user = sys.argv[1], sys.argv[2]
+p = json.load(open(path)); done = []
+def drop(v):
+    lst = [x for x in (v if isinstance(v, list) else [v]) if x != user]
+    return lst[0] if len(lst) == 1 else lst
+for s in p["Statement"]:
+    if s["Sid"] == "DenyDataAccessExceptNodeRole":
+        c = s["Condition"]["StringNotEqualsIfExists"]; c["aws:PrincipalArn"] = drop(c["aws:PrincipalArn"]); done.append(s["Sid"])
+    elif s["Sid"] in ("AllowNodeRole", "AllowNodeRoleListMediaPrefix"):
+        s["Principal"]["AWS"] = drop(s["Principal"]["AWS"]); done.append(s["Sid"])
+assert len(done) == 3, done
+json.dump(p, open(path, "w"), indent=2); print("removed from:", ", ".join(done))
+EOF
+aws s3api put-bucket-policy --bucket $BUCKET --policy file://"$W/policy.json"
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | grep -o "user/$USER_NAME" | wc -l   # 0
+
+aws iam delete-access-key  --user-name $USER_NAME --access-key-id <ID>              # 3 delete the key,
+aws iam delete-user-policy --user-name $USER_NAME --policy-name media-bucket-access  #   the policy
+aws iam delete-user        --user-name $USER_NAME                                     #   and the user
+```
+
+(`$W` is a fresh `mktemp -d` folder as in C.0.) Media the partner already
+uploaded stays in the bucket.
 
 ---
 
