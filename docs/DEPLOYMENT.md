@@ -237,8 +237,9 @@ node disk (`TIP_MEDIA_BACKEND=fs`). Production uses S3 with SSE-KMS:
 - *Your own bucket* (recommended): follow [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md),
   then set `TIP_MEDIA_BACKEND=s3`, `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`,
   `TIP_MEDIA_S3_KMS_KEY_ID`. The instance role signs; no AWS keys in the env.
-- *A bucket provided by The AI Lab*: you receive an access key scoped to the
-  `media/` prefix; set the same four values plus `AWS_ACCESS_KEY_ID` and
+- *A bucket provided by The AI Lab* (hosts without an instance role, such as a
+  Mac or bare metal; the Lab side is `PROD_S3_SETUP.md` section C): you receive
+  an access key scoped to the `media/` prefix; set the same four values plus `AWS_ACCESS_KEY_ID` and
   `AWS_SECRET_ACCESS_KEY`, and rotate that key every 90 days.
 
 Then `sudo docker compose up -d --force-recreate tip-node` (prints

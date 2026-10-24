@@ -7,6 +7,8 @@ This guide deploys the S3 backend the TIP node uses for media bytes
   reproducible / version-controlled infra.
 - **B.** AWS Console / CLI — for one-off setups where Terraform isn't
   available.
+- **C.** A partner node that is not on EC2/EKS (no instance role): an IAM
+  user with an access key on one of our existing buckets.
 
 Both paths yield the same posture. The application reads four env vars
 regardless:
@@ -345,6 +347,207 @@ aws ec2 create-vpc-endpoint \
   --route-table-ids rtb-AAAAAAAA rtb-BBBBBBBB \
   --vpc-endpoint-type Gateway
 ```
+
+---
+
+## C. Partner node without an instance role (Lab-provided bucket)
+
+Paths A and B give the node an **instance role**, which only exists on EC2/EKS.
+A partner node running anywhere else (a Mac, a bare-metal box, another cloud)
+cannot have one. For those we give the node access to the `media/` folder of
+one of our existing buckets through a dedicated **IAM user** with an access
+key. This is what the SS Software node runs on (user `tip-ss-node-media` on
+node 1's bucket). The access key is a long-lived secret, so this path is the
+exception: a partner on EC2 should run path A in their own account instead.
+
+Everything below happens in **our** AWS account, run by a Lab operator with
+admin rights. The partner only receives the access key and four env values.
+
+### C.0 Decide and set the variables
+
+Pick the bucket the partner writes to. Sharing one of the founding nodes'
+buckets is the norm (SS shares node 1's); the bucket's host is then already on
+the classifier's download allow-list, so nothing changes there.
+
+```bash
+export PARTNER=rooverse                                   # short slug
+export USER_NAME=tip-$PARTNER-node-media                  # e.g. tip-rooverse-node-media
+export BUCKET=tip-mainnet-1-media-us-east-1               # the shared bucket
+export REGION=us-east-1                                   # that bucket's region
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export KMS_KEY_ARN=$(aws s3api get-bucket-encryption --bucket $BUCKET \
+  --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.KMSMasterKeyID' --output text)
+echo "$USER_NAME -> $BUCKET ($REGION), key $KMS_KEY_ARN"
+```
+
+The last line must print a full `arn:aws:kms:...:key/...`. If it prints `None`,
+the bucket is not SSE-KMS and this is the wrong bucket.
+
+### C.1 Create the IAM user
+
+No console password, no group, no other policy:
+
+```bash
+aws iam create-user --user-name $USER_NAME \
+  --tags Key=purpose,Value=tip-partner-node-media Key=partner,Value=$PARTNER
+export USER_ARN=$(aws iam get-user --user-name $USER_NAME --query User.Arn --output text)
+echo $USER_ARN      # arn:aws:iam::<ACCOUNT_ID>:user/tip-rooverse-node-media
+```
+
+### C.2 Give it exactly the node's permissions
+
+The same three statements the node role has (B.3): objects under `media/`,
+listing only that prefix, and the bucket's KMS key, usable only through S3 in
+that region.
+
+```bash
+cat > /tmp/$USER_NAME-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "MediaObjectsRW", "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::$BUCKET/media/*" },
+    { "Sid": "ListMediaPrefix", "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::$BUCKET",
+      "Condition": { "StringLike": { "s3:prefix": ["media/*", "media/"] } } },
+    { "Sid": "UseMediaKmsKey", "Effect": "Allow",
+      "Action": ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"],
+      "Resource": "$KMS_KEY_ARN",
+      "Condition": { "StringEquals": { "kms:ViaService": "s3.$REGION.amazonaws.com" } } }
+  ]
+}
+EOF
+aws iam put-user-policy --user-name $USER_NAME \
+  --policy-name media-bucket-access --policy-document file:///tmp/$USER_NAME-policy.json
+```
+
+No KMS key-policy change is needed: the key policy's `EnableRootPermissions`
+statement delegates key access to IAM, so the user policy above is enough.
+
+### C.3 Let the user past the bucket policy
+
+The bucket policy denies everyone except the node role, so the user's own
+policy is not enough on its own. Add the user ARN to the **three** statements
+that name the role. Download, edit, upload:
+
+```bash
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text \
+  | python3 -m json.tool > /tmp/$BUCKET-policy.json
+cp /tmp/$BUCKET-policy.json /tmp/$BUCKET-policy.before.json      # keep the original
+```
+
+In `/tmp/$BUCKET-policy.json`:
+
+| statement (`Sid`) | change |
+|---|---|
+| `DenyDataAccessExceptNodeRole` | append `"$USER_ARN"` to the `aws:PrincipalArn` list in its condition (the list of who is **not** denied) |
+| `AllowNodeRole` | turn `"Principal": {"AWS": "<role arn>"}` into `"Principal": {"AWS": ["<role arn>", "<user arn>"]}` |
+| `AllowNodeRoleListMediaPrefix` | the same change to its `Principal` |
+
+`DenyInsecureTransport` stays untouched. With every existing user added the
+same way (SS's user is already in those three lists), the condition looks like:
+
+```json
+"aws:PrincipalArn": [
+  "arn:aws:iam::<ACCOUNT_ID>:role/tip-mainnet-1-media-us-east-1-node-role",
+  "arn:aws:iam::<ACCOUNT_ID>:root",
+  "arn:aws:iam::<ACCOUNT_ID>:user/tip-ss-node-media",
+  "arn:aws:iam::<ACCOUNT_ID>:user/tip-rooverse-node-media"
+]
+```
+
+Then apply it and confirm the user is in all three statements:
+
+```bash
+aws s3api put-bucket-policy --bucket $BUCKET --policy file:///tmp/$BUCKET-policy.json
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | grep -o "user/$USER_NAME" | wc -l
+```
+
+```text
+3
+```
+
+> **Terraform caveat.** The founding buckets were created by the Terraform
+> module, which does not know about partner users. A later `terraform apply`
+> on that bucket rewrites the bucket policy and silently removes every partner
+> user. Before any re-apply, add the user ARNs to the module's
+> `DenyDataAccessExceptNodeRole` / `AllowNodeRole*` principals, or redo C.3
+> afterwards.
+
+### C.4 Create the access key
+
+```bash
+aws iam create-access-key --user-name $USER_NAME > /tmp/$USER_NAME-key.json
+python3 -c "import json;k=json.load(open('/tmp/$USER_NAME-key.json'))['AccessKey'];print(k['AccessKeyId'])"
+```
+
+The JSON holds `AccessKeyId` and `SecretAccessKey`. AWS shows the secret
+**once**; store the file with the partner's other credentials (mode 0600, never
+in a repo or chat) and delete the `/tmp` copies after C.6.
+
+### C.5 Check the user can do exactly what the node needs, and nothing more
+
+Use the new key in a throwaway profile, from any machine:
+
+```bash
+aws configure set aws_access_key_id     <AccessKeyId>     --profile $USER_NAME
+aws configure set aws_secret_access_key <SecretAccessKey> --profile $USER_NAME
+aws configure set region $REGION --profile $USER_NAME
+P="--profile $USER_NAME"
+
+echo test > /tmp/c5.txt
+aws s3 cp /tmp/c5.txt s3://$BUCKET/media/c5-check-$PARTNER.txt $P     # upload: allowed
+aws s3 cp s3://$BUCKET/media/c5-check-$PARTNER.txt - $P               # read: prints "test"
+aws s3 ls s3://$BUCKET/media/ $P | head -3                             # list media/: allowed
+aws s3 rm s3://$BUCKET/media/c5-check-$PARTNER.txt $P                 # delete: allowed
+aws s3 cp /tmp/c5.txt s3://$BUCKET/outside-media.txt $P               # outside media/: must FAIL
+aws s3 ls s3://$BUCKET/ $P                                             # list the root: must FAIL
+```
+
+Expected: the first four succeed (`upload:`, `test`, a few `media/...` lines,
+`delete:`); the last two end in `An error occurred (AccessDenied)`. Then confirm
+the bucket's own node is unaffected: its `/status` stays **All good** and
+uploads through that node still work.
+
+Remove the profile afterwards (`aws configure` has no delete, so edit
+`~/.aws/credentials` and `~/.aws/config` and drop the `[$USER_NAME]` /
+`[profile $USER_NAME]` blocks).
+
+### C.6 Hand over
+
+The partner's `.env` gets (in the bundle's `node.env` before zipping, or sent
+on the same separate channel as the zip password):
+
+```text
+TIP_MEDIA_BACKEND=s3
+TIP_MEDIA_S3_BUCKET=<BUCKET>
+TIP_MEDIA_S3_REGION=<REGION>
+TIP_MEDIA_S3_KMS_KEY_ID=<KMS_KEY_ARN>
+AWS_ACCESS_KEY_ID=<AccessKeyId>
+AWS_SECRET_ACCESS_KEY=<SecretAccessKey>
+```
+
+Their side (recreate, upload one image, see it under `media/`) is
+`DEPLOYMENT.md` step 7. Record in the partner's private notes: user name,
+bucket, key id (not the secret), date issued.
+
+### C.7 Rotate every 90 days, revoke at offboarding
+
+Rotation, without downtime:
+
+```bash
+aws iam create-access-key --user-name $USER_NAME          # second key, deliver it
+# partner swaps the two AWS_* lines and recreates the container; then:
+aws iam update-access-key --user-name $USER_NAME --access-key-id <OLD_ID> --status Inactive
+aws iam delete-access-key --user-name $USER_NAME --access-key-id <OLD_ID>
+```
+
+Revocation (partner leaves, or a key leaks): set the key `Inactive` at once,
+then delete the key, the inline policy and the user, and remove the user ARN
+from the three bucket-policy statements (C.3 in reverse). Media the partner
+already uploaded stays in the bucket.
 
 ---
 
