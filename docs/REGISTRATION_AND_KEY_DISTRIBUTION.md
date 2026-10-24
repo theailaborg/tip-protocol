@@ -221,9 +221,19 @@ twice: the founding VP approves the node, and the **organization cosigns**,
 because naming an operator is a claim about a third party: the org's own key
 must agree to it.
 
-Dry-run it first. `--dry-run` renders the env and prints the derived values
-without registering anything, which is the only chance to read the payload
-before it is permanent:
+**Before the run:** `genesis-data/genesis.json` on the registration machine
+must be the mainnet genesis. The script reads the founding VP from that file
+and refuses the mainnet VP key if it is not (`loaded VP key is tip://vp/US-0e7db4040667073a
+but the chain's founding VP is tip://vp/US-e2bc656109331767` means the checkout
+carries the test genesis: `git checkout -- genesis-data/genesis.json`, then
+confirm `d4666ce1`):
+
+```bash
+python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:8])"   # d4666ce1
+```
+
+**1. Dry run.** Same command as the real run plus `--dry-run`; it signs
+everything, writes the env and README, registers nothing and keeps no key:
 
 ```bash
 node scripts/register-node.js \
@@ -233,7 +243,7 @@ node scripts/register-node.js \
   --operated-by "tip://id/<REGION>-<org-id>" \
   --operator-key-file generated/<partner-slug>/org/<org-tip-id>.tip.json \
   --operator-key-date <incorporation date, YYYY-MM-DD> \
-  --vp-file <mainnet VP .tip.json> \
+  --vp-file <VP_KEY_FILE>   # .../tip-vp-US-0e7db4040667073a.tip.json \
   --production \
   --port 4000 \
   --api-endpoint "https://<their-node-domain>" \
@@ -242,51 +252,115 @@ node scripts/register-node.js \
   --dry-run
 ```
 
-Then the real run: the same command with `--dry-run` removed.
+A good dry run (Rooverse, operated by THE PRESCIENT PACHYDERM LTD):
+
+```text
+  ✓ Founding VP keys loaded: tip://vp/US-0e7db4040667073a
+  ℹ Target node: https://node.theailab.org
+  ✓ Node healthy, DAG: 2070 txs
+  ✓ Founding VP: tip://vp/US-0e7db4040667073a
+  ✓ Keypair generated: tip://node/f7977ede8905c869
+  ✓ Council signature created
+  ✓ Operator cosignature created: tip://id/GB-400d3636845c06f2
+  ! --dry-run: skipping registration, rendering the env only
+  ✓ Backup (skipped, dry-run): generated/rooverse/node/tip-node-f7977ede8905c869.tip.json
+  ✓ Bootstrap multiaddr: /ip4/54.86.250.48/tcp/4001/p2p/12D3KooWFFwHuj68SBoL6DaCnZWaa4QxjY4dnKKfMgQpBNqAz2jn
+  ✓ Env file: generated/rooverse/node/rooverse-node.env
+```
+
+Check:
+
+| line | must be |
+|---|---|
+| `Founding VP keys loaded:` **and** `Founding VP:` | both `tip://vp/US-0e7db4040667073a`; the first is the file you passed, the second comes from the local genesis |
+| `Target node:` / `Node healthy` | `https://node.theailab.org`, healthy |
+| `Operator cosignature created:` | the partner's org id from section 4; the script already proved the key file opens with the date and belongs to that org |
+| `Bootstrap multiaddr:` | `/ip4/54.86.250.48/tcp/4001/p2p/12D3KooWFFwHuj68SBoL6DaCnZWaa4QxjY4dnKKfMgQpBNqAz2jn` (node 1); a `Could not read bootstrap_addr` failure means `TIP_BOOTSTRAP_PEERS` must be filled by hand |
+| `Keypair generated:` | throwaway; the real run makes a new one, do not record it |
+
+Then open the rendered env (`generated/<slug>/node/<slug>.env`) and check these
+lines, which carry the partner's values:
+
+```text
+NODE_ENV=production
+TIP_PUBLIC_URL=https://<their-node-domain>
+TIP_API_ENDPOINT=https://<their-node-domain>
+TIP_PUBLIC_IP=<their-static-ip>
+PORT=4000
+TIP_P2P_PORT=4001
+TIP_BOOTSTRAP_PEERS=/ip4/54.86.250.48/tcp/4001/p2p/12D3KooW...
+TIP_CLASSIFIER_URL=https://tipclassifier.theailab.org
+TIP_CLASSIFIER_FALLBACK=0
+TIP_CLASSIFIER_SCAN_NON_OH=true
+```
+
+The only `CHANGE_ME` left is `DB_PASSWORD`; `TIP_CLASSIFIER_KEY`,
+`TIP_CLASSIFIER_CALLBACK_SECRET` and `TIP_METRICS_TOKEN` are empty on purpose
+(section 6.2). There must be no `TIP_*_ACTIVATION_MS` line. Ignore the printed
+"Setup for the new node" block: it describes a local node; the partner's steps
+are `DEPLOYMENT.md` (section 7).
+
+**2. Real run:** the same command without `--dry-run`. It prints, in addition:
+
+```text
+  ✓ Node registered: tip://node/<id>
+    Name                    <Partner> Node
+    Confirmation            proposed
+  ✓ Backup: generated/<slug>/node/tip-node-<id>.tip.json
+```
+
+`proposed` is normal (the tx commits a few seconds later). Record the
+`tip://node/<id>`; that is the partner's node identity, and the backup file is
+their node key (mode 0600, bundled in section 6).
 
 Flag by flag:
 
 | flag | meaning |
 |---|---|
 | `--operated-by` | the org identity accountable for this node |
-| `--operator-key-file` | the org's key from section 4, produces the cosignature |
-| `--operator-key-date` | the incorporation date the org key is locked with (register-org locks it in the VP app's `tip-key-export-v2` format); omit only for an old plaintext file |
-| `--vp-file` | the founding VP key that signs the council approval. Same rule as register-org: without it the script uses the local/test VP from `genesis-data/backups` and mainnet rejects the signature |
-| `--production` | `NODE_ENV=production` in the generated env; CORS must be filled by the partner, never `*` |
-| `--port` | the partner's node serves API on 4000 (p2p follows on 4001); the script default is 4100, which is for extra local nodes |
+| `--operator-key-file` / `--operator-key-date` | the org's key from section 4, locked with the incorporation date; produces the cosignature |
+| `--vp-file` | the mainnet founding VP key `tip-vp-US-0e7db4040667073a.tip.json`; without it the script uses the test VP in `genesis-data/backups` and mainnet rejects the signature |
+| `--production` | `NODE_ENV=production` plus the federation's live defaults in the env |
+| `--port` | 4000 (p2p follows on 4001); the script default 4100 is for extra local nodes |
 | `--api-endpoint` | their domain; the node announces it **on-chain** at first boot after probing that the URL answers `/health` as itself |
-| `--public-url` / `--public-ip` | what the API surfaces / what peers dial back. Omitted under `--production` they become `CHANGE_ME` placeholders rather than silently shipping `localhost` / `127.0.0.1` |
-| `--dry-run` | render and print, register nothing |
+| `--public-url` / `--public-ip` | what the API surfaces / what peers dial back; omitted under `--production` they become `CHANGE_ME` |
 
-The script generates the env **only** from `.env.example` plus these flags; it
-reads nothing from your shell, so nothing from the registration machine can leak
-into the partner's file. Secrets are added by hand in section 6.2.
+The env is generated **only** from `.env.example` plus these flags; nothing from
+the registration machine's shell can leak into it. Pass the same `--partner
+<slug>` to the org and node runs so both land in `generated/<slug>/` (org key
+under `org/`, node key and env under `node/`, plus the auto-written README).
 
-Pass the same `--partner <slug>` to both the org and node runs and everything
-lands in one folder:
-
-```
-generated/<partner>/
-├── README.md          <- auto-written handling rules for every credential type
-├── org/<org-id>.tip.json
-└── node/
-    ├── <node-id>.tip.json
-    └── <slug>.env
-```
-
-**Verify** the registration. There is no `/v1/nodes` HTTP endpoint; the node
-roster is exposed by the `tip_node_registry_info` metric (needs the metrics
-token), check it on two nodes:
+**3. Verify from two different nodes.** The registry is public, no token:
 
 ```bash
-TOK=<production TIP_METRICS_TOKEN>
-curl -s -H "Authorization: Bearer $TOK" https://node.theailab.org/metrics  | grep tip_node_registry_info
-curl -s -H "Authorization: Bearer $TOK" https://node2.theailab.org/metrics | grep tip_node_registry_info
+curl -s https://node.theailab.org/v1/nodes  | python3 -m json.tool | grep -B2 -A6 '"<Partner> Node"'
+curl -s https://node2.theailab.org/v1/nodes | python3 -m json.tool | grep -B2 -A6 '"<Partner> Node"'
 ```
 
-The new node must appear with the partner's name and `status="active"` on both.
-Nothing on the partner's machine needs to be live yet; this step involves only
-our nodes.
+A verified registration (SS Software, live on mainnet) looks like this on both:
+
+```text
+    "node_id": "tip://node/e2bc616656de7c31",
+    "name": "SS Software Node",
+    "status": "active",
+    "api_endpoint": "https://sssoftware-node.theailab.org",
+    "operated_by": "tip://id/US-b4f0805cf87ce2f0",
+    "founding": false,
+    "registered_at": "2026-09-23T09:54:42.329Z"
+```
+
+| line | must be |
+|---|---|
+| `node_id` | the id the real run printed |
+| `name` | the `--name` value; this is what `/status` pages and the registry show |
+| `status` | `active` |
+| `api_endpoint` | **`null` right after registration**; it becomes their URL on their first boot (section 7) |
+| `operated_by` | the partner's org id |
+| `founding` | `false` (only the three Lab nodes are `true`) |
+| `registered_at` | the time of the real run, UTC |
+
+Both nodes must show identical values. Nothing on the partner's machine needs
+to be live yet; this step involves only our nodes.
 
 ## 6. Build and deliver the credentials bundle
 
@@ -465,9 +539,11 @@ Our side: four checks, in this order. Each proves something different:
 4. **Staying in sync.** `consensus.narwhal.round` increases between two calls
    and `consensus.halt.lastAdvanceAt` is within the last few seconds.
 
-Then confirm their `api_endpoint` appears on-chain (their first boot announces
-it), and have them register one test content and check it reaches
-`prescan: completed`.
+Then confirm their `api_endpoint` appears on-chain: their entry in
+`https://node.theailab.org/v1/nodes` flips from `null` to their URL after the
+first boot (the announce probes the domain, so DNS must resolve by then), and
+`https://<their-domain>/status` shows "All good". Finally have them register
+one test content and check it reaches `prescan: completed`.
 
 ## 8. After onboarding
 
@@ -548,9 +624,9 @@ node scripts/register-node.js \
   --public-url "https://tipnode.pachyderm.example" \
   --public-ip 203.0.113.10
 
-# R5: verify the roster (there is no /v1/nodes endpoint; use the metric)
-TOK=$(grep '^TIP_METRICS_TOKEN=' .env | cut -d= -f2-)
-curl -s -H "Authorization: Bearer $TOK" http://localhost:4000/metrics | grep tip_node_registry_info
+# R5: verify the roster on two local nodes (public endpoint, no token)
+curl -s http://localhost:4000/v1/nodes | python3 -m json.tool | grep -B2 -A6 '"Pachyderm Node"'
+curl -s http://localhost:4100/v1/nodes | python3 -m json.tool | grep -B2 -A6 '"Pachyderm Node"'
 ```
 
 ```bash
@@ -560,6 +636,45 @@ ls -la generated/deliveries/             # the zip; password was printed + logge
 rm -rf generated/pachyderm generated/deliveries generated/ZIP-PASSWORDS.md   # rehearsal cleanup
 ```
 
-What changes on mainnet, and nothing else: `--node-url https://node.theailab.org`,
-`--vp-file <mainnet VP key>`, verification against `node`/`node2.theailab.org`,
-and the env is hand-filled with production secrets before bundling (section 6.2).
+The same flow on mainnet, with the real target, the real VP key file and the
+real verification hosts; everything else is identical:
+
+```bash
+VP=/path/to/tip-vp-US-0e7db4040667073a.tip.json
+
+# M1: org, dry run then real (drop --dry-run)
+node scripts/register-org.js \
+  --name "THE PRESCIENT PACHYDERM LTD" \
+  --reg-number 16846775 \
+  --incorporated 2025-11-11 \
+  --region GB \
+  --org-type private-limited-company \
+  --partner pachyderm \
+  --node-url https://node.theailab.org \
+  --vp-file "$VP" \
+  --dry-run
+
+# M2: node, org cosigning, dry run then real (drop --dry-run)
+node scripts/register-node.js \
+  --name "Pachyderm Node" \
+  --partner pachyderm \
+  --node-url https://node.theailab.org \
+  --operated-by "$ORG_ID" \
+  --operator-key-file generated/pachyderm/org/<org-tip-id>.tip.json \
+  --operator-key-date 2025-11-11 \
+  --vp-file "$VP" \
+  --production \
+  --port 4000 \
+  --api-endpoint "https://tipnode.pachyderm.example" \
+  --public-url "https://tipnode.pachyderm.example" \
+  --public-ip 203.0.113.10 \
+  --dry-run
+
+# M3: verify on two mainnet nodes
+curl -s "https://node.theailab.org/v1/identity/$ENC"  | python3 -m json.tool | grep -E '"creator_name"|"status"|"org_type"'
+curl -s "https://node2.theailab.org/v1/identity/$ENC" | python3 -m json.tool | grep -E '"creator_name"|"status"|"org_type"'
+curl -s https://node.theailab.org/v1/nodes  | python3 -m json.tool | grep -B2 -A6 '"Pachyderm Node"'
+curl -s https://node2.theailab.org/v1/nodes | python3 -m json.tool | grep -B2 -A6 '"Pachyderm Node"'
+```
+
+Then the env is hand-filled with production secrets before bundling (section 6.2).
