@@ -337,8 +337,14 @@ curl -s https://node.theailab.org/v1/nodes  | python3 -m json.tool | grep -B2 -A
 curl -s https://node2.theailab.org/v1/nodes | python3 -m json.tool | grep -B2 -A6 '"<Partner> Node"'
 ```
 
-A verified registration (SS Software, live on mainnet) prints this on both;
-the name must be quoted exactly as passed to `--name`, or grep prints nothing:
+`"<Partner> Node"` is the exact `--name` value, quotes included; any other
+spelling and grep prints nothing. Example for the SS node, live on mainnet:
+
+```bash
+curl -s https://node.theailab.org/v1/nodes | python3 -m json.tool | grep -B2 -A6 '"SS Software Node"'
+```
+
+prints this (and node2 prints the same):
 
 ```text
             {
