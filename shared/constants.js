@@ -1056,9 +1056,9 @@ const REGISTER_CREDIT = Object.freeze({
   TOTAL: 350,
   ACTIVATION_MS: 1784522400000, // 2026-07-20 04:40:00 UTC mainnet activation
   // Commit-time cap is a new reject rule; a mixed fleet would fork, so gate it
-  // on this epoch-ms and enforce fleet-wide together. Operator sets the real
-  // value (or TIP_REG_CREDIT_CAP_ACTIVATION_MS) once all nodes ship.
-  CAP_ENFORCE_ACTIVATION_MS: 1784868000000, // 2026-07-24 04:40:00 UTC
+  // on this epoch-ms. The default IS the mainnet epoch, so a new node needs no
+  // env; TIP_REG_CREDIT_CAP_ACTIVATION_MS exists for networks with their own history.
+  CAP_ENFORCE_ACTIVATION_MS: 1784836800000, // 2026-07-23 20:00:00 UTC mainnet activation
 
   AWARD_REASON_PREFIX: "reg_credit:",
   REVERSAL_REASON_PREFIX: "reg_credit_rev:",

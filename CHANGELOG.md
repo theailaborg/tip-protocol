@@ -9,6 +9,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+**Node: the reg-credit cap epoch default is the mainnet epoch**
+
+`REGISTER_CREDIT.CAP_ENFORCE_ACTIVATION_MS` now equals the epoch mainnet
+activated the cap with (2026-07-23 20:00 UTC), which the fleet had been pinning
+through `TIP_REG_CREDIT_CAP_ACTIVATION_MS`. A new node no longer needs that env
+line (or `register-node.js --reg-credit-activation-ms`) to agree with the
+fleet; the override stays for networks that activated at another time. No
+behaviour change on nodes that already carry the env value. `.env.example` and
+the registration and deployment docs drop the "read it off a node" step.
+
 ### Added
 
 **Node 2.7.9: built-in status page and public node registry**
