@@ -608,9 +608,14 @@ one test content and check it reaches `prescan: completed`.
 
 ## 8. After onboarding
 
-- [ ] Add `<their-domain>` to external monitoring and the status page
-- [ ] Add their node to the production Prometheus scrape targets
-- [ ] Allow-list their IP where applicable
+- [ ] Add their node to the production Prometheus scrape targets: on the
+      observability host, `~/tip-protocol/infra/observability/prod/prometheus.yml`,
+      add `"<their-domain>:443"` under the `tip-federation` job next to the
+      other partner nodes, then `docker compose up -d --force-recreate prometheus`.
+      Grafana picks the node up by its id; bookmark `https://<their-domain>/status`
+- [ ] If they serve media from their own bucket, have the classifier team add
+      that bucket host to the classifier's `allowed_download_domains`; nothing
+      on our side is IP-based (metrics are token-based, Loki uses the shared login)
 - [ ] Record the ops contact in the operations inventory, not only in the email
       thread
 - [ ] Walk the partner through key custody one more time: offline backup of both
