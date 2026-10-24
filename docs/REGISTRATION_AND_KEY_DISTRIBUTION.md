@@ -278,8 +278,13 @@ Check:
 | `Bootstrap multiaddr:` | `/ip4/54.86.250.48/tcp/4001/p2p/12D3KooWFFwHuj68SBoL6DaCnZWaa4QxjY4dnKKfMgQpBNqAz2jn` (node 1); a `Could not read bootstrap_addr` failure means `TIP_BOOTSTRAP_PEERS` must be filled by hand |
 | `Keypair generated:` | throwaway; the real run makes a new one, do not record it |
 
-Then open the rendered env (`generated/<slug>/node/<slug>.env`) and check these
-lines, which carry the partner's values:
+The dry run really writes `generated/<partner-slug>/README.md` and
+`generated/<partner-slug>/node/<name-slug>.env` (only the key file is skipped);
+a rerun with the same `--partner` and `--name` overwrites both in place, and the
+real run overwrites the env once more with the real node id, so keep those two
+flags identical across the dry run and the real run and never bundle a dry-run
+env. Open the rendered env and check these lines, which carry the partner's
+values:
 
 ```text
 NODE_ENV=production
