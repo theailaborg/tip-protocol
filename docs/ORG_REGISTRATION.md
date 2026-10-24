@@ -229,11 +229,19 @@ than one node: they must agree.
 The script writes `generated/<partner>/org/<tip-id>.tip.json` at mode `0600`
 (pass `--partner <slug>` so the later node registration lands in the same folder).
 The file is the VP app's export format (`tip-key-export-v2`): the public key, the
-registry inputs, and the private key **locked with the date of incorporation**
+organization's name, region and VP, and the private key **locked with the date of incorporation**
 (PBKDF2-SHA256 200k + AES-256-GCM, the date as `MMDDYYYY`, exactly how the VP app
 locks a personal download with the date of birth). The script re-reads and decrypts
 the file before reporting success, and the organization imports it into the VP app
 by entering that date.
+
+The file never carries the date. The registry inputs (registration number as
+hashed and as provided, scheme, date of incorporation, dedup hash) go to
+`<tip-id>.registration.json` beside it, also mode `0600`. That record is the Lab's
+audit copy: it holds the unlock date, so it is never delivered, attached or
+committed, and the bundler (section 6 of `REGISTRATION_AND_KEY_DISTRIBUTION.md`)
+only stages `org/*.tip.json`. Files issued before this change carry an
+`incorporated` field in the clear and so hold their own unlock date.
 
 The date is public record, so the lock is one layer, not the delivery channel: a
 leaked file is not usable as-is, but anyone who knows the company can look the date
