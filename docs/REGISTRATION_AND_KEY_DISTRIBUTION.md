@@ -612,7 +612,13 @@ one test content and check it reaches `prescan: completed`.
       observability host, `~/tip-protocol/infra/observability/prod/prometheus.yml`,
       add `"<their-domain>:443"` under the `tip-federation` job next to the
       other partner nodes, then `docker compose up -d --force-recreate prometheus`.
-      Grafana picks the node up by its id; bookmark `https://<their-domain>/status`
+      The job's bearer token is the fleet-wide `TIP_METRICS_TOKEN` already in
+      their `node.env`, so there is no per-partner auth to set up; confirm the
+      target shows `UP` in Prometheus Status > Targets (`DOWN` with 401 means
+      their env carries a different token). Grafana picks the node up by its
+      id; bookmark `https://<their-domain>/status`
+- [ ] Logs need nothing on our side beyond the label and password issued in
+      6.5; confirm `{node="<label>"}` returns lines in Grafana Explore
 - [ ] If they serve media from their own bucket, have the classifier team add
       that bucket host to the classifier's `allowed_download_domains`; nothing
       on our side is IP-based (metrics are token-based, Loki uses the shared login)
