@@ -363,7 +363,7 @@ aws kms put-key-policy \
 
 ### B.5 Attach the bucket policy
 
-(`bucket_policy.json` — replace placeholders):
+(`bucket_policy.json`, replace the placeholders):
 
 ```json
 {
@@ -792,15 +792,15 @@ Most operators will be well under $20/month at this size.
 
 ## What to keep monitoring
 
-- **CloudWatch metric `4xxErrors` on the bucket** — sudden spike usually
+- **CloudWatch metric `4xxErrors` on the bucket**: sudden spike usually
   means a signature contract changed in the node code or the IAM role
   drifted.
-- **`AllRequests` count** — sanity check that the retention sweep isn't
+- **`AllRequests` count**: sanity check that the retention sweep isn't
   thrashing (steady-state should be ≈ traffic to the API).
-- **KMS key throttling** — if you see `ThrottlingException`,
+- **KMS key throttling**: if you see `ThrottlingException`,
   `BucketKeyEnabled` should make this near-impossible, but it's worth
   alarming.
-- **App log line "Media retention swept: …"** — confirms the sweep is
+- **App log line "Media retention swept: …"**: confirms the sweep is
   running. Absence for >24h is a signal something's stuck.
 
 ## When something breaks
@@ -808,7 +808,7 @@ Most operators will be well under $20/month at this size.
 | Symptom | Likely cause |
 |---|---|
 | `AccessDenied` on PUT from node | KMS key policy missing the node role, or wrong `kms:ViaService` |
-| `AccessDenied` on GET via presigned URL | Object encrypted with a key the role can't decrypt (e.g. someone wrote directly without SSE-KMS — shouldn't happen via the app) |
+| `AccessDenied` on GET via presigned URL | Object encrypted with a key the role can't decrypt (e.g. someone wrote directly without SSE-KMS, which the app never does via the app) |
 | `403 SignatureDoesNotMatch` on presigned URL | Clock skew on the node ≥ 15 minutes |
-| `404 NoSuchKey` after a successful PUT | Eventual consistency — almost never in current S3, but possible on cross-region replication |
-| Sweep deletes too aggressively | Cross-check `MEDIA_RETENTION.*` constants in `protocol-constants.js` vs `genesis.js` payload — divergence means the sweep is running on different windows than expected |
+| `404 NoSuchKey` after a successful PUT | Eventual consistency: almost never in current S3, but possible on cross-region replication |
+| Sweep deletes too aggressively | Cross-check `MEDIA_RETENTION.*` constants in `protocol-constants.js` vs `genesis.js` payload; divergence means the sweep is running on different windows than expected |
