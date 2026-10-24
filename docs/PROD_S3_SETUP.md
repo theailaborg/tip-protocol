@@ -80,11 +80,22 @@ bucket: never reuse the repo's `infra/s3-media/` folder (it already tracks a dev
 bucket, and changing its `bucket_name` would make Terraform try to replace that
 bucket).
 
+Run on your laptop. Set `REPO` to where your `tip-protocol` checkout is
+(for example `~/Projects/neuriteai-work/tip-protocol`):
+
 ```bash
+REPO=<path to your tip-protocol checkout>
 mkdir -p ~/tip-s3/rooverse && cd ~/tip-s3/rooverse
-cp ~/tip-protocol/infra/s3-media/{*.tf,setup.sh,terraform.tfvars.example} .
+cp "$REPO"/infra/s3-media/{*.tf,setup.sh,terraform.tfvars.example} .
 cp terraform.tfvars.example terraform.tfvars
+ls
 ```
+
+The first line makes an empty folder for this bucket and moves into it; the
+second copies the Terraform files and `setup.sh` from the repo; the third makes
+your own settings file from the template. `ls` must show `main.tf`,
+`outputs.tf`, `setup.sh`, `terraform.tfvars`, `terraform.tfvars.example`,
+`variables.tf`, `versions.tf`.
 
 **2. Fill three values** in `terraform.tfvars`:
 
