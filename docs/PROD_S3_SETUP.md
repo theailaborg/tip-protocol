@@ -101,6 +101,11 @@ template. `ls` must show `main.tf`, `outputs.tf`, `setup.sh`,
 `terraform.tfvars`, `terraform.tfvars.example`, `variables.tf`, `versions.tf`.
 Every later step of path A runs in `~/tip-s3/rooverse`.
 
+The folder is in your home directory (`/Users/<you>/tip-s3/rooverse` on a Mac),
+deliberately **outside** the repo: Terraform's state file will live there, and
+in `keys` mode it contains the partner's secret key, so it must never sit in a
+git checkout. `open ~/tip-s3/rooverse` shows it in Finder.
+
 **2. Fill three values** in `terraform.tfvars`:
 
 ```hcl
