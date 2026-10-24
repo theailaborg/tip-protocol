@@ -7,7 +7,7 @@ This guide deploys the S3 backend the TIP node uses for media bytes
   reproducible / version-controlled infra.
 - **B.** AWS Console / CLI — for one-off setups where Terraform isn't
   available.
-- **C.** A partner node that is not on EC2/EKS (no instance role): an IAM
+- **C.** A partner node that is not on EC2 (no instance role): an IAM
   user with an access key on one of our existing buckets.
 
 Both paths yield the same posture. The application reads four env vars
@@ -20,8 +20,8 @@ TIP_MEDIA_S3_REGION      = <region>
 TIP_MEDIA_S3_KMS_KEY_ID  = <KMS key ARN>
 ```
 
-The node's IAM credentials come from the AWS SDK default chain (IRSA
-on EKS, EC2 instance role, `aws sso login` for local dev). Never put
+The node's IAM credentials come from the AWS SDK default chain (the
+EC2 instance role in production, `aws sso login` for local dev). Never put
 long-lived `AWS_ACCESS_KEY_ID` in the node's environment.
 
 ---
@@ -34,8 +34,7 @@ cp terraform.tfvars.example terraform.tfvars   # 3 values: bucket_name, region, 
 ./setup.sh
 ```
 
-Works identically for EC2 (`trust_mode=ec2`), EKS (`irsa`) and a dev
-laptop (`dev`). Prints the env block for the node and the single
+Use `trust_mode=ec2` for a node on EC2 (`dev` for a laptop). Prints the env block for the node and the single
 mode-specific wiring step. The sections below describe what it does and
 the manual console/CLI path for operators who prefer that.
 
@@ -45,7 +44,7 @@ See `infra/s3-media/README.md` for the full module reference. Quick
 start:
 
 ```bash
-cd infra/s3-media/examples/ec2     # or examples/eks-irsa
+cd infra/s3-media/examples/ec2
 terraform init
 terraform plan -out plan.bin
 terraform apply plan.bin
@@ -142,9 +141,7 @@ aws s3api put-bucket-lifecycle-configuration \
 
 ### B.3 Create the node IAM role
 
-Pick **one** trust policy depending on how the node runs.
-
-**EC2 instance profile** (`trust_ec2.json`):
+Trust policy (`trust_ec2.json`), so the EC2 instance can assume the role:
 
 ```json
 {
@@ -153,25 +150,6 @@ Pick **one** trust policy depending on how the node runs.
     "Effect": "Allow",
     "Principal": { "Service": "ec2.amazonaws.com" },
     "Action": "sts:AssumeRole"
-  }]
-}
-```
-
-**EKS IRSA** (`trust_irsa.json` — replace placeholders):
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": { "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/OIDC_HOST" },
-    "Action": "sts:AssumeRoleWithWebIdentity",
-    "Condition": {
-      "StringEquals": {
-        "OIDC_HOST:sub": "system:serviceaccount:NAMESPACE:SERVICE_ACCOUNT",
-        "OIDC_HOST:aud": "sts.amazonaws.com"
-      }
-    }
   }]
 }
 ```
@@ -229,7 +207,7 @@ aws iam put-role-policy \
   --policy-document file://node_policy.json
 ```
 
-For EC2 — also create the instance profile:
+Create the instance profile (the wrapper EC2 attaches the role through):
 
 ```bash
 aws iam create-instance-profile --instance-profile-name "$ROLE_NAME"
@@ -352,7 +330,7 @@ aws ec2 create-vpc-endpoint \
 
 ## C. Partner node without an instance role (Lab-provided bucket)
 
-Paths A and B give the node an **instance role**, which only exists on EC2/EKS.
+Paths A and B give the node an **instance role**, which only exists on EC2.
 A partner node running anywhere else (a Mac, a bare-metal box, another cloud)
 cannot have one. For those we give the node access to the `media/` folder of
 one of our existing buckets through a dedicated **IAM user** with an access
@@ -551,37 +529,13 @@ already uploaded stays in the bucket.
 
 ---
 
-## Wiring the TIP node
+## Wiring the TIP node (paths A and B)
 
-### EKS pod (IRSA)
-
-Annotate the service account:
-
-```bash
-kubectl annotate serviceaccount tip-node \
-  -n tip \
-  eks.amazonaws.com/role-arn=$ROLE_ARN
-```
-
-In the pod spec:
-
-```yaml
-spec:
-  serviceAccountName: tip-node
-  containers:
-    - name: tip-node
-      env:
-        - { name: TIP_MEDIA_BACKEND,       value: s3 }
-        - { name: TIP_MEDIA_S3_BUCKET,     value: "tip-media-prod-uswest2" }
-        - { name: TIP_MEDIA_S3_REGION,     value: "us-west-2" }
-        - { name: TIP_MEDIA_S3_KMS_KEY_ID, value: "<kms-key-arn>" }
-```
-
-### EC2 instance
-
-Attach the instance profile (output `instance_profile_name` from the
-Terraform module, or `$ROLE_NAME` from the CLI path). Then in your
-systemd unit / docker-compose env:
+Attach the instance profile to the node's EC2 instance (output
+`instance_profile_name` from the Terraform module, or `$ROLE_NAME` from the CLI
+path), then put the four values in the node's `.env` and recreate the container
+(`docker compose up -d --force-recreate tip-node`). No AWS keys: the instance
+role signs. Path C nodes use the six lines in C.6 instead.
 
 ```
 TIP_MEDIA_BACKEND=s3
