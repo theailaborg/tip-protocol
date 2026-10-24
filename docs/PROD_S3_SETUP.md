@@ -79,8 +79,22 @@ cp terraform.tfvars.example terraform.tfvars
 ```hcl
 bucket_name = "tip-rooverse-media-eu-west-2"   # globally unique
 region      = "eu-west-2"                      # closest to the node
-trust_mode  = "keys"                           # "ec2" for a node on EC2
+trust_mode  = "keys"                           # see the table below
 ```
+
+`trust_mode` answers one question: **how will the node prove to AWS that it
+may use this bucket?** It only changes the node's credentials; the bucket, the
+key and the permissions are identical in every mode.
+
+| `trust_mode` | pick it when the node runs | the node proves itself with | what you hand the node | we use it for |
+|---|---|---|---|---|
+| `ec2` | on an AWS EC2 server | the server's **instance role**, attached once in the EC2 console; AWS gives the node short-lived credentials automatically | nothing secret, only the four `TIP_MEDIA_*` lines | mainnet nodes 1-3 |
+| `keys` | anywhere else (a Mac, bare metal, another cloud) | an **access key** of an IAM user that can only touch this bucket's `media/` | the four lines plus `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (rotate every 90 days) | the test cluster's dev bucket; the choice for a partner off EC2 |
+| `external` | anywhere else, when a long-lived key is not acceptable | an **X.509 certificate** exchanged for short-lived credentials (IAM Roles Anywhere); needs the `aws_signing_helper` program on the node host | two certificate files and an AWS profile on the node host | not used |
+| `irsa` | as a Kubernetes (EKS) pod | the pod's service account | a service-account annotation | not used |
+
+For TIP the choice is simply: **`ec2` if the node is on EC2, otherwise
+`keys`.** The template file defaults to `keys`; the module's own default is `ec2`.
 
 **3. Set the browser origins**, or the script writes `*` into the bucket CORS
 and the printed env block:
