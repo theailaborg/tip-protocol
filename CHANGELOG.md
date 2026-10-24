@@ -9,6 +9,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+**`scripts/upgrade-node.sh`**: the gated one-node upgrade we run on every
+release (checkout tag, rebuild, stop, root gate against an untouched peer,
+start only on MATCH, wait for `/ready`), committed instead of living in `/tmp`
+on each box.
+
 ### Fixed
 
 **Node: the reg-credit cap epoch default is the mainnet epoch**
