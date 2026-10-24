@@ -106,7 +106,11 @@ deliberately **outside** the repo: Terraform's state file will live there, and
 in `keys` mode it contains the partner's secret key, so it must never sit in a
 git checkout. `open ~/tip-s3/rooverse` shows it in Finder.
 
-**2. Fill three values** in `terraform.tfvars`:
+**2. Fill three values** in `~/tip-s3/<partner>/terraform.tfvars`. Open it in
+your editor: `code ~/tip-s3/rooverse/terraform.tfvars` for VS Code (if `code` is
+not found: in VS Code, `Cmd+Shift+P`, *Shell Command: Install 'code' command in
+PATH*), or `nano terraform.tfvars` in the terminal. Change the `bucket_name` and
+`region` lines and check `trust_mode`; the `#` lines can stay:
 
 ```hcl
 bucket_name = "tip-rooverse-media-eu-west-2"   # globally unique
