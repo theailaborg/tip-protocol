@@ -190,9 +190,40 @@ How that deploys the new version:
 5. only on `MATCH`, `docker compose up -d --force-recreate tip-node` starts a
    fresh container from the new image; `/health` now reports the new version.
 
-Good output, in order: `== genesis unchanged`, `== build ok`, the gate's
-per-table roots ending in `MATCH: safe to restart`, `== READY after NNs`,
-`RestartCount=0`. On a macOS Docker host prefix the command with
+A successful upgrade prints this (mainnet node 3 going to 2.7.9; hashes and
+row counts differ per node and day):
+
+```text
+== [ip-172-31-41-19] upgrading to v2.7.9, gate peer https://node.theailab.org
+== genesis unchanged (d4666ce1); at v2.7.9
+== build ok
+== stopped; running root gate
+database : tip_node3
+rebuilt  : 97c11eb1da89b9c5455c03593f7165530d10dc5cb99abd7375c87b09a164d6c1
+expected : 97c11eb1da89b9c5455c03593f7165530d10dc5cb99abd7375c87b09a164d6c1  (https://node.theailab.org at round 20445720)
+  identities               790ee7ba8a11568d  rows=75
+  content                  fac1a1d00ff7a939  rows=629
+  ...                      (one line per state table)
+  protocol_params          095efd252bae917b  rows=163
+MATCH: safe to restart
+== started; waiting for /ready
+== READY after 30s: {"ok":true,"status":200,"data":{"ready":true,"db_ok":true,"halted":false,"join_state":"ready"}}
+{"ok":true,"status":200,"data":{"status":"ok","node_id":"tip://node/97f096a95b681852","node_type":"full","dag_count":2070,"version":"2.7.9", ...
+RestartCount=0
+```
+
+It worked when all four hold: `rebuilt` equals `expected`, the gate ends in
+`MATCH: safe to restart`, `== READY` appears, and `/health` shows the new
+`version` with `RestartCount=0`. It did not work if it ends in any of these:
+
+| last line | meaning | node state |
+|---|---|---|
+| `MISMATCH: do not restart, this node would halt at boot` then `== GATE FAILED (rc=1)` | your database rebuilds to a different root than the peer | stopped; do not start it, investigate the table whose root differs from the peer's |
+| `check-boot-root failed: ...` then `== GATE FAILED` | the gate could not run (peer unreachable, DB down, migration error) | stopped; fix the cause and rerun the command |
+| `== genesis changed ...` or `== ... is locally modified; refusing` | not a routine release, or a hand-edited genesis | untouched, still running the old version |
+| no `== READY` after 10 minutes, or `RestartCount` above 0 | the new version started but is not healthy | running; read `docker compose logs tip-node` before touching another node |
+
+On a macOS Docker host prefix the command with
 `NODE_OPTIONS=--dns-result-order=ipv4first`. If your checkout predates the
 script (no `scripts/upgrade-node.sh` yet), run
 `git fetch --tags origin && git checkout <tag>` once to obtain it, then the
