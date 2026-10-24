@@ -425,15 +425,36 @@ warns on empty values but does not fail):
 - No `TIP_*_ACTIVATION_MS` line: the code defaults are the mainnet epochs. A
   value here is only right on a network that activated a rule at another time
 
-Then confirm the placeholders are still placeholders and nothing carries a value
-it should not:
+Then two checks on the finished file. First, the values that must not carry
+anything unexpected:
 
 ```bash
-grep -E '^(TIP_PUBLIC_IP|TIP_PUBLIC_URL|DB_PASSWORD|TIP_CORS_ORIGINS|TIP_CLASSIFIER_FALLBACK)=' <slug>.env
+grep -E '^(TIP_PUBLIC_IP|TIP_PUBLIC_URL|DB_PASSWORD|TIP_CORS_ORIGINS|TIP_CLASSIFIER_FALLBACK)=' generated/<partner>/node/<slug>.env
 ```
 
-`TIP_PUBLIC_IP`, `TIP_PUBLIC_URL` and `DB_PASSWORD` read `CHANGE_ME_*` unless you
-passed them explicitly; `TIP_CLASSIFIER_FALLBACK` must be `0`.
+prints five lines; for the Rooverse env generated in section 5:
+
+```text
+TIP_PUBLIC_URL=https://node.rooverse.example
+TIP_PUBLIC_IP=203.0.113.10
+DB_PASSWORD=CHANGE_ME_STRONG_DB_PASSWORD
+TIP_CLASSIFIER_FALLBACK=0
+TIP_CORS_ORIGINS=https://theailab.org,https://www.theailab.org,https://vp.theailab.org
+```
+
+| line | good |
+|---|---|
+| `TIP_PUBLIC_URL` / `TIP_PUBLIC_IP` | the partner's domain and static IP you passed; `CHANGE_ME_*` only if you did not pass them (then the partner fills them before first boot) |
+| `DB_PASSWORD` | **stays** `CHANGE_ME_STRONG_DB_PASSWORD`; the partner sets it, we never know it |
+| `TIP_CLASSIFIER_FALLBACK` | `0` |
+| `TIP_CORS_ORIGINS` | the three Lab origins, never `*` |
+
+Second, the two secrets are filled, checked without printing them:
+
+```bash
+grep -cE '^(TIP_CLASSIFIER_KEY|TIP_METRICS_TOKEN)=.+' generated/<partner>/node/<slug>.env   # 2 (0 before you filled them)
+grep -c certtest generated/<partner>/node/<slug>.env                                      # 0
+```
 
 **Media storage is not in the env.** Every mainnet node writes media to its own
 S3 bucket with SSE-KMS; the generated env ships `TIP_MEDIA_BACKEND=fs`, which
@@ -444,14 +465,49 @@ instance role per [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md) and set the four
 ### 6.3 Build the encrypted zip
 
 ```bash
-scripts/make-secure-bundle.sh generated/<partner> <OrgName>
+scripts/make-secure-bundle.sh generated/<partner> "<Org Name>"
 ```
 
-One AES-256 zip containing all four files, a fresh 20-character password per
-run, printed once and appended to a `ZIP-PASSWORDS.md` build log. Both land
-next to the partner directory: every zip collects in a single **`deliveries/`**
-folder there, with the password log beside it: one place to look, outside any
-repo checkout, and `deliveries/` is gitignored as a backstop.
+`<Org Name>` becomes the folder the partner sees after extracting and the zip's
+file name. For Rooverse:
+
+```bash
+scripts/make-secure-bundle.sh generated/rooverse "The Prescient Pachyderm"
+```
+
+prints:
+
+```text
+  zip      : generated/deliveries/The Prescient Pachyderm-credentials.zip
+  password : XXXX-XXXX-XXXX-XXXX-XXXX
+
+  Extracts to The Prescient Pachyderm/ :
+    NODE-KEY__tip-node-<id>.tip.json
+    ORG-IDENTITY__id-GB-400d3636845c06f2.tip.json
+    README.md
+    node.env
+
+  Attach the zip. Send the password by phone or Signal, never in the same thread.
+```
+
+| line | good |
+|---|---|
+| any `WARNING: TIP_CLASSIFIER_KEY is empty` / `TIP_METRICS_TOKEN is empty` **above** the zip line | section 6.2 was skipped; the zip was still built, so fix the env and build again (a second zip with a new password replaces the first) |
+| `WARNING: not in this bundle: ...` | expected only for an org-only or node-only delivery |
+| `Extracts to` | all four files for a full delivery; the node id in `NODE-KEY__` is the one the real run printed in section 5 |
+| `password` | 20 characters, shown once here and appended to `generated/ZIP-PASSWORDS.md` |
+
+The zip is AES-256 (never ZipCrypto). Outputs land **next to the partner
+directory**, so for `generated/<partner>` they are `generated/deliveries/<Org
+Name>-credentials.zip` and `generated/ZIP-PASSWORDS.md`; every partner's zips
+collect in that one `deliveries/` folder (gitignored). Each log line carries
+the first 16 hex of the zip's sha256, which is how you pick the right password
+when several zips exist for the same partner:
+
+```bash
+shasum -a 256 "generated/deliveries/The Prescient Pachyderm-credentials.zip" | cut -c1-16   # must appear on the log line
+7zz l -p"<password>" "generated/deliveries/The Prescient Pachyderm-credentials.zip" | grep -c '\.tip\.json\|node.env\|README'   # 4
+```
 
 ### 6.4 Deliver
 
