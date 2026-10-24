@@ -11,7 +11,10 @@ every gate in section 2 must be green before you run anything.
 
 Run everything from the designated registration machine, never from a shared or
 day-to-day development box: the commands below handle the founding VP key and
-mint partner private keys.
+mint partner private keys. Every command runs **from the repo root** (`cd` into
+your `tip-protocol` checkout first): the scripts, `genesis-data/` and the
+`generated/` output folder are all paths relative to it. The exceptions say so
+(section 8's Prometheus step runs on the observability host).
 
 ---
 
