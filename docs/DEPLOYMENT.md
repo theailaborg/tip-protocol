@@ -175,18 +175,28 @@ once; on a 3-node federation quorum is 2. Order: the node that others bootstrap
 from goes last. Run on the node host:
 
 ```bash
-cd ~/tip-protocol && git fetch --tags origin
-scripts/upgrade-node.sh v2.7.9 https://node.theailab.org     # peer = a node NOT being upgraded now
+cd ~/tip-protocol && scripts/upgrade-node.sh v2.7.9 https://node.theailab.org   # peer = a node NOT being upgraded now
 ```
+
+How that deploys the new version:
+
+1. fetches the tags and checks out `v2.7.9`, so that release's source is on disk
+   (refusing first if your `genesis.json` is modified or would change);
+2. `docker compose build tip-node` builds a new image from that source;
+3. stops the running container;
+4. runs the new code once, read-only, against your database
+   (`scripts/check-boot-root.js --migrate`): applies the release's migrations and
+   proves the database rebuilds to the state root the untouched peer serves live;
+5. only on `MATCH`, `docker compose up -d --force-recreate tip-node` starts a
+   fresh container from the new image; `/health` now reports the new version.
 
 Good output, in order: `== genesis unchanged`, `== build ok`, the gate's
 per-table roots ending in `MATCH: safe to restart`, `== READY after NNs`,
-`RestartCount=0`. The script refuses to run if your genesis file differs from
-the committed one or would change at the tag, checks out the tag, rebuilds the
-image, stops the node, runs `scripts/check-boot-root.js --migrate` to prove the
-database rebuilds to the live root of the untouched peer, and starts the node
-only on `MATCH`. On a macOS Docker host prefix it with
-`NODE_OPTIONS=--dns-result-order=ipv4first`.
+`RestartCount=0`. On a macOS Docker host prefix the command with
+`NODE_OPTIONS=--dns-result-order=ipv4first`. If your checkout predates the
+script (no `scripts/upgrade-node.sh` yet), run
+`git fetch --tags origin && git checkout <tag>` once to obtain it, then the
+command above.
 
 `GATE FAILED` leaves the node stopped on the new tag. Do not start it: it would
 halt at boot. The gate prints which table's root differs; stop the rollout and
