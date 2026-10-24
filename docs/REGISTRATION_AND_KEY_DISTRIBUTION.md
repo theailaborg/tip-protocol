@@ -475,9 +475,10 @@ instance role per [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md), then set
 `TIP_MEDIA_S3_REGION`, `TIP_MEDIA_S3_KMS_KEY_ID` (plus `AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY` only when the host has no instance role) before the
 node serves real traffic. This is usually done by the partner on their host, not
-in the bundle. A partner host that is not on EC2/EKS has no instance role: create
-their IAM user on one of our buckets per `PROD_S3_SETUP.md` section C and put
-the six values in `node.env` before zipping.
+in the bundle. A partner host that is not on EC2 has no instance role: give it a
+scoped access key, either for a new bucket (`PROD_S3_SETUP.md` path A with
+`trust_mode=keys`) or for one of our buckets (path C, how SS runs), and put the
+six lines in `node.env` before zipping.
 
 ### 6.3 Build the encrypted zip
 
