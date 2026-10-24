@@ -229,6 +229,8 @@ meet, each with its fix:
 
 Confirm from the federation's side:
 
+*Run on: any machine with internet access, any folder.*
+
 ```bash
 curl -s https://node.theailab.org/v1/nodes | python3 -m json.tool | grep -A3 '"<your-node-id>"'
 ```
@@ -251,6 +253,8 @@ node disk (`TIP_MEDIA_BACKEND=fs`). Production uses S3 with SSE-KMS:
 Then `sudo docker compose up -d --force-recreate tip-node` (prints
 `✔ Container tip-node  Started`), upload one image against your node and confirm
 the object appears under `media/` in the bucket:
+
+*Run on: any machine with AWS access to the bucket (your laptop or the node host), any folder.*
 
 ```bash
 aws s3 ls s3://<your-bucket>/media/ --recursive | tail -1
@@ -400,6 +404,8 @@ uid 1001: `sudo chown -R 1001:1001 genesis-data/backups logs` and restart.
 
 **`/ready` shows `halted:true` after an upgrade.** The database rebuilt to a
 different root than the fleet holds. Stop the node and run the gate by hand:
+
+*Run on: your node host, in `~/tip-protocol`.*
 
 ```bash
 sudo docker compose stop tip-node

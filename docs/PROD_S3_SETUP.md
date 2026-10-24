@@ -60,13 +60,18 @@ new bucket host so it may download from it; with C nothing changes there.
 2. **Log in to AWS** as a user that can create IAM, KMS and S3 resources in our
    account. We use SSO with the profile `tip`:
 
+   *Run on: your laptop, any folder.*
+
    ```bash
-   aws sso login --profile tip          # opens the browser; first time ever: aws configure sso
+   aws sso login --profile tip
    export AWS_PROFILE=tip
    aws sts get-caller-identity --query Arn --output text
    ```
 
-   The last command must print your identity
+   (`aws sso login` opens the browser; the very first time on a machine, run
+   `aws configure sso` instead.) On a Mac, also run `setopt interactivecomments`
+   once per terminal, so the `#` comment lines in the commands below paste
+   cleanly into zsh. The last command must print your identity
    (`arn:aws:sts::<account>:assumed-role/...`). `Token has expired` means run
    `aws sso login` again.
 
@@ -126,6 +131,8 @@ export TIP_CORS_ORIGINS=https://theailab.org,https://www.theailab.org,https://vp
 ```
 
 **4. Run it:**
+
+*Run on: your laptop, in the bucket's folder `~/tip-s3/<partner>` (path A step 1).*
 
 ```bash
 ./setup.sh
@@ -508,19 +515,22 @@ to. Sharing a founding node's bucket keeps the classifier allow-list unchanged.
 
 ```bash
 export AWS_PROFILE=tip
-export PARTNER=rooverse                                   # short slug
-export USER_NAME=tip-$PARTNER-node-media                  # e.g. tip-rooverse-node-media
-export BUCKET=tip-mainnet-1-media-us-east-1               # the shared bucket
-export REGION=us-east-1                                   # that bucket's region
-export AWS_REGION=$REGION                                 # our profile defaults to another region
+export PARTNER=rooverse
+export USER_NAME=tip-$PARTNER-node-media
+export BUCKET=tip-mainnet-1-media-us-east-1
+export REGION=us-east-1
+export AWS_REGION=$REGION
 export KMS_KEY_ARN=$(aws s3api get-bucket-encryption --bucket $BUCKET \
   --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.KMSMasterKeyID' --output text)
-export W=$(mktemp -d) && chmod 700 "$W"                   # holds the key file later; never /tmp directly
+export W=$(mktemp -d) && chmod 700 "$W"
 aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text > "$W/policy.original.json"
 echo "$USER_NAME -> $BUCKET ($REGION), key $KMS_KEY_ARN"
 ```
 
-The last line must print a full `arn:aws:kms:<region>:<account>:key/<id>`. `None`
+`PARTNER` is the partner's short slug, `BUCKET` and `REGION` the shared bucket
+and its region; `AWS_REGION` matters because our profile defaults to another
+region; `W` is a private folder (never `/tmp` directly) that will hold the key
+file. The last line must print a full `arn:aws:kms:<region>:<account>:key/<id>`. `None`
 means the bucket is not SSE-KMS (wrong bucket); a KMS or S3 error usually means
 `AWS_REGION` is not the bucket's region. Keep this terminal open: every later
 step uses these variables.
@@ -567,8 +577,10 @@ cat > "$W/user-policy.json" <<EOF
 EOF
 aws iam put-user-policy --user-name $USER_NAME \
   --policy-name media-bucket-access --policy-document file://"$W/user-policy.json"
-aws iam list-user-policies --user-name $USER_NAME --output text     # POLICYNAMES  media-bucket-access
+aws iam list-user-policies --user-name $USER_NAME --output text
 ```
+
+Expect: `POLICYNAMES	media-bucket-access`.
 
 No KMS key-policy change is needed: the key policy's `EnableRootPermissions`
 statement hands key access to IAM, so the user policy above is enough.
@@ -636,14 +648,14 @@ as_user() { env -u AWS_PROFILE AWS_ACCESS_KEY_ID=$KID AWS_SECRET_ACCESS_KEY=$KSE
 until as_user sts get-caller-identity --query Arn --output text 2>/dev/null; do sleep 5; done
 
 echo test > "$W/c5.txt"
-as_user s3 cp "$W/c5.txt" s3://$BUCKET/media/c5-check-$PARTNER.txt            # 1 upload: allowed
-as_user s3 cp s3://$BUCKET/media/c5-check-$PARTNER.txt -                      # 2 read: prints test
+as_user s3 cp "$W/c5.txt" s3://$BUCKET/media/c5-check-$PARTNER.txt
+as_user s3 cp s3://$BUCKET/media/c5-check-$PARTNER.txt -
 as_user s3api head-object --bucket $BUCKET --key media/c5-check-$PARTNER.txt \
-  --query '[ServerSideEncryption,SSEKMSKeyId]' --output text                  # 3 encrypted with the bucket key
-as_user s3 ls s3://$BUCKET/media/ | head -3                                    # 4 list media/: allowed
-as_user s3 rm s3://$BUCKET/media/c5-check-$PARTNER.txt                        # 5 delete: allowed
-as_user s3 cp "$W/c5.txt" s3://$BUCKET/outside-media.txt                      # 6 outside media/: must FAIL
-as_user s3 ls s3://$BUCKET/                                                    # 7 list the root: must FAIL
+  --query '[ServerSideEncryption,SSEKMSKeyId]' --output text
+as_user s3 ls s3://$BUCKET/media/ | head -3
+as_user s3 rm s3://$BUCKET/media/c5-check-$PARTNER.txt
+as_user s3 cp "$W/c5.txt" s3://$BUCKET/outside-media.txt
+as_user s3 ls s3://$BUCKET/
 ```
 
 Expected: the identity line `arn:aws:iam::<account>:user/tip-<partner>-node-media`;
@@ -686,7 +698,7 @@ rm -rf "${W:?}"; unset KSEC
 Rotation, without downtime:
 
 ```bash
-aws iam create-access-key --user-name $USER_NAME          # second key, deliver it as in C.6
+aws iam create-access-key --user-name $USER_NAME
 # partner swaps the two AWS_* lines and recreates the container; then:
 aws iam update-access-key --user-name $USER_NAME --access-key-id <OLD_ID> --status Inactive
 aws iam delete-access-key --user-name $USER_NAME --access-key-id <OLD_ID>
@@ -699,9 +711,9 @@ rewrites its ARN inside bucket-policy principals into an internal id
 
 ```bash
 aws iam list-access-keys --user-name $USER_NAME --query 'AccessKeyMetadata[].AccessKeyId' --output text
-aws iam update-access-key --user-name $USER_NAME --access-key-id <ID> --status Inactive   # 1 the key stops working within seconds
+aws iam update-access-key --user-name $USER_NAME --access-key-id <ID> --status Inactive
 
-aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text > "$W/policy.json"   # 2 out of the bucket policy
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text > "$W/policy.json"
 python3 - "$W/policy.json" "arn:aws:iam::<account>:user/$USER_NAME" <<'EOF'
 import json, sys
 path, user = sys.argv[1], sys.argv[2]
@@ -718,11 +730,11 @@ assert len(done) == 3, done
 json.dump(p, open(path, "w"), indent=2); print("removed from:", ", ".join(done))
 EOF
 aws s3api put-bucket-policy --bucket $BUCKET --policy file://"$W/policy.json"
-aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | grep -o "user/$USER_NAME" | wc -l   # 0
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | grep -o "user/$USER_NAME" | wc -l
 
-aws iam delete-access-key  --user-name $USER_NAME --access-key-id <ID>              # 3 delete the key,
-aws iam delete-user-policy --user-name $USER_NAME --policy-name media-bucket-access  #   the policy
-aws iam delete-user        --user-name $USER_NAME                                     #   and the user
+aws iam delete-access-key  --user-name $USER_NAME --access-key-id <ID>
+aws iam delete-user-policy --user-name $USER_NAME --policy-name media-bucket-access
+aws iam delete-user        --user-name $USER_NAME
 ```
 
 (`$W` is a fresh `mktemp -d` folder as in C.0.) Media the partner already
@@ -824,6 +836,8 @@ sudo docker compose logs --since 10m tip-node | grep -ciE "AccessDenied|InvalidA
 
 Optionally confirm the object with the node's own credentials (path C: the
 partner key, as in C.5; admins cannot read objects):
+
+*Run on: your laptop, in the same terminal where you set `BUCKET` and `REGION` above.*
 
 ```bash
 MEDIA_ID=<media_id of the upload>
