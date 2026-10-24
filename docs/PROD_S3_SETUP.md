@@ -243,6 +243,32 @@ aws s3api put-bucket-lifecycle-configuration \
   }"
 ```
 
+Allow browser uploads (CORS). The VP app and the extension upload straight from
+the browser to presigned S3 URLs and read each part's `ETag` back to finish the
+upload; without this rule the browser blocks those requests and uploads from the
+apps fail, while uploads from scripts still work. Same rule path A sets:
+
+```bash
+aws s3api put-bucket-cors --bucket "$BUCKET" --region "$REGION" --cors-configuration '{
+  "CORSRules": [{
+    "AllowedOrigins": ["https://theailab.org", "https://www.theailab.org", "https://vp.theailab.org"],
+    "AllowedMethods": ["GET", "HEAD", "PUT"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["Content-Type", "Content-Length", "ETag"],
+    "MaxAgeSeconds": 3600
+  }]
+}'
+aws s3api get-bucket-cors --bucket "$BUCKET" --region "$REGION" --query 'CORSRules[0].[AllowedMethods,ExposeHeaders]' --output text
+```
+
+```text
+GET	HEAD	PUT
+Content-Type	Content-Length	ETag
+```
+
+The origins must match the node's `TIP_CORS_ORIGINS`; add any other browser
+client's origin to both.
+
 ### B.3 Create the node IAM role
 
 Trust policy (`trust_ec2.json`), so the EC2 instance can assume the role:
