@@ -132,7 +132,7 @@ Expected response:
 ```json
 {
   "status": "ok",
-  "version": "2.7.8",
+  "version": "2.7.9",
   "node_id": "tip://node/<id>",
   "dag_count": 0
 }
@@ -415,8 +415,8 @@ wrong branch or a stale clone, and nothing below will work.
 
 **3. Fill the host-specific values** left as placeholders in `.env`:
 `TIP_PUBLIC_IP` (static/elastic, peers store it), `TIP_PUBLIC_URL`, and
-`DB_PASSWORD`. Confirm `TIP_BOOTSTRAP_PEERS` is populated and
-`TIP_REG_CREDIT_CAP_ACTIVATION_MS` matches the fleet.
+`DB_PASSWORD`. Confirm `TIP_BOOTSTRAP_PEERS` is populated. Leave every
+`TIP_*_ACTIVATION_MS` unset on mainnet: the code defaults are the mainnet epochs.
 
 **4. Build and start.** No seed step.
 

@@ -11,6 +11,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+**Node: the reg-credit cap epoch default is the mainnet epoch**
+
+`REGISTER_CREDIT.CAP_ENFORCE_ACTIVATION_MS` now equals the epoch mainnet
+activated the cap with (2026-07-23 20:00 UTC), which the fleet had been pinning
+through `TIP_REG_CREDIT_CAP_ACTIVATION_MS`. A new node no longer needs that env
+line (or `register-node.js --reg-credit-activation-ms`) to agree with the
+fleet; the override stays for networks that activated at another time. No
+behaviour change on nodes that already carry the env value. `.env.example` and
+the registration and deployment docs drop the "read it off a node" step.
+
 **Node 2.7.8: a flagged post is no longer reassigned to reviewers forever**
 - A HIGH/CRITICAL post whose assigned reviewers kept missing the 48 h SLA was
   reassigned every window with no end: one mainnet post went through 48
@@ -31,7 +41,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-**Node: built-in status page and public node registry**
+**Node 2.7.9: built-in status page and public node registry**
 - `GET /status` on every node: one page, no key, refreshed every 3 s, showing
   this node (id, version, uptime, join state, endpoint, memory, chain id),
   the chain (round, committed round, state root, committee, mempool), a
