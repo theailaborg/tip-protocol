@@ -91,7 +91,10 @@ non-negotiables:
 
 1. **Dry-run first**, always: it validates the identifier against the country
    scheme, builds the real proof, and prints the derived values without touching
-   any chain:
+   any chain. Use the full mainnet command with `--dry-run` appended, so the
+   output you check is exactly what the real run will produce (`--node-url` and
+   `--vp-file` are printed, not used); the real run in step 2 is this command
+   minus the last line:
 
    ```bash
    node scripts/register-org.js \
@@ -101,12 +104,12 @@ non-negotiables:
      --region <ISO-2> \
      --org-type <legal-form, e.g. private-limited-company> \
      --partner <partner-slug> \
+     --node-url https://node.theailab.org \
+     --vp-file <VP_KEY_FILE> \
      --dry-run
    ```
 
-   Pass `--node-url` and `--vp-file` on the dry run too (they are printed, not
-   used), so the output you check is the output the real run will produce. A
-   good dry run looks like this (THE PRESCIENT PACHYDERM LTD, public
+   A good dry run looks like this (THE PRESCIENT PACHYDERM LTD, public
    Companies House data):
 
    ```text
