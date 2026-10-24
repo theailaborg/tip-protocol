@@ -541,8 +541,11 @@ Email wording: `partner-onboarding-emails.html`, mainnet card.
 ### 6.5 Issue the log-shipping label and password
 
 The bundle does not carry log-shipping settings; the partner creates
-`promtail.env` from `PARTNER_LOG_SHIPPING.md`, and we issue the two values it
-needs. Do this with the bundle delivery, not after the first incident.
+`promtail.env` from `PARTNER_LOG_SHIPPING.md`, which needs three values:
+`LOKI_URL=logs.theailab.org` (fixed, already printed in that doc), `NODE_LABEL`
+(we issue it, in the onboarding email) and `LOKI_PASSWORD` (we issue it, on
+the separate channel with the zip password). Do this with the bundle delivery,
+not after the first incident.
 
 - **Node label** (`NODE_LABEL`): the organisation slug, lowercase, hyphens,
   unique across the federation (`ss-software`, `az-logics`, `rooverse`). Our
@@ -610,8 +613,10 @@ one test content and check it reaches `prescan: completed`.
 
 - [ ] Add their node to the production Prometheus scrape targets: on the
       observability host, `~/tip-protocol/infra/observability/prod/prometheus.yml`,
-      add `"<their-domain>:443"` under the `tip-federation` job next to the
-      other partner nodes, then `docker compose up -d --force-recreate prometheus`.
+      add `"<their-node-domain>:443"` (host and port only, no `https://`, no
+      path; the `:443` relabel rule makes it HTTPS, as for
+      `"sssoftware-node.theailab.org:443"`) under the `tip-federation` job next
+      to the other partner nodes, then `docker compose up -d --force-recreate prometheus`.
       The job's bearer token is the fleet-wide `TIP_METRICS_TOKEN` already in
       their `node.env`, so there is no per-partner auth to set up; confirm the
       target shows `UP` in Prometheus Status > Targets (`DOWN` with 401 means
