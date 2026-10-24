@@ -19,8 +19,10 @@ mint partner private keys.
 
 - [ ] Repo cloned at latest `main`, `npm install` run at the **repo root** (Node 24+;
       workspaces hoist every dependency there, installing inside `node/` is wrong)
-- [ ] The **mainnet founding VP key file** (`tip-vp-....tip.json`) present locally,
-      readable only by you (`chmod 600`). Referred to below as `<VP_KEY_FILE>`
+- [ ] The **mainnet founding VP key file** `tip-vp-US-0e7db4040667073a.tip.json`
+      (VP id `tip://vp/US-0e7db4040667073a`, the only VP mainnet accepts) present
+      locally, readable only by you (`chmod 600`). Its path on your machine is
+      `<VP_KEY_FILE>` below
 - [ ] Network access to `https://node.theailab.org`
 - [ ] `7zz` installed for the bundle step (`brew install sevenzip` / `apt install 7zip`)
 - [ ] The live mainnet `TIP_CLASSIFIER_KEY` and `TIP_METRICS_TOKEN` values available
@@ -164,7 +166,7 @@ non-negotiables:
      --org-type <legal-form> \
      --partner <partner-slug> \
      --node-url https://node.theailab.org \
-     --vp-file <VP_KEY_FILE>
+     --vp-file <VP_KEY_FILE>   # .../tip-vp-US-0e7db4040667073a.tip.json
    ```
 
 3. **Verify from two different nodes**: they must agree. Set the ID on its own
