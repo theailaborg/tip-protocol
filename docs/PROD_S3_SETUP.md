@@ -43,7 +43,7 @@ new bucket host so it may download from it; with C nothing changes there.
 
 | what | machine | directory |
 |---|---|---|
-| path A | a Lab operator's laptop with the repo checked out | a **new folder per bucket**, e.g. `~/tip-s3/<partner>` (A step 1 creates it) |
+| path A | a Lab operator's laptop with the repo checked out | step 1 from the repo root; every later step in the bucket's own folder `~/tip-s3/<partner>` (step 1 creates it) |
 | path B | a Lab operator's laptop | any folder; the JSON files it writes (`trust_ec2.json`, `node_policy.json`, `bucket_policy.json`) land there |
 | path C | a Lab operator's laptop | any folder, **one terminal** for all of C.0 to C.7 (the steps share variables; C.0 makes its own private work folder, no repo needed) |
 | putting the values in `.env` | the node host | `~/tip-protocol/.env`, then `cd ~/tip-protocol && sudo docker compose up -d --force-recreate tip-node` |
@@ -80,22 +80,21 @@ bucket: never reuse the repo's `infra/s3-media/` folder (it already tracks a dev
 bucket, and changing its `bucket_name` would make Terraform try to replace that
 bucket).
 
-Run on your laptop. Set `REPO` to where your `tip-protocol` checkout is
-(for example `~/Projects/neuriteai-work/tip-protocol`):
+Run on your laptop, **from the root of your `tip-protocol` checkout**:
 
 ```bash
-REPO=<path to your tip-protocol checkout>
-mkdir -p ~/tip-s3/rooverse && cd ~/tip-s3/rooverse
-cp "$REPO"/infra/s3-media/{*.tf,setup.sh,terraform.tfvars.example} .
+mkdir -p ~/tip-s3/rooverse
+cp infra/s3-media/{*.tf,setup.sh,terraform.tfvars.example} ~/tip-s3/rooverse/
+cd ~/tip-s3/rooverse
 cp terraform.tfvars.example terraform.tfvars
 ls
 ```
 
-The first line makes an empty folder for this bucket and moves into it; the
-second copies the Terraform files and `setup.sh` from the repo; the third makes
-your own settings file from the template. `ls` must show `main.tf`,
-`outputs.tf`, `setup.sh`, `terraform.tfvars`, `terraform.tfvars.example`,
-`variables.tf`, `versions.tf`.
+This makes an empty folder for this bucket, copies the Terraform files and
+`setup.sh` into it, moves there, and makes your own settings file from the
+template. `ls` must show `main.tf`, `outputs.tf`, `setup.sh`,
+`terraform.tfvars`, `terraform.tfvars.example`, `variables.tf`, `versions.tf`.
+Every later step of path A runs in `~/tip-s3/rooverse`.
 
 **2. Fill three values** in `terraform.tfvars`:
 
