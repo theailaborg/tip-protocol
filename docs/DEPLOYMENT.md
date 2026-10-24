@@ -46,6 +46,20 @@ cd tip-protocol
 
 ### Step 2: Configure your environment
 
+Which `.env` you use depends on what you are running:
+
+- **Joining mainnet as a partner:** use the `node.env` the AI Lab team delivered
+  in your credentials bundle (`cp <bundle>/node.env .env`). It is generated from
+  `.env.example` with every federation value already set (bootstrap peers,
+  classifier URL and key, metrics token, CORS, rate limits, production mode) and
+  it points at your registered node key, which is the only key the network will
+  peer with. Do not start from `.env.example`: a key you mint yourself is not on
+  chain and the node will never find a peer. Skip the rest of this step and
+  follow [Joining an Existing Federation](#joining-an-existing-federation-partner-node).
+- **Your own development node** (local, not connected to mainnet): start from
+  the template and set the values below; the node key is minted by the seed in
+  Step 5.
+
 ```bash
 cp .env.example .env
 ```
@@ -92,14 +106,21 @@ PostgreSQL to be healthy before starting.
 curl http://localhost:4000/health
 ```
 
-Expected response:
+Expected response (every API answer is wrapped in `ok` / `status` / `data`):
 
 ```json
 {
-  "status": "ok",
-  "version": "2.7.9",
-  "node_id": "tip://node/<id>",
-  "dag_count": 0
+  "ok": true,
+  "status": 200,
+  "data": {
+    "status": "ok",
+    "node_id": "tip://node/<id>",
+    "node_type": "full",
+    "dag_count": 0,
+    "version": "2.7.9",
+    "protocol": "2.0.0",
+    "peers": { "connected": 0, "peer_ids": [] }
+  }
 }
 ```
 
@@ -183,11 +204,14 @@ pm2 save
 pm2 startup
 ```
 
-### Step 4: Seed (first launch only)
+### Step 4: Seed (development node only)
+
+Only for a node of its own, on its own chain. Never on a node joining mainnet or
+the test cluster: seeding mints a new genesis and the node peers with nobody.
 
 ```bash
 cd ..
-node scripts/seed.js
+npm run seed
 ```
 
 ---
@@ -352,10 +376,20 @@ python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['gene
 It must match the federation's genesis prefix. If it does not, you are on the
 wrong branch or a stale clone, and nothing below will work.
 
-**3. Fill the host-specific values** left as placeholders in `.env`:
-`TIP_PUBLIC_IP` (static/elastic, peers store it), `TIP_PUBLIC_URL`, and
-`DB_PASSWORD`. Confirm `TIP_BOOTSTRAP_PEERS` is populated. Leave every
-`TIP_*_ACTIVATION_MS` unset on mainnet: the code defaults are the mainnet epochs.
+**3. Edit only what is yours in `.env`.** The delivered file is complete except
+for the values only you can know:
+
+| line | what to do |
+|---|---|
+| `DB_PASSWORD=CHANGE_ME_STRONG_DB_PASSWORD` | always: choose a strong password; the compose stack creates the database with it |
+| `TIP_PUBLIC_IP`, `TIP_PUBLIC_URL`, `TIP_API_ENDPOINT` | only if they still read `CHANGE_ME`: your static public IP and `https://<your-node-domain>` |
+| `TIP_CLASSIFIER_CALLBACK_SECRET` | only if the AI Lab gave you one; empty means the node polls for verdicts, which also works |
+
+Leave everything else as delivered: `TIP_BOOTSTRAP_PEERS`, `TIP_CLASSIFIER_URL`
+and `TIP_CLASSIFIER_KEY`, `TIP_METRICS_TOKEN`, `TIP_CORS_ORIGINS`,
+`TIP_CLASSIFIER_FALLBACK=0`, `TIP_CLASSIFIER_SCAN_NON_OH=true`, the ports and
+`NODE_ENV=production`. Do not add any `TIP_*_ACTIVATION_MS` line: the code
+defaults are the mainnet epochs, and a different value forks your node.
 
 **4. Build and start.** No seed step.
 
