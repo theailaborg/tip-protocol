@@ -337,16 +337,19 @@ curl -s https://node.theailab.org/v1/nodes  | python3 -m json.tool | grep -B2 -A
 curl -s https://node2.theailab.org/v1/nodes | python3 -m json.tool | grep -B2 -A6 '"<Partner> Node"'
 ```
 
-A verified registration (SS Software, live on mainnet) looks like this on both:
+A verified registration (SS Software, live on mainnet) prints this on both;
+the name must be quoted exactly as passed to `--name`, or grep prints nothing:
 
 ```text
-    "node_id": "tip://node/e2bc616656de7c31",
-    "name": "SS Software Node",
-    "status": "active",
-    "api_endpoint": "https://sssoftware-node.theailab.org",
-    "operated_by": "tip://id/US-b4f0805cf87ce2f0",
-    "founding": false,
-    "registered_at": "2026-09-23T09:54:42.329Z"
+            {
+                "node_id": "tip://node/e2bc616656de7c31",
+                "name": "SS Software Node",
+                "status": "active",
+                "api_endpoint": "https://sssoftware-node.theailab.org",
+                "operated_by": "tip://id/US-b4f0805cf87ce2f0",
+                "founding": false,
+                "registered_at": "2026-09-23T09:54:42.329Z"
+            }
 ```
 
 | line | must be |
