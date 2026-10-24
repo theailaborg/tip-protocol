@@ -54,6 +54,19 @@ sudo chown -R 1001:1001 genesis-data/backups data logs   # 1001 is the container
 sudo chmod 600 genesis-data/backups/tip-node-<id>.tip.json
 ```
 
+`git clone` prints `Cloning into '/home/<you>/tip-protocol'...`; the copy and
+permission commands print nothing when they succeed. Check the key landed:
+
+```bash
+ls -l genesis-data/backups/
+```
+
+```text
+-rw------- 1 1001 1001 12205 Oct 24 10:12 tip-node-<id>.tip.json
+```
+
+Owner `1001 1001` and `-rw-------` are what matter.
+
 The `ORG-IDENTITY__*.tip.json` from the bundle does **not** go on this host. It
 signs as your company, not as the node; keep it offline. Without `sudo`, create
 `data/` and `logs/node-1/` yourself so the container user can write them.
@@ -61,8 +74,14 @@ signs as your company, not as the node; keep it offline. Without `sudo`, create
 **2. Confirm the chain.**
 
 ```bash
-python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:8])"   # d4666ce1 on mainnet
+python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:8])"
 ```
+
+```text
+d4666ce1
+```
+
+Anything else means a wrong branch or a stale clone: stop here.
 
 **3. Edit only what is yours in `.env`.** The delivered file is complete except
 for the values only you know:
@@ -81,8 +100,34 @@ metrics token, CORS, ports, `NODE_ENV=production`) and never add a
 
 ```bash
 sudo docker compose build tip-node && sudo docker compose up -d
-curl -s http://localhost:4000/ready | python3 -m json.tool
 ```
+
+The build takes a few minutes and ends with `tip-node  Built`; `up -d` then
+prints:
+
+```text
+ ✔ Container tip-postgres  Healthy
+ ✔ Container tip-node      Started
+```
+
+Then watch the join:
+
+```bash
+curl -s http://localhost:4000/ready
+```
+
+```text
+{"ok":true,"status":200,"data":{"ready":false,"db_ok":true,"halted":false,"join_state":"syncing"}}
+```
+
+Repeat until it reads:
+
+```text
+{"ok":true,"status":200,"data":{"ready":true,"db_ok":true,"halted":false,"join_state":"ready"}}
+```
+
+`curl: (7) Failed to connect` in the first seconds only means the container is
+still starting.
 
 `join_state` goes `syncing` → `catching_up` → `ready` while the node downloads
 a snapshot (minutes). A dropped transfer restarts it; repeated restarts mean an
@@ -110,26 +155,81 @@ state root; the three founding nodes carry a `genesis` pill. The same facts by
 hand, if you prefer curl:
 
 ```bash
-curl -s http://localhost:4000/ready       # ready:true, halted:false
-curl -s http://localhost:4000/health      # data.peers.connected >= 1  (peers only connect on the right genesis)
-curl -s http://localhost:4000/v1/state-root ; curl -s https://node.theailab.org/v1/state-root
+curl -s http://localhost:4000/ready
+```
+
+```text
+{"ok":true,"status":200,"data":{"ready":true,"db_ok":true,"halted":false,"join_state":"ready"}}
+```
+
+```bash
+curl -s http://localhost:4000/health | python3 -m json.tool
+```
+
+```text
+{
+    "ok": true,
+    "status": 200,
+    "data": {
+        "status": "ok",
+        "node_id": "tip://node/<your-node-id>",
+        "node_type": "full",
+        "dag_count": 2070,
+        "version": "2.7.9",
+        "protocol": "2.0.0",
+        "peers": { "connected": 3, "peer_ids": ["12D3KooW...", "..."] },
+        ...
+    }
+}
+```
+
+`node_id` must be the id in your bundle's key file name, `version` the release
+you built, and `peers.connected` at least 1 (peers only connect on the right
+genesis).
+
+```bash
+curl -s http://localhost:4000/v1/state-root ; echo ; curl -s https://node.theailab.org/v1/state-root
+```
+
+```text
+{"ok":true,"status":200,"data":{"round":20705712,"state_merkle_root":"beabb4258139acdb6615de5c71f1a65952d77a3616f9772b854bcd12bf0820c6", ...}}
+{"ok":true,"status":200,"data":{"round":20705712,"state_merkle_root":"beabb4258139acdb6615de5c71f1a65952d77a3616f9772b854bcd12bf0820c6", ...}}
 ```
 
 Equal `state_merkle_root` at equal `round` means your whole state is identical
-to the federation's. Rounds advance every ~2 s, so compare the same round.
+to the federation's. Rounds advance every ~2 s; if the two rounds differ, run
+it again until they line up.
 
 **6. Announce your domain** once `https://<your-node-domain>/health` answers
 (the federation stores the URL on chain, The AI Lab scrapes `/metrics` through
 it, people open `/status`):
 
 ```bash
-curl -X POST http://localhost:4000/v1/node/endpoint/announce
+curl -s -X POST http://localhost:4000/v1/node/endpoint/announce
 ```
 
-The node probes its own domain first. `fetch failed` right after creating the
-DNS record means the container cached the earlier "no such name" answer: wait
-or recreate the container, then announce again. Your URL then shows as
-`api_endpoint` in `https://node.theailab.org/v1/nodes`.
+```text
+{"ok":true,"status":202,"data":{"node_id":"tip://node/<your-node-id>","api_endpoint":"https://<your-node-domain>","confirmation":"proposed"}}
+```
+
+`proposed` means the transaction is on its way; it commits in seconds.
+`"confirmation":"unchanged"` means it was already on chain. The errors you can
+meet, each with its fix:
+
+| response contains | fix |
+|---|---|
+| `api_endpoint probe failed: https://<domain>/health unreachable (fetch failed)` | DNS or TLS not ready, or the container cached the earlier "no such name" answer: wait or recreate the container, then announce again |
+| `answers as "<other id>" not "<your id>"` | your domain points at a different node |
+| `TIP_API_ENDPOINT not configured` | set it in `.env`, recreate the container, announce again |
+| `not on chain yet` | the registration has not committed; tell The AI Lab team |
+
+Confirm from the federation's side:
+
+```bash
+curl -s https://node.theailab.org/v1/nodes | python3 -m json.tool | grep -A3 '"<your-node-id>"'
+```
+
+`"api_endpoint"` must now show your URL instead of `null`.
 
 **7. Media storage before real traffic.** The delivered env writes media to the
 node disk (`TIP_MEDIA_BACKEND=fs`). Production uses S3 with SSE-KMS:
@@ -141,8 +241,28 @@ node disk (`TIP_MEDIA_BACKEND=fs`). Production uses S3 with SSE-KMS:
   `media/` prefix; set the same four values plus `AWS_ACCESS_KEY_ID` and
   `AWS_SECRET_ACCESS_KEY`, and rotate that key every 90 days.
 
-Then `sudo docker compose up -d --force-recreate tip-node`, upload one image
-against your node and confirm the object appears under `media/` in the bucket.
+Then `sudo docker compose up -d --force-recreate tip-node` (prints
+`✔ Container tip-node  Started`), upload one image against your node and confirm
+the object appears under `media/` in the bucket:
+
+```bash
+aws s3 ls s3://<your-bucket>/media/ --recursive | tail -1
+```
+
+```text
+2026-10-24 10:41:07     482113 media/<media-id>
+```
+
+and that the node logged no S3 error:
+
+```bash
+sudo docker compose logs --since 10m tip-node | grep -ci "s3.*error"
+```
+
+```text
+0
+```
+
 Tell The AI Lab team the bucket host so the classifier may download from it.
 
 **8. Ship logs.** Create `infra/observability/agent/promtail.env` with
@@ -153,8 +273,18 @@ Lab gave you, then:
 cd infra/observability/agent && docker compose -f docker-compose.promtail.yml up -d
 ```
 
-Your node appears under its label in the federation dashboard within a minute; a
-`401` in `docker logs tip-promtail` means the password does not match. Details
+```text
+ ✔ Container tip-promtail  Started
+```
+
+```bash
+docker logs --tail 20 tip-promtail
+```
+
+A healthy agent shows `msg="Starting Promtail"` and lines like
+`msg="Adding target" key="/app/node/logs/..."`, with no `401` and no
+`error sending batch`. A `401` means the password does not match. Your node
+appears under its label in the federation dashboard within a minute. Details
 and the macOS mount adjustment: [`PARTNER_LOG_SHIPPING.md`](./PARTNER_LOG_SHIPPING.md).
 
 **Metrics** need nothing from you beyond step 6: The AI Lab adds
@@ -261,9 +391,17 @@ the doubt.
 uid 1001: `sudo chown -R 1001:1001 genesis-data/backups logs` and restart.
 
 **`/ready` shows `halted:true` after an upgrade.** The database rebuilt to a
-different root than the fleet holds. Stop; run
-`scripts/check-boot-root.js --migrate --peer https://node.theailab.org` and read
-which table differs.
+different root than the fleet holds. Stop the node and run the gate by hand:
+
+```bash
+sudo docker compose stop tip-node
+sudo docker compose run --rm --no-deps -T --entrypoint node tip-node \
+  scripts/check-boot-root.js --migrate --peer https://node.theailab.org
+```
+
+It prints the same block as in [Upgrading a node](#upgrading-a-node): compare
+each table's root with the same command run on a healthy node; the table that
+differs is where your database drifted. Send that output to The AI Lab team.
 
 **Announce returns `fetch failed`.** DNS for your domain was created moments
 ago and the container cached the negative answer; wait or recreate the container.
