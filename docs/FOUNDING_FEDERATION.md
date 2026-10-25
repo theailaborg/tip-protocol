@@ -33,6 +33,7 @@ git -C ~/tip-protocol remote set-url origin https://github.com/theailaborg/tip-p
 **3. Node identity + env (every node)**: owner must be uid 1001.
 
 ```bash
+ssh ubuntu@<node-ip> 'mkdir -p ~/tip-protocol/genesis-data/backups'
 scp tip-node-<id>.tip.json ubuntu@<node-ip>:~/tip-protocol/genesis-data/backups/
 sudo chown 1001:1001 ~/tip-protocol/genesis-data/backups/tip-node-<id>.tip.json
 sudo chmod 600      ~/tip-protocol/genesis-data/backups/tip-node-<id>.tip.json
