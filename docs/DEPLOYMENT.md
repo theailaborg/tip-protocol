@@ -78,15 +78,19 @@ extractors of macOS and Windows cannot open it.
 ```bash
 git clone https://github.com/theailaborg/tip-protocol.git ~/tip-protocol
 cd ~/tip-protocol
+mkdir -p genesis-data/backups data logs/node-1
 cp <bundle>/NODE-KEY__tip-node-<id>.tip.json genesis-data/backups/tip-node-<id>.tip.json
-cp <bundle>/node.env .env                     # compose reads .env, not node.env
-mkdir -p data logs/node-1
-sudo chown -R 1001:1001 genesis-data/backups data logs   # 1001 is the container user
+cp <bundle>/node.env .env
+sudo chown -R 1001:1001 genesis-data/backups data logs
 sudo chmod 600 genesis-data/backups/tip-node-<id>.tip.json
 ```
 
-`git clone` prints `Cloning into '/home/<you>/tip-protocol'...`; the copy and
-permission commands print nothing when they succeed. Check the key landed:
+`git clone` prints `Cloning into '/home/<you>/tip-protocol'...`; the other
+commands print nothing when they succeed. `genesis-data/backups` is not in the
+clone (it is git-ignored, since it holds keys), so `mkdir` creates it before the
+copy. `.env` is the file Docker Compose reads; uid `1001` is the user the node
+container runs as, so it must own the key and the data and log folders. Check
+the key landed:
 
 ```bash
 ls -l genesis-data/backups/
@@ -100,7 +104,7 @@ Owner `1001 1001` and `-rw-------` are what matter.
 
 The `ORG-IDENTITY__*.tip.json` from the bundle does **not** go on this host. It
 signs as your company, not as the node; keep it offline. Without `sudo`, create
-`data/` and `logs/node-1/` yourself so the container user can write them.
+`genesis-data/backups/`, `data/` and `logs/node-1/` yourself so the container user can write them.
 
 **2. Confirm the chain.**
 
