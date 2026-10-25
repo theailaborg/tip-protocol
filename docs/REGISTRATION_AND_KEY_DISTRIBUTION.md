@@ -87,9 +87,10 @@ partner if the day is 12 or lower (ambiguous either way).
 
 ## 4. Register the organization
 
-Commands, verification, and gotchas live in
-[`ORG_REGISTRATION.md`](./ORG_REGISTRATION.md) sections 3-5. Summary of the
-non-negotiables:
+Which registration number to use and the identifier gotchas (leading zeros,
+separators, the 30-character limit, permanence) are in
+[`ORG_REGISTRATION.md`](./ORG_REGISTRATION.md) sections 2 and *Gotchas*; read
+them before the first run. The steps:
 
 1. **Dry-run first**, always: it validates the identifier against the country
    scheme, builds the real proof, and prints the derived values without touching
@@ -221,6 +222,39 @@ non-negotiables:
 
 4. The org key file lands in `generated/<partner-slug>/org/` at mode 0600.
    Leave it there for now; it is needed in section 5 (cosign) and section 6 (bundle).
+
+**The org key file.** The real run writes
+`generated/<partner-slug>/org/<org-tip-id>.tip.json` at mode `0600`, in the VP
+app's export format (`tip-key-export-v2`): the public key, the registry inputs,
+and the private key locked with the **date of incorporation** (as `MMDDYYYY`,
+the same way the VP app locks a personal download with the date of birth). The
+script decrypts it once before reporting success; the organization imports it
+into the VP app by entering that date, and `register-node.js` opens it with
+`--operator-key-date`. The date is public record, so the lock is one layer, not
+the delivery channel: the file travels only inside the encrypted bundle
+(section 6). The private key is generated locally and never sent; registration
+transmits only the public key.
+
+**`register-org.js` flags:**
+
+| flag | required | accepts | example |
+|---|---|---|---|
+| `--name` | yes | the full legal name, exactly as registered, quoted | `--name "AZLOGICS PRIVATE LIMITED"` |
+| `--reg-number` | yes | the country's accepted identifier from `ORG_REGISTRATION.md` §2, exact format, leading zeros kept | `--reg-number U72900MH2021PTC362851` |
+| `--incorporated` | yes | date of incorporation, `YYYY-MM-DD` only | `--incorporated 2021-06-28` |
+| `--region` | yes in practice | ISO-3166-1 alpha-2 country of incorporation; must be in the `ORG_REGISTRATION.md` §2 scheme table or the run stops. Default `GB`, always pass it explicitly | `--region IN` |
+| `--org-type` | no | the legal form as the jurisdiction names it, freeform by design (forms differ per country), but must be 2-64 chars of lowercase letters, digits and hyphens. Common values: `private-limited-company`, `public-limited-company`, `llp`, `llc`, `gmbh`, `nonprofit` | `--org-type private-limited-company` |
+| `--node-url` | for mainnet | the node to register through. Default `http://localhost:4000` (local rehearsal) | `--node-url https://node.theailab.org` |
+| `--vp-file` | **for mainnet** | path to the mainnet founding VP key file `tip-vp-US-0e7db4040667073a.tip.json` (VP id `tip://vp/US-0e7db4040667073a`). When omitted the script picks up whatever VP sits in `genesis-data/backups`, which on a dev machine is the test VP, mainnet rejects it | `--vp-file <VP_KEY_FILE>` |
+| `--partner` | recommended | partner folder name under `generated/`; use the same value for the node registration so both land together | `--partner azlogics` |
+| `--out-dir` | no | full override of the output dir. Default `generated/<partner|slug-short-id>/org/` | `--out-dir /secure/azlogics` |
+| `--dry-run` | no | boolean, no value. Validates the identifier, builds the real proof, prints everything, registers nothing; always run this first | `--dry-run` |
+
+`--org-type` note: use lowercase-hyphen spelling of the form on the certificate
+(`Private Limited` → `private-limited-company`). Anything outside
+`a-z 0-9 -` or longer than 64 chars is rejected by the node with
+`org_type_invalid`.
+
 
 ## 5. Register the node
 
