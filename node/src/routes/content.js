@@ -65,8 +65,8 @@ function createRouter({ contentService }) {
     res.status(202).json(contentService.updateOrigin(req.params.ctid, req.body));
   }));
 
-  router.post("/content/:ctid/update-urls", asyncHandler((req, res) => {
-    res.status(202).json(contentService.updateRegisteredUrls(req.params.ctid, req.body));
+  router.post("/content/:ctid/update-urls", asyncHandler(async (req, res) => {
+    res.status(202).json(await contentService.updateRegisteredUrls(req.params.ctid, req.body));
   }));
 
   router.post("/content/:ctid/retract", asyncHandler((req, res) => {
