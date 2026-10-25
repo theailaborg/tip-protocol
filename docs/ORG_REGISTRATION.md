@@ -1,6 +1,9 @@
 # Registering an organization
 
-How to put an organization identity on chain with `scripts/register-org.js`.
+Reference for registering an organization: what to ask for and which registration
+number to use per country. The commands to run (`scripts/register-org.js`, dry run,
+verify, delivery) are in [`REGISTRATION_AND_KEY_DISTRIBUTION.md`](./REGISTRATION_AND_KEY_DISTRIBUTION.md)
+section 4.
 
 An organization is a normal TIP identity with `tip_id_type=organization`. It differs
 from a person in two ways: a display name is mandatory, and the uniqueness proof is
@@ -159,94 +162,13 @@ approval step does:
    form holds a TIP identity, it is revoked (`REVOKE_VOLUNTARY`) as part of the new
    registration, so the chain records succession, not two live identities.
 
-## 3. Register
+## 3. Register, verify, deliver
 
-### Flag reference
-
-| flag | required | accepts | example |
-|---|---|---|---|
-| `--name` | yes | the full legal name, exactly as registered, quoted | `--name "AZLOGICS PRIVATE LIMITED"` |
-| `--reg-number` | yes | the country's accepted identifier from the table in §2, exact format, leading zeros kept | `--reg-number U72900MH2021PTC362851` |
-| `--incorporated` | yes | date of incorporation, `YYYY-MM-DD` only | `--incorporated 2021-06-28` |
-| `--region` | yes in practice | ISO-3166-1 alpha-2 country of incorporation; must be in the §2 scheme table or the run stops. Default `GB`, always pass it explicitly | `--region IN` |
-| `--org-type` | no | the legal form as the jurisdiction names it, freeform by design (forms differ per country), but must be 2-64 chars of lowercase letters, digits and hyphens. Common values: `private-limited-company`, `public-limited-company`, `llp`, `llc`, `gmbh`, `nonprofit` | `--org-type private-limited-company` |
-| `--node-url` | for mainnet | the node to register through. Default `http://localhost:4000` (local rehearsal) | `--node-url https://node.theailab.org` |
-| `--vp-file` | **for mainnet** | path to the mainnet founding VP key file `tip-vp-US-0e7db4040667073a.tip.json` (VP id `tip://vp/US-0e7db4040667073a`). When omitted the script picks up whatever VP sits in `genesis-data/backups`, which on a dev machine is the test VP, mainnet rejects it | `--vp-file <VP_KEY_FILE>` |
-| `--partner` | recommended | partner folder name under `generated/`; use the same value for the node registration so both land together | `--partner azlogics` |
-| `--out-dir` | no | full override of the output dir. Default `generated/<partner|slug-short-id>/org/` | `--out-dir /secure/azlogics` |
-| `--dry-run` | no | boolean, no value. Validates the identifier, builds the real proof, prints everything, registers nothing; always run this first | `--dry-run` |
-
-`--org-type` note: use lowercase-hyphen spelling of the form on the certificate
-(`Private Limited` → `private-limited-company`). Anything outside
-`a-z 0-9 -` or longer than 64 chars is rejected by the node with
-`org_type_invalid`.
-
-Rehearse on the local cluster first. Nothing about the flow differs except the target
-and the VP key, so a local run catches every input mistake for free.
-
-```bash
-node scripts/register-org.js \
-  --name "THE PRESCIENT PACHYDERM LTD" \
-  --reg-number 16846775 \
-  --incorporated 2025-11-11 \
-  --region GB \
-  --org-type private-limited-company \
-  --node-url http://localhost:4000
-```
-
-Then mainnet. **`--vp-file` is required**: the default picks up the VP in
-`genesis-data/backups`, which on a dev machine is the test VP, and mainnet will reject
-it with `Only the founding VP can approve nodes`.
-
-```bash
-node scripts/register-org.js \
-  --name "THE PRESCIENT PACHYDERM LTD" \
-  --reg-number 16846775 \
-  --incorporated 2025-11-11 \
-  --region GB \
-  --org-type private-limited-company \
-  --node-url https://node.theailab.org \
-  --vp-file /path/to/tip-vp-US-0e7db4040667073a.tip.json
-```
-
-`--dry-run` builds and prints everything without registering, which is the safe way to
-confirm the identifier is accepted and the derived TIP-ID looks right.
-
-## 4. Verify it committed
-
-Registration returns `confirmation: "proposed"`; the identity lands a few seconds later
-when the transaction commits.
-
-```bash
-curl -s "$NODE/v1/identity/$(python3 -c "import urllib.parse;print(urllib.parse.quote('tip://id/GB-...',safe=''))")"
-```
-
-Check `creator_name`, `region`, and `status: active`. On a multi-node network, check more
-than one node: they must agree.
-
-## 5. Deliver the credential
-
-The script writes `generated/<partner>/org/<tip-id>.tip.json` at mode `0600`
-(pass `--partner <slug>` so the later node registration lands in the same folder).
-The file is the VP app's export format (`tip-key-export-v2`): the public key, the
-registry inputs, and the private key **locked with the date of incorporation**
-(PBKDF2-SHA256 200k + AES-256-GCM, the date as `MMDDYYYY`, exactly how the VP app
-locks a personal download with the date of birth). The script re-reads and decrypts
-the file before reporting success, and the organization imports it into the VP app
-by entering that date.
-
-The date is public record, so the lock is one layer, not the delivery channel: a
-leaked file is not usable as-is, but anyone who knows the company can look the date
-up. Whoever holds the file and the date can sign as the organization, so it is still
-treated like an SSH host key: stored at mode `0600`, never committed. Delivery is
-part of the partner credentials bundle, an AES-256 zip with the password sent over a
-separate channel; the full procedure is `REGISTRATION_AND_KEY_DISTRIBUTION.md`
-section 6. The later `register-node.js --operator-key-file` run needs
-`--operator-key-date <incorporation date>` to open it.
-
-The private key is generated locally and never transmitted: registration sends only the
-public key. The planned VP-side page, where an organization generates its own keypair in
-the browser and sends us only the public key, removes the delivery step entirely.
+The commands, the dry-run and verify checklists, and the key delivery are in
+[`REGISTRATION_AND_KEY_DISTRIBUTION.md`](./REGISTRATION_AND_KEY_DISTRIBUTION.md)
+section 4 (organization) and section 6 (bundle). This document stays the
+reference for what to ask and which number to use; the gotchas below apply to
+every run.
 
 ## Gotchas
 
