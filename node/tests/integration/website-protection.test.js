@@ -22,6 +22,8 @@
 "use strict";
 
 // The gate is read once at module load; "1" means on for every real time.
+// Saved and restored: --runInBand shares process.env with every later test file.
+const _envBefore = {TIP_WEBSITE_PROTECTION_ACTIVATION_MS: process.env.TIP_WEBSITE_PROTECTION_ACTIVATION_MS};
 process.env.TIP_WEBSITE_PROTECTION_ACTIVATION_MS = "1";
 
 const path = require("path");
@@ -588,3 +590,5 @@ describe("isNonPublicAddress", () => {
   test.each(["8.8.8.8", "1.1.1.1", "172.32.0.1", "52.87.175.253", "2606:4700:4700::1111"])(
     "%s is public", (a) => expect(isNonPublicAddress(a)).toBe(false));
 });
+
+afterAll(() => { for (const [k, v] of Object.entries(_envBefore)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });

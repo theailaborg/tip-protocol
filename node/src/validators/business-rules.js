@@ -138,7 +138,7 @@ function _githubRepoOwner(rawUrl) {
 // Activation lives in website-gate.js (shared with the domain schemas).
 // `atMs` is the frozen tx.timestamp at commit time and the same value the
 // API stamps on the tx.
-const { websiteProtectionOn } = require("./website-gate");
+const { websiteProtectionOn, takeoverOn } = require("./website-gate");
 const _SHARED_HOSTS = new Set(SHARED_HOST_DOMAINS);
 
 // "www.Example.com." and "example.com" are the same site.
@@ -212,7 +212,70 @@ function _protectedUrlFail(dag, urls, signerTipId, atMs, skip) {
   return null;
 }
 
-function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls, at_ms }) {
+// ─── Owner takeover ──────────────────────────────────────────────────────────
+//
+// URL exclusivity is first-wins, except that from the takeover activation the
+// owner of a live-protected site (or an active member of an owning org) wins a
+// page of that site back from a record by anyone else. The plan is computed
+// from committed state only (a pending claim is never taken over) and must
+// match the tx's declared `url_takeovers` exactly, so a submitting node can
+// neither invent a takeover nor leave one out.
+//
+// Returns { fail } when a url is taken and cannot be won back, else
+// { takeovers: [{ url, ctid, tip_id }] } in the tx's url order.
+function _claimantOf(c) { return c.signer_tip_id || c.author_tip_id; }
+
+function urlTakeoverPlan(dag, { signer_tip_id, ctid, urls, at_ms, skip }) {
+  const takeovers = [];
+  if (!Array.isArray(urls) || typeof dag.listContent !== "function") return { takeovers };
+  for (const u of urls) {
+    if (typeof u !== "string" || !u || (skip && skip.has(u))) continue;
+    const live = dag.listContent({ url: u, limit: 100 })
+      .filter(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
+    if (!live.length) continue;
+    const owner = takeoverOn(at_ms) ? siteOwnerOf(dag, u, at_ms) : null;
+    for (const c of live) {
+      const holder = _claimantOf(c);
+      const winnable = owner && _mayPublishOn(dag, owner, signer_tip_id) && !_mayPublishOn(dag, owner, holder);
+      if (!winnable) {
+        return {
+          fail: fail(
+            409,
+            `URL already registered to existing content (CTID: ${c.ctid}): ${u}`,
+            "url_already_registered",
+            { url: u, conflict_ctid: c.ctid },
+          ),
+        };
+      }
+      takeovers.push({ url: u, ctid: c.ctid, tip_id: holder });
+    }
+  }
+  return { takeovers };
+}
+
+// Order-insensitive: stores may list claimants in different orders, and the
+// decision must not depend on it (identical on every node).
+function _sameTakeovers(a, b) {
+  const norm = (x) => JSON.stringify((Array.isArray(x) ? x : [])
+    .map(t => [String(t && t.url), String(t && t.ctid), String(t && t.tip_id)])
+    .sort((p, q) => (p[0] + "\n" + p[1] < q[0] + "\n" + q[1] ? -1 : p[0] + "\n" + p[1] > q[0] + "\n" + q[1] ? 1 : 0)));
+  return norm(a) === norm(b);
+}
+
+function _checkTakeovers(plan, declared, at_ms) {
+  // Before the activation the field means nothing: it is not signed, old
+  // nodes ignore it, and so must this one, or a peer attaching a bogus list
+  // to an ordinary registration would split old and new nodes.
+  if (!takeoverOn(at_ms)) declared = undefined;
+  if (plan.fail) return plan.fail;
+  if (declared === undefined && !plan.takeovers.length) return null;
+  if (!_sameTakeovers(plan.takeovers, declared)) {
+    return fail(409, "url_takeovers does not match the addresses this registration takes over", "url_takeovers_mismatch");
+  }
+  return null;
+}
+
+function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls, at_ms, url_takeovers }) {
   if (!ORIGIN_CODES.includes(origin_code)) {
     return fail(400, `Invalid origin_code. Must be one of: ${ORIGIN_CODES.join(", ")}`);
   }
@@ -232,26 +295,11 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
   // across all three stores, which commit-time enforcement requires.
   // The registration's URLs are part of the signed payload, so the value
   // checked here is exactly what the signer attested to.
-  if (Array.isArray(registered_urls) && typeof dag.listContent === "function") {
-    for (const u of registered_urls) {
-      if (typeof u !== "string" || !u) continue;
-      // Retraction releases the URL: only a LIVE claimant blocks. Scan all
-      // matches (a URL accumulates one row per retract-and-rebind cycle, so
-      // the live one is not necessarily first); at most one live claimant
-      // can exist at a time, so under the limit the "any live" predicate is
-      // order-independent and store-identical.
-      const claimants = dag.listContent({ url: u, limit: 100 });
-      const live = claimants.find(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
-      if (live) {
-        return fail(
-          409,
-          `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
-          "url_already_registered",
-          { url: u, conflict_ctid: live.ctid },
-        );
-      }
-    }
-  }
+  // Owner takeover (see urlTakeoverPlan) is the only exception to
+  // first-wins, and only for the protected site's own owner or team.
+  const excl = _checkTakeovers(
+    urlTakeoverPlan(dag, { signer_tip_id, ctid, urls: registered_urls, at_ms }), url_takeovers, at_ms);
+  if (excl) return excl;
   // Website protection: a page on someone else's verified site is theirs to
   // register. After URL exclusivity, so a duplicate still reports as one.
   const prot = _protectedUrlFail(dag, registered_urls, signer_tip_id, at_ms);
@@ -396,7 +444,7 @@ const UPDATE_URLS_ALLOWED_STATUSES = Object.freeze([
   CONTENT_STATUS.VERIFIED,
 ]);
 
-function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls, at_ms }) {
+function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls, at_ms, url_takeovers }) {
   // The update endpoint exists to SET published URLs, so an empty array is a
   // no-op with no legitimate use. Enforced here (not in the shared
   // validateRegisteredUrls, which stays 0-16 for REGISTER_CONTENT) so it
@@ -414,21 +462,9 @@ function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls, at
   // Only urls NEW to this ctid are checked, so re-declaring your own is valid;
   // a retracted claimant releases its url.
   const owned = new Set(Array.isArray(rec.registered_urls) ? rec.registered_urls : []);
-  if (typeof dag.listContent === "function") {
-    for (const u of registered_urls) {
-      if (typeof u !== "string" || !u || owned.has(u)) continue;
-      const claimants = dag.listContent({ url: u, limit: 100 });
-      const live = claimants.find(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
-      if (live) {
-        return fail(
-          409,
-          `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
-          "url_already_registered",
-          { url: u, conflict_ctid: live.ctid },
-        );
-      }
-    }
-  }
+  const excl = _checkTakeovers(
+    urlTakeoverPlan(dag, { signer_tip_id: author_tip_id, ctid, urls: registered_urls, at_ms, skip: owned }), url_takeovers, at_ms);
+  if (excl) return excl;
   // Website protection, new URLs only: adding a page of someone else's
   // protected site later is the same claim as registering it.
   const prot = _protectedUrlFail(dag, registered_urls, author_tip_id, at_ms, owned);
@@ -817,6 +853,8 @@ module.exports = {
   siteKey,
   siteOwnerOf,
   liveSitesOf,
+  urlTakeoverPlan,
+  takeoverOn,
   canVerify,
   canUpdateOrigin,
   canUpdateRegisteredUrls,

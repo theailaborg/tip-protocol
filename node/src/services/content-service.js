@@ -16,6 +16,7 @@ const { findSimilarCtids, matchFingerprintItems } = require("../perceptual/simil
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
+const { createUrlTakeovers } = require("./url-takeovers");
 const { withTxId, buildPrescanDescriptor } = require("./helpers");
 const contentType = require("./content-type");
 // Imported via the module reference (not destructured) so tests can
@@ -25,6 +26,7 @@ const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
 function createContentService({ dag, scoring, config, submitTx, prescanJobs, mediaService, websitePages = null }) {
+  const urlTakeovers = createUrlTakeovers({ dag });
 
   // Pages of the signer's own protected website count against the site
   // owner's plan. One reservation per site; a refusal names the limit and
@@ -358,9 +360,16 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const registeredAt = nowMs();
     const ctid = generateCTID(origin_code, contentHashShort, signer_tip_id);
 
+    // Owner takeover: addresses this registration wins back from other
+    // records (protected site, owner or team only). Declared on the tx and
+    // re-checked against committed state at commit.
+    const plan = rules.urlTakeoverPlan(dag, {
+      signer_tip_id, ctid, urls: canonicalPayload.registered_urls, at_ms: registeredAt,
+    });
+    const urlTakeovers = plan.takeovers && plan.takeovers.length ? plan.takeovers : undefined;
     const { valid, error } = rules.canRegisterContent(dag, {
       signer_tip_id, ctid, origin_code,
-      registered_urls: canonicalPayload.registered_urls, at_ms: registeredAt,
+      registered_urls: canonicalPayload.registered_urls, at_ms: registeredAt, url_takeovers: urlTakeovers,
     });
     if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
 
@@ -443,6 +452,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         ...(canonicalPayload.parent_url
           ? { parent_url: canonicalPayload.parent_url }
           : {}),
+        // ── Owner takeover, same strip rule: present only when this
+        //    registration wins addresses back (not part of the signature;
+        //    commit recomputes it from committed state and must agree).
+        ...(urlTakeovers ? { url_takeovers: urlTakeovers } : {}),
       },
       // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
       signature,
@@ -659,6 +672,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       similar,
     };
     if (opts.includeFingerprints) out.fingerprints = await _projectFingerprints(ctid, opts);
+    // Addresses this record gave up to a protected site's owner (strip rule:
+    // the key is present only when there is one).
+    // Advisory: a failure here never breaks the record itself.
+    let released = [];
+    try { released = urlTakeovers.releasedBy(ctid); } catch (e) { log.warn?.(`released_urls for ${ctid}: ${e.message}`); }
+    if (released.length) out.released_urls = released;
     return out;
   }
 
@@ -914,7 +933,13 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     contentRegisterSchema.validateRegisteredUrls(body.registered_urls);
 
     const updatedAt = nowMs();
-    const { valid, error } = rules.canUpdateRegisteredUrls(dag, { ctid, author_tip_id: body.author_tip_id, registered_urls: body.registered_urls, at_ms: updatedAt });
+    const before = dag.getContent(ctid);
+    const plan = before ? rules.urlTakeoverPlan(dag, {
+      signer_tip_id: body.author_tip_id, ctid, urls: body.registered_urls, at_ms: updatedAt,
+      skip: new Set(Array.isArray(before.registered_urls) ? before.registered_urls : []),
+    }) : { takeovers: [] };
+    const urlTakeovers = plan.takeovers && plan.takeovers.length ? plan.takeovers : undefined;
+    const { valid, error } = rules.canUpdateRegisteredUrls(dag, { ctid, author_tip_id: body.author_tip_id, registered_urls: body.registered_urls, at_ms: updatedAt, url_takeovers: urlTakeovers });
     if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const author = dag.getIdentity(body.author_tip_id);
 
@@ -934,7 +959,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const finish = () => {
       const updateTx = withTxId({
         tx_type: TX_TYPES.UPDATE_REGISTERED_URLS, timestamp: updatedAt,
-        data: { ctid, registered_urls: body.registered_urls, author_tip_id: body.author_tip_id },
+        data: { ctid, registered_urls: body.registered_urls, author_tip_id: body.author_tip_id,
+          ...(urlTakeovers ? { url_takeovers: urlTakeovers } : {}) },
         signature: body.signature,
       }, dag);
       submitTx(updateTx);

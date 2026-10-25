@@ -24,6 +24,7 @@ const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_E
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
+const { noteTakeovers } = require("../services/url-takeovers");
 const contentRegisterSchema = require("../schemas/content-register");
 const registerIdentitySchema = require("../schemas/register-identity");
 const bindDomainSchema = require("../schemas/bind-domain");
@@ -438,7 +439,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     const d = tx.data || {};
 
     // Phase A — first-wins dedup against committed history + same-batch siblings.
-    const dedup = _dedupCheck(tx, validated);
+    const dedup = _dedupCheck(tx, validated, certTimestamp);
     if (!dedup.valid) return dedup;
 
     // Phase B — stateful pre-conditions (same predicate as the API service).
@@ -457,7 +458,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
    * canonical order — and drops the later duplicate, so only the first tx for
    * a given key commits. The cross-round half of each rule is in `_statefulCheck`.
    */
-  function _dedupCheck(tx, validated) {
+  function _dedupCheck(tx, validated, certTimestamp = 0) {
     const d = tx.data || {};
 
     // GH #112 Family B: revocation freeze. If this tx's actor identity is
@@ -717,6 +718,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
 
       case TX_TYPES.REGISTER_CONTENT: {
         if (!d.ctid) return { valid: true };
+        const takeoverClash = _takeoverClash(tx, validated, certTimestamp);
+        if (takeoverClash) return takeoverClash;
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.REGISTER_CONTENT && t.data?.ctid === d.ctid
         );
@@ -914,6 +917,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // One url update per ctid per batch. Not a content-status mutator, so
         // no Family A sibling guard: it doesn't compete with dispute/verify.
         if (!d.ctid) return { valid: true };
+        const takeoverClash = _takeoverClash(tx, validated, certTimestamp);
+        if (takeoverClash) return takeoverClash;
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.UPDATE_REGISTERED_URLS && t.data?.ctid === d.ctid);
         if (inBatch) return { valid: false, error: `duplicate UPDATE_REGISTERED_URLS in batch for ${d.ctid}` };
@@ -925,9 +930,12 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const owned = new Set(Array.isArray(rec?.registered_urls) ? rec.registered_urls : []);
         const added = (Array.isArray(d.registered_urls) ? d.registered_urls : [])
           .filter(u => typeof u === "string" && u && !owned.has(u));
+        // A takeover named in url_takeovers is not a conflict here; whether
+        // the list is exactly right is decided in _statefulCheck.
+        const takenBack = new Set(_takeoversOf(tx, certTimestamp).map(t => t && `${t.url}\n${t.ctid}`));
         for (const u of added) {
           const claimants = typeof dag.listContent === "function" ? dag.listContent({ url: u, limit: 100 }) : [];
-          const live = claimants.find(c => c.ctid !== d.ctid && c.status !== CONTENT_STATUS.RETRACTED);
+          const live = claimants.find(c => c.ctid !== d.ctid && c.status !== CONTENT_STATUS.RETRACTED && !takenBack.has(`${u}\n${c.ctid}`));
           if (live) return { valid: false, error: `registered_url already claimed by another content (CTID: ${live.ctid}): ${u}` };
         }
         if (added.length > 0) {
@@ -1030,6 +1038,49 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
   // not covered by the user's signature, so a backdated stamp must never
   // slip a page past the activation or a live binding. certTimestamp is the
   // same on every node, so the decision stays deterministic.
+  // A takeover and a URL update of the record it takes from cannot share a
+  // batch: applied in order, the update would put the address back on the
+  // old record after the takeover removed it, leaving it on two records.
+  // Whichever came first wins; the other is dropped and can be resubmitted.
+  function _takeoverClash(tx, validated, certTimestamp) {
+    const d = tx.data || {};
+    const losers = new Set(_takeoversOf(tx, certTimestamp).map(t => t && t.ctid));
+    for (const v of validated) {
+      if (v.tx_type === TX_TYPES.UPDATE_REGISTERED_URLS && losers.has(v.data?.ctid)) {
+        return { valid: false, error: `takeover of ${v.data.ctid} conflicts with its URL update in this batch` };
+      }
+      if (tx.tx_type === TX_TYPES.UPDATE_REGISTERED_URLS
+        && _takeoversOf(v, certTimestamp).some(t => t && t.ctid === d.ctid)) {
+        return { valid: false, error: `URL update of ${d.ctid} conflicts with a takeover from it in this batch` };
+      }
+    }
+    return null;
+  }
+
+  // url_takeovers counts only from the takeover activation (judged like every
+  // website rule, on the later of tx.timestamp and the certificate time).
+  function _takeoversOf(tx, certTimestamp) {
+    const d = tx.data || {};
+    if (!Array.isArray(d.url_takeovers) || !d.url_takeovers.length) return [];
+    return rules.takeoverOn(_siteAt(tx.timestamp, certTimestamp)) ? d.url_takeovers : [];
+  }
+
+  // Owner takeover: the records named in url_takeovers lose that address.
+  // The list was checked against committed state in _statefulCheck, so this
+  // is deterministic on every node. Each record keeps its CTID.
+  function _applyUrlTakeovers(tx, certTimestamp) {
+    const d = tx.data || {};
+    const list = _takeoversOf(tx, certTimestamp);
+    if (!list.length) return;
+    // Read cache for record views and Inboxes; not consensus state.
+    noteTakeovers(dag, d, tx.timestamp);
+    for (const t of list) {
+      const rec = t && t.ctid ? dag.getContent(t.ctid) : null;
+      if (!rec || !Array.isArray(rec.registered_urls)) continue;
+      dag.updateContentUrls(t.ctid, rec.registered_urls.filter(u => u !== t.url));
+    }
+  }
+
   function _siteAt(txMs, certTimestamp) {
     return Math.max(Number.isFinite(txMs) ? txMs : 0, Number.isFinite(certTimestamp) ? certTimestamp : 0);
   }
@@ -1057,6 +1108,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const r = rules.canRegisterContent(dag, {
           signer_tip_id: d.signer_tip_id, ctid: d.ctid, origin_code: d.origin_code,
           registered_urls: d.registered_urls, at_ms: _siteAt(now, certTimestamp),
+          url_takeovers: d.url_takeovers,
         });
         if (!r.valid) return { valid: false, error: r.error.message };
         // Authors: DAG presence, type and org roster, activation-gated.
@@ -1077,7 +1129,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       }
 
       case TX_TYPES.UPDATE_REGISTERED_URLS: {
-        const r = rules.canUpdateRegisteredUrls(dag, { ctid: d.ctid, author_tip_id: d.author_tip_id, registered_urls: d.registered_urls, at_ms: _siteAt(now, certTimestamp) });
+        const r = rules.canUpdateRegisteredUrls(dag, { ctid: d.ctid, author_tip_id: d.author_tip_id, registered_urls: d.registered_urls, at_ms: _siteAt(now, certTimestamp), url_takeovers: d.url_takeovers });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
@@ -1532,6 +1584,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             media: Array.isArray(d.media) ? d.media : [],
             media_canonical_hash: typeof d.media_canonical_hash === "string" ? d.media_canonical_hash : null,
           });
+          _applyUrlTakeovers(tx, _committedCertTimestamp);
         }
         break;
 
@@ -1565,6 +1618,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       case TX_TYPES.UPDATE_REGISTERED_URLS:
         if (d.ctid && Array.isArray(d.registered_urls)) {
           dag.updateContentUrls(d.ctid, d.registered_urls);
+          _applyUrlTakeovers(tx, _committedCertTimestamp);
         }
         break;
 
