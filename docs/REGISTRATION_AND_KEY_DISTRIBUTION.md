@@ -595,7 +595,9 @@ four files are inside).
   Unarchiver on macOS); the built-in extractors on both platforms fail on AES
   zips. The email template says this.
 
-Email wording: `partner-onboarding-emails.html`, mainnet card.
+Email wording: `partner-onboarding-emails.html`, card 2 (*Mainnet delivery*): untick
+*Delivering a node too* for an organization-only bundle, tick it when the bundle
+also carries a node.
 
 ### 6.5 Issue the log-shipping label and password
 

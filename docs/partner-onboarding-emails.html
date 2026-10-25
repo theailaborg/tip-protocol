@@ -62,6 +62,9 @@
      inline dark-on-white colors for Gmail, so it must not sit on a dark bg. */
   .body { padding: 20px 24px; background: #fff; }
   .warn { font-size: 13px; color: var(--muted); padding: 10px 24px 0; }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; margin: 12px 24px 0; font-size: 14px;
+            color: var(--ink); cursor: pointer; }
+  .toggle input { width: auto; margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
   .alert { font-size: 14px; margin: 0 0 22px; padding: 11px 14px; border-radius: 8px;
            background: rgba(217,48,37,.10); border: 1px solid rgba(217,48,37,.45); }
   .ph { background: rgba(255,196,0,.22); border-radius: 3px; padding: 0 2px; }
@@ -125,7 +128,7 @@
        identifier that country's registry issues, and nothing else is accepted (a tax or VAT number would
        mint a second permanent identity). Tick the box if the organization will also run a node: the node
        questions are added, and the copied email contains only what is shown.</p>
-    <p><label><input type="checkbox" id="f-RUNS_NODE"> Will also run a node</label></p>
+    <label class="toggle"><input type="checkbox" id="f-RUNS_NODE"> Will also run a node</label>
     <div class="body" id="email-request">
       <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
         <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
@@ -305,49 +308,62 @@ curl -s localhost:4000/v1/state-root</pre>
   <details class="card">
     <summary class="bar">
       <div>
-        <h2>2. Mainnet onboarding</h2>
-        <p class="subj">Subject: TIP mainnet: your production node credentials</p>
+        <h2>2. Mainnet delivery</h2>
+        <p class="subj">Subject: <span class="org-only">TIP mainnet: your organization credentials</span><span class="node-only">TIP mainnet: your production node credentials</span></p>
       </div>
       <button onclick="event.preventDefault();event.stopPropagation();copyEmail('email-main', this)">Copy email</button>
     </summary>
-    <p class="warn">Send only after their test node has run and converged, and after their real registration
-       details are confirmed in writing. Registration details go on chain and cannot be edited.</p>
+    <p class="warn">Send only after their real registration details are confirmed in writing (they go on
+       chain and cannot be edited), and, when delivering a node, after their test node has run and converged.
+       Tick the box when the bundle also carries a node; the copied email contains only what is shown.</p>
+    <label class="toggle"><input type="checkbox" id="f-MAIN_NODE"> Delivering a node too</label>
     <div class="body" id="email-main">
       <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
         <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
 
-        <p>Your organization identity and node are now registered on the TIP <b>production</b> network, and
-        your test node has been running cleanly, so you are ready to bring a production node online.</p>
+        <p class="org-only">Your organization identity is now registered on the TIP <b>production</b>
+        network.</p>
+        <p class="node-only">Your organization identity and node are now registered on the TIP <b>production</b>
+        network, and your test node has been running cleanly, so you are ready to bring a production node
+        online.</p>
 
         <p>Please read this section before anything else.</p>
 
-        <p><b>Treat both files as you would a signing certificate or an HSM-backed key.</b> They are what
-        proves your node and your organization on a live network, and they are not something we can reissue
-        on request. Keep an offline backup of each before you deploy, store them where you keep company
-        signing material, and tell us immediately if either is ever lost or exposed so we can act on it with
-        you.</p>
+        <p class="org-only"><b>Treat the identity file as you would a signing certificate or an HSM-backed
+        key.</b> It is what proves your organization on a live network, and it is not something we can
+        reissue on request. Keep an offline backup, store it where you keep company signing material, and
+        tell us immediately if it is ever lost or exposed so we can act on it with you.</p>
+        <p class="node-only"><b>Treat both key files as you would a signing certificate or an HSM-backed key.</b>
+        They are what proves your node and your organization on a live network, and they are not something we
+        can reissue on request. Keep an offline backup of each before you deploy, store them where you keep
+        company signing material, and tell us immediately if either is ever lost or exposed so we can act on
+        it with you.</p>
 
         <p><b>Attached: one password-protected zip</b> (AES-256). The password comes over a separate
-        channel, not in this thread. Everything is inside it because two of the files are credentials.</p>
+        channel, not in this thread.</p>
         <ul>
-          <li><b>node.env</b> - your node configuration. Holds live API credentials, so keep it
+          <li class="node-only"><b>node.env</b> - your node configuration. Holds live API credentials, so keep it
           <span style="font-family:monospace">chmod 600</span> and never commit it.</li>
-          <li><b>NODE-KEY__tip-node-&lt;id&gt;.tip.json</b> - your <b>node</b> key. Lives on the node host,
+          <li class="node-only"><b>NODE-KEY__tip-node-&lt;id&gt;.tip.json</b> - your <b>node</b> key. Lives on the node host,
           read by the process at boot. <span style="font-family:monospace">chmod 600</span>, owned by uid 1001.</li>
           <li><b>ORG-IDENTITY__id-&lt;REGION&gt;-&lt;id&gt;.tip.json</b> - your <b>organization identity</b>,
           <span class="ph" data-ph="ORG_TIP_ID">{{ORG_TIP_ID}}</span>. Signs content as
-          <span class="ph" data-ph="PARTNER">{{PARTNER}}</span>. <b>Not</b> needed to run the node, so please
-          keep it off the node host entirely, wherever you keep company signing material.</li>
-          <li><b>README.md</b> - setup steps</li>
+          <span class="ph" data-ph="PARTNER">{{PARTNER}}</span>. It is locked with your <b>date of
+          incorporation</b> (MM/DD/YYYY): import it into the TIP VP app and enter that date when asked.<span class="node-only">
+          <b>Not</b> needed to run the node, so please keep it off the node host entirely, wherever you keep
+          company signing material.</span></li>
+          <li><b>README.md</b> - <span class="org-only">how to handle the identity file</span><span class="node-only">setup steps</span></li>
         </ul>
 
-        <p><b>About the genesis:</b> the repository you clone already contains the production genesis:
+        <p class="node-only"><b>About the genesis:</b> the repository you clone already contains the production genesis:
         do not replace it, and do not reuse your test data directory. After cloning, please verify it
         starts with <b><span class="ph" data-ph="GENESIS">{{GENESIS}}</span></b>:</p>
-        <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"</pre>
+        <pre class="node-only" style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">python3 -c "import json;print(json.load(open('genesis-data/genesis.json'))['genesis_hash'][:16])"</pre>
 
         <p>To open the zip you need a tool that supports AES: 7-Zip on Windows, Keka or The Unarchiver on
-        macOS. The built-in extractors on both do not.</p>
+        macOS, <span style="font-family:monospace">7z x</span> on Linux (package
+        <span style="font-family:monospace">7zip</span>). The built-in extractors of Windows and macOS do
+        not, and <span style="font-family:monospace">unzip</span> silently skips the files.</p>
 
         <p><b>Your registered details</b>, as you confirmed them:</p>
         <pre style="font-family:monospace;font-size:13px;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:12px;white-space:pre-wrap;margin:0 0 14px;color:#24292e">Legal name          : <span class="ph" data-ph="LEGAL_NAME">{{LEGAL_NAME}}</span>
@@ -355,9 +371,13 @@ Registration number : <span class="ph" data-ph="REG_NUMBER">{{REG_NUMBER}}</span
 Incorporated        : <span class="ph" data-ph="INCORPORATED">{{INCORPORATED}}</span>
 Country             : <span class="ph" data-ph="COUNTRY">{{COUNTRY}}</span></pre>
 
-        <p>These are now on chain and cannot be changed. If anything above is wrong, tell us before you deploy
-        and do not use the identity.</p>
+        <p>These are now on chain and cannot be changed. If anything above is wrong, tell us straight away and
+        do not use the identity.</p>
 
+        <p class="org-only">If you later want to run a node on TIP, tell us: we register it under this
+        identity and send its credentials separately.</p>
+
+        <div class="node-only">
         <p><b>Setup</b></p>
         <p>Follow <b>README.md</b> in the bundle. The node is open:</p>
         <ul>
@@ -428,6 +448,7 @@ curl -s localhost:4000/v1/state-root</pre>
         <p>Your node participates in consensus, so its availability affects the network, not only you. Please
         let us know in advance of planned downtime, and reach out promptly if the node is unhealthy. We
         monitor and will contact you if we see a problem first.</p>
+        </div>
 
         <p>Thanks,<br>The AI Lab Team</p>
       </div>
@@ -477,17 +498,22 @@ if (savedCountry && REG_ASK[savedCountry]) REG_COUNTRY.value = savedCountry;
 applyRegAsk();
 REG_COUNTRY.addEventListener("change", applyRegAsk);
 
-// Email 0: the node questions appear only when the organization will run a node.
-const RUNS_NODE = document.getElementById("f-RUNS_NODE");
-function applyRunsNode() {
-  const on = RUNS_NODE.checked;
-  document.querySelectorAll("#email-request .node-only").forEach((el) => { el.hidden = !on; });
-  document.querySelectorAll("#email-request .org-only").forEach((el) => { el.hidden = on; });
-  localStorage.setItem("tip-onboard-RUNS_NODE", on ? "1" : "");
+// Node toggles: each card shows its .node-only parts when ticked and its .org-only parts when not
+// (email 0: will the organization run a node; email 2: does this delivery carry a node).
+function wireNodeToggle(id) {
+  const box = document.getElementById(id);
+  const card = box.closest("details");
+  const apply = () => {
+    card.querySelectorAll(".node-only").forEach((el) => { el.hidden = !box.checked; });
+    card.querySelectorAll(".org-only").forEach((el) => { el.hidden = box.checked; });
+    localStorage.setItem("tip-onboard-" + id, box.checked ? "1" : "");
+  };
+  box.checked = localStorage.getItem("tip-onboard-" + id) === "1";
+  apply();
+  box.addEventListener("change", apply);
 }
-RUNS_NODE.checked = localStorage.getItem("tip-onboard-RUNS_NODE") === "1";
-applyRunsNode();
-RUNS_NODE.addEventListener("change", applyRunsNode);
+wireNodeToggle("f-RUNS_NODE");
+wireNodeToggle("f-MAIN_NODE");
 
 // The source is hard-wrapped for readability, so every line break inside a <p>
 // would otherwise survive into the clipboard and arrive as ragged mid-sentence
