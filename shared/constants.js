@@ -1076,6 +1076,12 @@ const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15
 // pages, and a binding past its expires_at no longer blocks a new owner.
 const WEBSITE_PROTECTION_ACTIVATION_MS = 1793491200000; // 2026-11-01 00:00:00 UTC
 
+// Owner takeover. From this instant a protected site's owner (or an active
+// member of an owning organization) registering one of the site's pages
+// takes the address over from a record by anyone else: that record keeps
+// its CTID but loses the address. Same consensus discipline as above.
+const URL_TAKEOVER_ACTIVATION_MS = 1794700800000; // 2026-11-15 00:00:00 UTC
+
 // Domains where many people publish under one name. A binding on one of these
 // (or its www.) never protects pages: one account must not lock everyone
 // else's posts on the platform. A subdomain someone controls (alice.github.io)
@@ -1191,6 +1197,7 @@ module.exports = {
   REGISTER_CREDIT,
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
   WEBSITE_PROTECTION_ACTIVATION_MS,
+  URL_TAKEOVER_ACTIVATION_MS,
   SHARED_HOST_DOMAINS,
   ORG_MEMBERS,
   KEY_RETIREMENT_GRACE_MS,
