@@ -620,7 +620,7 @@ assert len(done) == 3, f"expected 3 statements, found {done}"
 json.dump(p, open(path, "w"), indent=2); print("added to:", ", ".join(done))
 EOF
 aws s3api put-bucket-policy --bucket $BUCKET --policy file://"$W/policy.json"
-aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | grep -o "user/$USER_NAME" | wc -l
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | grep -o "user/$USER_NAME" | grep -c .
 ```
 
 ```text
@@ -739,7 +739,7 @@ assert len(done) == 3, done
 json.dump(p, open(path, "w"), indent=2); print("removed from:", ", ".join(done))
 EOF
 aws s3api put-bucket-policy --bucket $BUCKET --policy file://"$W/policy.json"
-aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | grep -o "user/$USER_NAME" | wc -l
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | grep -o "user/$USER_NAME" | grep -c .
 
 aws iam delete-access-key  --user-name $USER_NAME --access-key-id <ID>
 aws iam delete-user-policy --user-name $USER_NAME --policy-name media-bucket-access
