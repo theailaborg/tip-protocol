@@ -299,8 +299,21 @@ A healthy agent shows `msg="Starting Promtail"` and lines like
 appears under its label in the federation dashboard within a minute. Details
 and the macOS mount adjustment: [`PARTNER_LOG_SHIPPING.md`](./PARTNER_LOG_SHIPPING.md).
 
-**Metrics** need nothing from you beyond step 6: The AI Lab adds
-`<your-node-domain>:443` to its Prometheus targets.
+**Metrics: nothing to install.** You do not run Prometheus, Grafana or any
+exporter. The node itself serves its metrics at `/metrics` on its API port,
+protected by the `TIP_METRICS_TOKEN` already in your `.env`; The AI Lab's
+Prometheus scrapes `https://<your-node-domain>/metrics` with that token once it
+adds your node to its targets (after step 6). To check it yourself, on the node
+host in `~/tip-protocol`:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:4000/metrics
+curl -s -H "Authorization: Bearer $(grep '^TIP_METRICS_TOKEN=' .env | cut -d= -f2-)" http://localhost:4000/metrics | head -3
+```
+
+The first prints `401` (no token, refused: correct); the second prints the first
+`# HELP` / `# TYPE` lines of the metrics. The only monitoring agent you run is
+the log shipper from step 8.
 
 **No static IP or inbound 4001?** The node still works outbound-only: it dials
 the federation, nobody dials it, and the API reaches the internet through a
