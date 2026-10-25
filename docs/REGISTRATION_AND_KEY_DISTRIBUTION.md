@@ -30,7 +30,9 @@ your `tip-protocol` checkout first): the scripts, `genesis-data/` and the
       locally, readable only by you (`chmod 600`). Its path on your machine is
       `<VP_KEY_FILE>` below
 - [ ] Network access to `https://node.theailab.org`
-- [ ] `7zz` installed for the bundle step (`brew install sevenzip` / `apt install 7zip`)
+- [ ] 7-Zip installed for the bundle step: on a Mac `brew install sevenzip` (command
+      `7zz`), on Ubuntu `sudo apt-get install -y 7zip` (command `7z`); the bundle
+      script uses whichever it finds
 - [ ] The live mainnet `TIP_CLASSIFIER_KEY` and `TIP_METRICS_TOKEN` values available
       (from the production node configuration, not from any test environment)
 
@@ -576,8 +578,9 @@ shasum -a 256 "generated/deliveries/The Prescient Pachyderm-credentials.zip" | c
 7zz l -p"<password>" "generated/deliveries/The Prescient Pachyderm-credentials.zip" | grep -c '\.tip\.json\|node.env\|README'
 ```
 
-The first prints 16 hex characters that must appear on the zip's line in
-`ZIP-PASSWORDS.md`; the second must print `4` (the password opens the zip and all
+(On Ubuntu the 7-Zip command is `7z` instead of `7zz`.) The first prints 16 hex
+characters that must appear on the zip's line in `ZIP-PASSWORDS.md`; the second
+must print `4` (the password opens the zip and all
 four files are inside).
 
 ### 6.4 Deliver

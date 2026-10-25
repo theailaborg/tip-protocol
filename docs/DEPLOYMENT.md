@@ -57,20 +57,21 @@ Then on the node host, in your home folder:
 
 ```bash
 sudo apt-get install -y 7zip
-cd ~ && 7zz x "<Org Name>-credentials.zip"
+cd ~ && 7z x "<Org Name>-credentials.zip"
 ls -l "<Org Name>"
 ```
 
-`7zz` asks for the password. Expect four files: `NODE-KEY__tip-node-<id>.tip.json`,
+`7z` asks for the password. Expect four files: `NODE-KEY__tip-node-<id>.tip.json`,
 `ORG-IDENTITY__id-<REGION>-<id>.tip.json`, `README.md` and `node.env`. That
 folder, `~/<Org Name>`, is `<bundle>` below.
 
 Use 7-Zip, not `unzip`: `unzip` cannot open AES-encrypted zips, and instead of
 failing it prints `skipping: ... need PK compat. v5.1 (can do v4.5)` and leaves an
-empty folder. On Ubuntu 22.04 or older the package is `p7zip-full` and the
-command `7z x` instead of `7zz x`. To look inside on a laptop first: Keka or The
-Unarchiver on macOS (or `brew install sevenzip`, then `7zz x`), 7-Zip on Windows;
-the built-in extractors of both cannot open it.
+empty folder. On Ubuntu 22.04 or older install `p7zip-full` instead of `7zip`;
+the command is the same `7z x`. To look inside on a Mac first:
+`brew install sevenzip`, then `7zz x "<Org Name>-credentials.zip"` (Homebrew names
+the command `7zz`), or Keka / The Unarchiver; on Windows, 7-Zip. The built-in
+extractors of macOS and Windows cannot open it.
 
 **1. Clone and place the credentials.**
 
