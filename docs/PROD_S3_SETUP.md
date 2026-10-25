@@ -694,7 +694,7 @@ EOF
 ```
 
 On their node that is all: replace `TIP_MEDIA_BACKEND=fs` with these lines and
-recreate the container; `DEPLOYMENT.md` step 7 is their upload check. Record in
+recreate the container; `DEPLOYMENT.md` step 4 sets the backend and step 8 is their upload check. Record in
 the partner's private notes: user name, bucket, key id (not the secret), date.
 Then delete the work folder, which holds the secret:
 
