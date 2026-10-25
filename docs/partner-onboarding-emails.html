@@ -123,13 +123,15 @@
     </summary>
     <p class="warn">Send this first. Pick the country of registration above: item 2 changes to the one
        identifier that country's registry issues, and nothing else is accepted (a tax or VAT number would
-       mint a second permanent identity). Every organization gets this one; if it will also run a node,
-       send email 0b with it.</p>
+       mint a second permanent identity). Tick the box if the organization will also run a node: the node
+       questions are added, and the copied email contains only what is shown.</p>
+    <p><label><input type="checkbox" id="f-RUNS_NODE"> Will also run a node</label></p>
     <div class="body" id="email-request">
       <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
         <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
 
-        <p>We're ready to register <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> on TIP mainnet.
+        <p>We're ready to register <span class="ph" data-ph="PARTNER">{{PARTNER}}</span><span class="node-only"> and
+        the node you will run</span> on TIP mainnet.
         Mainnet records are permanent and cannot be corrected, so please confirm the following from your
         official documents, not from memory:</p>
 
@@ -141,59 +143,32 @@
           <li>Country of registration</li>
           <li>Whether the business has ever operated under a previous registration number, for example
           before a conversion or re-incorporation. If so, that number and the date of the change</li>
-          <li>A contact for your organization's account: name, email, and a phone or Signal number. Your
-          organization's key file comes by email and its password by phone or Signal, never both in the
-          same channel</li>
-        </ol>
-
-        <p>Once these arrive we'll register your organization and send its key file.</p>
-
-        <p>Thanks,<br>The AI Lab Team</p>
-      </div>
-    </div>
-  </details>
-
-  <!-- ─────────────── NODE DETAILS REQUEST ─────────────── -->
-  <details class="card">
-    <summary class="bar">
-      <div>
-        <h2>0b. Request the node details (only if they run a node)</h2>
-        <p class="subj">Subject: TIP mainnet: node details for <span class="ph" data-ph="PARTNER">{{PARTNER}}</span></p>
-      </div>
-      <button onclick="event.preventDefault();event.stopPropagation();copyEmail('email-node', this)">Copy email</button>
-    </summary>
-    <p class="warn">Send together with email 0, and only to an organization that will run a node. The
-       answers pick the media storage setup (item 1) and whether the node runs normally or outbound-only
-       through a tunnel (items 3 and 5).</p>
-    <div class="body" id="email-node">
-      <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
-        <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
-
-        <p>To register the node <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> will run on TIP
-        mainnet, we also need the following about the machine it will run on:</p>
-
-        <ol>
-          <li>Where the node will run: AWS EC2 (and which region), another cloud provider, or your own
-          hardware. This decides how media storage is set up</li>
-          <li>The host: a machine dedicated to this node (not a test network box), with at least 2 CPU
+          <li class="node-only">Where the node will run: AWS EC2 (and which region), another cloud provider, or your
+          own hardware. This decides how media storage is set up</li>
+          <li class="node-only">The host: a machine dedicated to this node (not a test network box), with at least 2 CPU
           cores, 4 GB RAM and 20 GB free disk; 4 dedicated cores, 8 GB and 50 GB recommended</li>
-          <li>The host's static public IP. If it sits behind a router or NAT without one, tell us: it can
+          <li class="node-only">The host's static public IP. If it sits behind a router or NAT without one, tell us: it can
           still run, with a different setup</li>
-          <li>The domain the node will serve on, for example node.your-domain.com, confirmation that you
+          <li class="node-only">The domain the node will serve on, for example node.your-domain.com, confirmation that you
           control its DNS, and that you can serve HTTPS on it in front of port 4000 (a reverse proxy or a
           tunnel). It is published on chain, so it must be the address you intend to keep</li>
-          <li>Confirmation that inbound TCP 4000 and 4001 are open to the internet (or that they cannot
-          be, see item 3)</li>
-          <li>The host's internet link: 25 Mbit/s download and upload sustained minimum, 50 recommended,
+          <li class="node-only">Confirmation that inbound TCP 4000 and 4001 are open to the internet (or that they cannot
+          be, see the static IP question)</li>
+          <li class="node-only">The host's internet link: 25 Mbit/s download and upload sustained minimum, 50 recommended,
           ideally a dedicated line rather than a shared office connection</li>
-          <li>Media storage: on AWS EC2, confirm you have an AWS account where you can create a bucket
+          <li class="node-only">Media storage: on AWS EC2, confirm you have an AWS account where you can create a bucket
           with our setup steps; anywhere else, we provide the storage access and send it with your
           credentials</li>
-          <li>An ops contact for node issues: name, email, and a phone or Signal number, reachable if the
-          node misbehaves</li>
+          <li class="org-only">A contact for your organization's account: name, email, and a phone or Signal number. Your
+          organization's key file comes by email and its password by phone or Signal, never both in the
+          same channel</li>
+          <li class="node-only">A contact for your organization and its node: name, email, and a phone or Signal number,
+          reachable if the node misbehaves. The credentials bundle comes by email and its password by phone
+          or Signal, never both in the same channel</li>
         </ol>
 
-        <p>Once these arrive we'll register the node and send the credentials bundle.</p>
+        <p class="org-only">Once these arrive we'll register your organization and send its key file.</p>
+        <p class="node-only">Once these arrive we'll register your organization and node, and send the credentials bundle.</p>
 
         <p>Thanks,<br>The AI Lab Team</p>
       </div>
@@ -502,6 +477,18 @@ if (savedCountry && REG_ASK[savedCountry]) REG_COUNTRY.value = savedCountry;
 applyRegAsk();
 REG_COUNTRY.addEventListener("change", applyRegAsk);
 
+// Email 0: the node questions appear only when the organization will run a node.
+const RUNS_NODE = document.getElementById("f-RUNS_NODE");
+function applyRunsNode() {
+  const on = RUNS_NODE.checked;
+  document.querySelectorAll("#email-request .node-only").forEach((el) => { el.hidden = !on; });
+  document.querySelectorAll("#email-request .org-only").forEach((el) => { el.hidden = on; });
+  localStorage.setItem("tip-onboard-RUNS_NODE", on ? "1" : "");
+}
+RUNS_NODE.checked = localStorage.getItem("tip-onboard-RUNS_NODE") === "1";
+applyRunsNode();
+RUNS_NODE.addEventListener("change", applyRunsNode);
+
 // The source is hard-wrapped for readability, so every line break inside a <p>
 // would otherwise survive into the clipboard and arrive as ragged mid-sentence
 // newlines. Collapse runs of whitespace everywhere except <pre>, where the
@@ -540,6 +527,8 @@ async function copyEmail(id, btn) {
   const node = document.getElementById(id);
   // Strip the highlight so an unfilled placeholder does not paste with a background.
   const clone = node.cloneNode(true);
+  // Hidden variants (the node questions when unticked) must not reach the clipboard.
+  clone.querySelectorAll("[hidden]").forEach((el) => el.remove());
   clone.querySelectorAll(".ph").forEach((el) => el.replaceWith(document.createTextNode(el.textContent)));
   collapseWhitespace(clone);
   const html = clone.innerHTML, text = toPlainText(clone);

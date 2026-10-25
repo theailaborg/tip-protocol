@@ -79,11 +79,10 @@ Infrastructure details to collect alongside:
 The mainnet node needs its **own host**: a partner already running a testnet
 node cannot reuse that box (same ports, different genesis).
 
-Ready-made request wording, in `partner-onboarding-emails.html` in this
-directory (also printed in `ORG_REGISTRATION.md` §1): **email 0** asks for the
-organization details and goes to every organization; **email 0b** asks for the
-node details above and goes only to an organization that will run a node, sent
-together with email 0.
+Ready-made request wording: email 0 in `partner-onboarding-emails.html` in this
+directory (also printed in `ORG_REGISTRATION.md` §1). One email for every
+organization; tick **"Will also run a node"** on that page to add the node
+questions above.
 
 **Date format:** the script takes `--incorporated YYYY-MM-DD`. Partners often
 send `DD-MM-YYYY`; convert carefully and confirm the conversion back to the
