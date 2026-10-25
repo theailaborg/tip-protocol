@@ -96,11 +96,37 @@ for the values only you know:
 | `TIP_PUBLIC_IP`, `TIP_PUBLIC_URL`, `TIP_API_ENDPOINT` | only if they still read `CHANGE_ME`: your static IP and `https://<your-node-domain>` |
 | `TIP_CLASSIFIER_CALLBACK_SECRET` | only if The AI Lab gave you one (empty means the node polls for verdicts, which also works) |
 
-Leave everything else as delivered (bootstrap peers, classifier URL and key,
+The media storage lines are step 4. Leave everything else as delivered (bootstrap peers, classifier URL and key,
 metrics token, CORS, ports, `NODE_ENV=production`) and never add a
 `TIP_*_ACTIVATION_MS` line: a different value forks your node.
 
-**4. Start and wait for sync.**
+**4. Choose media storage, before the first start.** Uploaded images and videos
+are stored either on the node's disk or in an S3 bucket, set by
+`TIP_MEDIA_BACKEND` in `.env`:
+
+| backend | use it for | how |
+|---|---|---|
+| `s3` | **production (mainnet): use this** | encrypted, survives the host, and the classifier fetches files through short-lived links |
+| `fs` (as delivered) | a test or development node only | files go to `data/media` on the node's disk; nothing else to set |
+
+For S3, set it up now, so the node never stores production media on its disk:
+
+- *Node on EC2:* a bucket of your own with an instance role, per
+  [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md) path A (`trust_mode=ec2`); set
+  `TIP_MEDIA_BACKEND=s3`, `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`,
+  `TIP_MEDIA_S3_KMS_KEY_ID`. The instance role signs; no AWS keys in the env.
+- *Node anywhere else* (a Mac, bare metal, another cloud): The AI Lab gives you
+  an access key scoped to one bucket's `media/` folder, either for a bucket of
+  your own (path A, `trust_mode=keys`) or for one of ours (path C). Set the same
+  four values plus `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; the key is
+  rotated every 90 days.
+
+Because this is set before step 5, no restart is needed. Switching the backend
+later means editing `.env` and recreating the container
+(`sudo docker compose up -d --force-recreate tip-node`); media already stored on
+the old backend is not moved.
+
+**5. Start and wait for sync.**
 
 ```bash
 sudo docker compose build tip-node && sudo docker compose up -d
@@ -137,7 +163,7 @@ still starting.
 a snapshot (minutes). A dropped transfer restarts it; repeated restarts mean an
 unstable link, not a broken node.
 
-**5. Verify on the status page.** Open `http://localhost:4000/status` (later
+**6. Verify on the status page.** Open `http://localhost:4000/status` (later
 `https://<your-node-domain>/status`). It refreshes every 3 s, needs no login,
 and the banner reads **All good** only when all ten checks pass:
 
@@ -152,7 +178,7 @@ and the banner reads **All good** only when all ten checks pass:
 | Connected to a genesis node | `K of 3 genesis nodes in the peer list`, K ≥ 1 | your bootstrap peers are not the founding nodes |
 | Peers agree on state root | all peers `✓ same root` in the table below | one peer differing is their problem; all differing is yours |
 | Rounds advancing | `last advance` a few seconds ago | the federation is stalled or your node lost its peers |
-| Public endpoint announced | your `https://` URL | expected `none on chain` until step 6 |
+| Public endpoint announced | your `https://` URL | expected `none on chain` until step 7 |
 
 The peers table under the checks lists every connected node with its round and
 state root; the three founding nodes carry a `genesis` pill. The same facts by
@@ -204,7 +230,7 @@ Equal `state_merkle_root` at equal `round` means your whole state is identical
 to the federation's. Rounds advance every ~2 s; if the two rounds differ, run
 it again until they line up.
 
-**6. Announce your domain** once `https://<your-node-domain>/health` answers
+**7. Announce your domain** once `https://<your-node-domain>/health` answers
 (the federation stores the URL on chain, The AI Lab scrapes `/metrics` through
 it, people open `/status`):
 
@@ -237,22 +263,9 @@ curl -s https://node.theailab.org/v1/nodes | python3 -m json.tool | grep -A3 '"<
 
 `"api_endpoint"` must now show your URL instead of `null`.
 
-**7. Media storage before real traffic.** The delivered env writes media to the
-node disk (`TIP_MEDIA_BACKEND=fs`). Production uses S3 with SSE-KMS:
-
-- *Node on EC2:* a bucket of your own with an instance role, per
-  [`PROD_S3_SETUP.md`](./PROD_S3_SETUP.md) path A (`trust_mode=ec2`); set
-  `TIP_MEDIA_BACKEND=s3`, `TIP_MEDIA_S3_BUCKET`, `TIP_MEDIA_S3_REGION`,
-  `TIP_MEDIA_S3_KMS_KEY_ID`. The instance role signs; no AWS keys in the env.
-- *Node anywhere else* (a Mac, bare metal, another cloud): The AI Lab gives you
-  an access key scoped to one bucket's `media/` folder, either for a bucket of
-  your own (path A, `trust_mode=keys`) or for one of ours (path C). Set the same
-  four values plus `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; the key is
-  rotated every 90 days.
-
-Then `sudo docker compose up -d --force-recreate tip-node` (prints
-`✔ Container tip-node  Started`), upload one image against your node and confirm
-the object appears under `media/` in the bucket:
+**8. Check media storage.** With the node running on S3 (step 4), upload one
+image against your node and confirm the object appears under `media/` in the
+bucket:
 
 *Run on: any machine with AWS access to the bucket (your laptop or the node host), any folder.*
 
@@ -276,7 +289,7 @@ sudo docker compose logs --since 10m tip-node | grep -ci "s3.*error"
 
 Tell The AI Lab team the bucket host so the classifier may download from it.
 
-**8. Ship logs.** Create `infra/observability/agent/promtail.env` with
+**9. Ship logs.** Create `infra/observability/agent/promtail.env` with
 `LOKI_URL=logs.theailab.org` plus the `NODE_LABEL` and `LOKI_PASSWORD` The AI
 Lab gave you, then:
 
@@ -303,7 +316,7 @@ and the macOS mount adjustment: [`PARTNER_LOG_SHIPPING.md`](./PARTNER_LOG_SHIPPI
 exporter. The node itself serves its metrics at `/metrics` on its API port,
 protected by the `TIP_METRICS_TOKEN` already in your `.env`; The AI Lab's
 Prometheus scrapes `https://<your-node-domain>/metrics` with that token once it
-adds your node to its targets (after step 6). To check it yourself, on the node
+adds your node to its targets (after step 7). To check it yourself, on the node
 host in `~/tip-protocol`:
 
 ```bash
@@ -313,7 +326,7 @@ curl -s -H "Authorization: Bearer $(grep '^TIP_METRICS_TOKEN=' .env | cut -d= -f
 
 The first prints `401` (no token, refused: correct); the second prints the first
 `# HELP` / `# TYPE` lines of the metrics. The only monitoring agent you run is
-the log shipper from step 8.
+the log shipper from step 9.
 
 **No static IP or inbound 4001?** The node still works outbound-only: it dials
 the federation, nobody dials it, and the API reaches the internet through a
