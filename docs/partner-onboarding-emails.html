@@ -116,14 +116,15 @@
   <details class="card">
     <summary class="bar">
       <div>
-        <h2>0. Request the registration details</h2>
+        <h2>0. Request the organization details</h2>
         <p class="subj">Subject: TIP mainnet: details we need before registering <span class="ph" data-ph="PARTNER">{{PARTNER}}</span></p>
       </div>
       <button onclick="event.preventDefault();event.stopPropagation();copyEmail('email-request', this)">Copy email</button>
     </summary>
     <p class="warn">Send this first. Pick the country of registration above: item 2 changes to the one
        identifier that country's registry issues, and nothing else is accepted (a tax or VAT number would
-       mint a second permanent identity). For an identity-only registration, delete items 7 to 12.</p>
+       mint a second permanent identity). Every organization gets this one; if it will also run a node,
+       send email 0b with it.</p>
     <div class="body" id="email-request">
       <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
         <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
@@ -140,19 +141,59 @@
           <li>Country of registration</li>
           <li>Whether the business has ever operated under a previous registration number, for example
           before a conversion or re-incorporation. If so, that number and the date of the change</li>
-          <li>Production node's static public IP (a new host, not the test network box)</li>
-          <li>Domain the node will serve on, for example node.your-domain.com, and confirmation that you
-          control its DNS. It is published on chain, so it must be the address you intend to keep</li>
-          <li>Confirmation that inbound TCP 4000 and 4001 are open to the internet</li>
-          <li>The node host's internet link: 25 Mbit/s download and upload sustained minimum, 50
-          recommended, ideally a dedicated line rather than the shared office connection</li>
-          <li>Media storage: the node stores uploaded media in an S3 bucket you own. Confirm you have an
-          AWS account we can send the setup steps for, or tell us if you need another arrangement</li>
-          <li>Ops contact for node issues: name, email, and a phone or Signal number. The credentials
-          bundle comes by email and its password by phone or Signal, never both in the same channel</li>
+          <li>A contact for your organization's account: name, email, and a phone or Signal number. Your
+          organization's key file comes by email and its password by phone or Signal, never both in the
+          same channel</li>
         </ol>
 
-        <p>Once these arrive we'll register your organization and node, and send the credentials bundle.</p>
+        <p>Once these arrive we'll register your organization and send its key file.</p>
+
+        <p>Thanks,<br>The AI Lab Team</p>
+      </div>
+    </div>
+  </details>
+
+  <!-- ─────────────── NODE DETAILS REQUEST ─────────────── -->
+  <details class="card">
+    <summary class="bar">
+      <div>
+        <h2>0b. Request the node details (only if they run a node)</h2>
+        <p class="subj">Subject: TIP mainnet: node details for <span class="ph" data-ph="PARTNER">{{PARTNER}}</span></p>
+      </div>
+      <button onclick="event.preventDefault();event.stopPropagation();copyEmail('email-node', this)">Copy email</button>
+    </summary>
+    <p class="warn">Send together with email 0, and only to an organization that will run a node. The
+       answers pick the media storage setup (item 1) and whether the node runs normally or outbound-only
+       through a tunnel (items 3 and 5).</p>
+    <div class="body" id="email-node">
+      <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#202124">
+        <p>Hi <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> team,</p>
+
+        <p>To register the node <span class="ph" data-ph="PARTNER">{{PARTNER}}</span> will run on TIP
+        mainnet, we also need the following about the machine it will run on:</p>
+
+        <ol>
+          <li>Where the node will run: AWS EC2 (and which region), another cloud provider, or your own
+          hardware. This decides how media storage is set up</li>
+          <li>The host: a machine dedicated to this node (not a test network box), with at least 2 CPU
+          cores, 4 GB RAM and 20 GB free disk; 4 dedicated cores, 8 GB and 50 GB recommended</li>
+          <li>The host's static public IP. If it sits behind a router or NAT without one, tell us: it can
+          still run, with a different setup</li>
+          <li>The domain the node will serve on, for example node.your-domain.com, confirmation that you
+          control its DNS, and that you can serve HTTPS on it in front of port 4000 (a reverse proxy or a
+          tunnel). It is published on chain, so it must be the address you intend to keep</li>
+          <li>Confirmation that inbound TCP 4000 and 4001 are open to the internet (or that they cannot
+          be, see item 3)</li>
+          <li>The host's internet link: 25 Mbit/s download and upload sustained minimum, 50 recommended,
+          ideally a dedicated line rather than a shared office connection</li>
+          <li>Media storage: on AWS EC2, confirm you have an AWS account where you can create a bucket
+          with our setup steps; anywhere else, we provide the storage access and send it with your
+          credentials</li>
+          <li>An ops contact for node issues: name, email, and a phone or Signal number, reachable if the
+          node misbehaves</li>
+        </ol>
+
+        <p>Once these arrive we'll register the node and send the credentials bundle.</p>
 
         <p>Thanks,<br>The AI Lab Team</p>
       </div>

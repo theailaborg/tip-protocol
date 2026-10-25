@@ -11,17 +11,25 @@ built from the company's registry details rather than a person's government ID.
 
 ## 1. What to ask the organization
 
-### Ready-to-send request
+### Ready-to-send requests
 
-The same request is email 0 in `docs/partner-onboarding-emails.html`, where a country
-selector fills item 2 with the right identifier wording.
+Two emails, both also in `docs/partner-onboarding-emails.html` (email 0 and
+email 0b, where a country selector fills email 0's item 2 and the partner name
+fills itself):
 
-Copy, fill the brackets, send. Item 2 depends on the partner's country: take
-the identifier from the table in section 2 and use the matching wording, e.g.
+- **Email 0, organization registration:** every organization. Send it alone
+  when the organization will only publish content as itself.
+- **Email 0b, running a node:** only when the organization will also run a
+  node. Send it together with email 0, so neither waits on a second round trip.
+
+Email 0's item 2 depends on the country: take the identifier from the table in
+section 2 and use the matching wording, e.g.
 
 - India: `CIN (21-char) or LLPIN (7-char), and which one it is`
 - UK: `Companies House company number (8 chars, exactly as printed, keep leading zeros)`
 - US: `federal EIN (9 digits, not a state entity number)`
+
+**Email 0: organization registration**
 
 > Hi [partner] team, we're ready to register [ORGANIZATION NAME] on TIP mainnet.
 > Since mainnet records are permanent and cannot be corrected, please confirm the
@@ -36,28 +44,51 @@ the identifier from the table in section 2 and use the matching wording, e.g.
 > 6. Whether the business has ever operated under a previous registration
 >    number (before a conversion or re-incorporation); if so, that number and
 >    the date of the change
-> 7. Production node's static public IP (new host, not the testnet box)
-> 8. Domain the node will serve on (e.g. node.[partner].com) and confirmation
->    that you control its DNS. This gets published on-chain, so it must be the
->    address you intend to keep
-> 9. Confirmation that inbound TCP 4000 and 4001 are open to the internet
-> 10. The node host's internet link: 25 Mbit/s download and upload sustained
->     minimum, 50 recommended, ideally a dedicated line rather than the shared
->     office connection
-> 11. Media storage: the node stores uploaded media in an S3 bucket you own.
->     Confirm you have an AWS account we can send the setup steps for, or tell
->     us if you need another arrangement
-> 12. Ops contact for node issues: name, email, and a phone or Signal number
->     (the bundle comes by email, its password by phone or Signal)
+> 7. A contact for your organization's account: name, email, and a phone or
+>    Signal number (your organization's key file comes by email, its password
+>    by phone or Signal)
 >
-> Once these arrive we'll register your org and node, and send the credentials
-> bundle.
+> Once these arrive we'll register your organization and send its key file.
 
-Items 7-12 apply when the organization will also run a node; drop them for an
-identity-only registration. Item 3 feeds `--org-type`, item 6 is the continuity
-question section 2 requires in writing, and item 12 is what makes the password
-deliverable over a second channel (section 5). The rest of this document explains what each answer
-must look like before you act on it.
+Item 3 feeds `--org-type`, item 6 is the continuity question section 2 requires
+in writing, and item 7 is what makes the password deliverable over a second
+channel.
+
+**Email 0b: running a node**
+
+> Hi [partner] team, to register the node [ORGANIZATION NAME] will run on TIP
+> mainnet, we also need the following about the machine it will run on:
+>
+> 1. Where the node will run: AWS EC2 (and which region), another cloud
+>    provider, or your own hardware. This decides how media storage is set up
+> 2. The host: a machine dedicated to this node (not a test network box), with
+>    at least 2 CPU cores, 4 GB RAM and 20 GB free disk; 4 dedicated cores,
+>    8 GB and 50 GB recommended
+> 3. The host's static public IP. If it sits behind a router or NAT without one,
+>    tell us: it can still run, with a different setup
+> 4. The domain the node will serve on (for example node.your-domain.com),
+>    confirmation that you control its DNS, and that you can serve HTTPS on it in
+>    front of port 4000 (a reverse proxy or a tunnel). It is published on chain,
+>    so it must be the address you intend to keep
+> 5. Confirmation that inbound TCP 4000 and 4001 are open to the internet (or
+>    that they cannot be, see item 3)
+> 6. The host's internet link: 25 Mbit/s download and upload sustained minimum,
+>    50 recommended, ideally a dedicated line rather than a shared office
+>    connection
+> 7. Media storage: on AWS EC2, confirm you have an AWS account where you can
+>    create a bucket with our setup steps; anywhere else, we provide the storage
+>    access and send it with your credentials
+> 8. An ops contact for node issues: name, email, and a phone or Signal number,
+>    reachable if the node misbehaves
+>
+> Once these arrive we'll register the node and send the credentials bundle.
+
+What the answers decide: item 1 picks the S3 path (`PROD_S3_SETUP.md`: path A
+`ec2` on EC2, otherwise path A `keys` or path C); items 3 and 5 decide between a
+normal node and the outbound-only setup (`DEPLOYMENT.md`, "No static IP or
+inbound 4001?"); item 4 becomes `--api-endpoint` / `--public-url`; item 8 goes
+into the operations inventory. The rest of this document explains what each
+answer must look like before you act on it.
 
 ### The fields, and where they go
 
@@ -79,19 +110,9 @@ Worth telling them, since it pre-empts the obvious objection:
 
 ### Node details: when the organization will also run a node
 
-Ask in the same message, so registration is not blocked on a second round-trip:
-
-| ask | why |
-|---|---|
-| static public IP of the node host | the node's advertised address in its env; how peers dial it |
-| domain the node will serve on | published **on-chain** as their API endpoint; must be the address they intend to keep |
-| confirmation TCP 4000 and 4001 are open to the internet | 4000 API, 4001 p2p; without 4001 they never fully join |
-| internet link of the node host | 25 Mbit/s symmetric sustained minimum, 50 recommended (`NODE_REQUIREMENTS.md`); slower links install but cannot keep up with gossip |
-| ops contact name + email | who we call when their node misbehaves |
-
-The mainnet node needs its **own host**: a partner already running a testnet node
-cannot reuse that box (same ports, different genesis). Ask for the number and the
-identifier type together (a CIN reply to an LLPIN question is the classic mix-up).
+Send email 0b alongside email 0 (above). The mainnet node needs its **own
+host**: a partner already running a test network node cannot reuse that box
+(same ports, different genesis).
 
 ## 2. Which registration number, per country
 
