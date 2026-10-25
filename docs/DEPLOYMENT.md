@@ -43,8 +43,34 @@ your node on chain and sent you the bundle; the zip password arrives on a
 separate channel.
 
 Every command in this section runs **on your node host, in `~/tip-protocol`**
-(step 1 creates it), unless the step says otherwise. Copy the bundle to the node
-host first and unzip it there; `<bundle>` below is that unzipped folder.
+(step 1 creates it), unless the step says otherwise.
+
+**0. Open the bundle on the node host.** The bundle is one AES-256 encrypted zip,
+`<Org Name>-credentials.zip`; its password comes separately, by phone or Signal.
+Copy it to the node host, from the machine where you received it:
+
+```bash
+scp "<Org Name>-credentials.zip" <user>@<node-host>:~/
+```
+
+Then on the node host, in your home folder:
+
+```bash
+sudo apt-get install -y 7zip
+cd ~ && 7zz x "<Org Name>-credentials.zip"
+ls -l "<Org Name>"
+```
+
+`7zz` asks for the password. Expect four files: `NODE-KEY__tip-node-<id>.tip.json`,
+`ORG-IDENTITY__id-<REGION>-<id>.tip.json`, `README.md` and `node.env`. That
+folder, `~/<Org Name>`, is `<bundle>` below.
+
+Use 7-Zip, not `unzip`: `unzip` cannot open AES-encrypted zips, and instead of
+failing it prints `skipping: ... need PK compat. v5.1 (can do v4.5)` and leaves an
+empty folder. On Ubuntu 22.04 or older the package is `p7zip-full` and the
+command `7z x` instead of `7zz x`. To look inside on a laptop first: Keka or The
+Unarchiver on macOS (or `brew install sevenzip`, then `7zz x`), 7-Zip on Windows;
+the built-in extractors of both cannot open it.
 
 **1. Clone and place the credentials.**
 
