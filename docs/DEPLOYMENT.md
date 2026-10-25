@@ -27,7 +27,7 @@ different `genesis_hash`, zero peers and `join_state: syncing` forever.
 
 | | |
 |---|---|
-| Host | 4 cores, 8 GB RAM, 20 GB disk, Ubuntu or any Docker host; details in [`NODE_REQUIREMENTS.md`](./NODE_REQUIREMENTS.md) |
+| Host | minimum 2 vCPU, 4 GB RAM, 20 GB disk; recommended 4 dedicated vCPU, 8 GB RAM, 50 GB disk; Ubuntu or any Docker host. Details in [`NODE_REQUIREMENTS.md`](./NODE_REQUIREMENTS.md) |
 | Network | static public IP, inbound TCP **4000** (API) and **4001** (gossip), 25 Mbit/s sustained both ways |
 | Software | Docker Engine with Compose (Docker Engine without Desktop also needs the `docker-buildx` plugin) |
 | Domain | `https://<your-node-domain>` terminating TLS in front of `:4000` (reverse proxy or tunnel) |
