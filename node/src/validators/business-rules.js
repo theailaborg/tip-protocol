@@ -34,6 +34,7 @@
 const {
   TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
   TIP_ID_TYPES, ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
+  SHARED_HOST_DOMAINS, ORG_MEMBER_STATUS,
 } = require("../../../shared/constants");
 const { DISPUTE, APPEAL, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
@@ -130,7 +131,88 @@ function _githubRepoOwner(rawUrl) {
   return seg.length > 0 ? seg[0] : "";
 }
 
-function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls }) {
+// ─── Website protection ─────────────────────────────────────────────────────
+//
+// A live domain binding protects that site's pages: only the owner (or an
+// active member of an owning organization) may register or add a URL on it.
+// Activation lives in website-gate.js (shared with the domain schemas).
+// `atMs` is the frozen tx.timestamp at commit time and the same value the
+// API stamps on the tx.
+const { websiteProtectionOn } = require("./website-gate");
+const _SHARED_HOSTS = new Set(SHARED_HOST_DOMAINS);
+
+// "www.Example.com." and "example.com" are the same site.
+function siteKey(host) {
+  return String(host || "").toLowerCase().replace(/\.+$/, "").replace(/^www\./, "");
+}
+
+function _bindingLive(b, atMs) {
+  if (!b || b.binding_state !== "verified") return false;
+  return !Number.isFinite(b.expires_at) || atMs <= b.expires_at;
+}
+
+// The live binding for a site (either spelling), or null.
+function liveBindingFor(dag, host, atMs) {
+  if (typeof dag.getDomainBinding !== "function") return null;
+  const key = siteKey(host);
+  if (!key || _SHARED_HOSTS.has(key)) return null;
+  for (const d of [key, "www." + key]) {
+    const b = dag.getDomainBinding(d);
+    if (_bindingLive(b, atMs)) return b;
+  }
+  return null;
+}
+
+// The sites a TIP-ID protects right now (live bindings, www. and the apex
+// as one), oldest claim first. Plans count websites in this order, so a
+// downgrade keeps the oldest sites protected.
+function liveSitesOf(dag, tipId, atMs) {
+  if (typeof dag.getDomainBindingsByTipId !== "function") return [];
+  const seen = new Map();
+  for (const b of dag.getDomainBindingsByTipId(tipId)) {
+    if (!_bindingLive(b, atMs)) continue;
+    const k = siteKey(b.domain);
+    if (_SHARED_HOSTS.has(k)) continue;
+    if (!seen.has(k) || (b.claimed_at || 0) < seen.get(k)) seen.set(k, b.claimed_at || 0);
+  }
+  return [...seen.entries()].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1)).map(([k]) => k);
+}
+
+// Who owns the site this URL is on, while protection applies; else null.
+function siteOwnerOf(dag, url, atMs) {
+  if (!websiteProtectionOn(atMs) || typeof url !== "string") return null;
+  let host;
+  try { host = new URL(url).hostname; } catch { return null; }
+  const b = liveBindingFor(dag, host, atMs);
+  return b ? { domain: b.domain, tip_id: b.tip_id } : null;
+}
+
+// The owner itself, or an active member of the owning organization.
+function _mayPublishOn(dag, owner, signerTipId) {
+  if (owner.tip_id === signerTipId) return true;
+  if (typeof dag.getOrgMembersByOrg !== "function") return false;
+  return dag.getOrgMembersByOrg(owner.tip_id)
+    .some(m => m.member_tip_id === signerTipId && m.status === ORG_MEMBER_STATUS.ACTIVE);
+}
+
+function _protectedUrlFail(dag, urls, signerTipId, atMs, skip) {
+  if (!Array.isArray(urls)) return null;
+  for (const u of urls) {
+    if (typeof u !== "string" || !u || (skip && skip.has(u))) continue;
+    const owner = siteOwnerOf(dag, u, atMs);
+    if (owner && !_mayPublishOn(dag, owner, signerTipId)) {
+      return fail(
+        403,
+        `${owner.domain} is a protected website. Only its owner can register its pages: ${u}`,
+        "domain_protected",
+        { url: u, domain: owner.domain },
+      );
+    }
+  }
+  return null;
+}
+
+function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls, at_ms }) {
   if (!ORIGIN_CODES.includes(origin_code)) {
     return fail(400, `Invalid origin_code. Must be one of: ${ORIGIN_CODES.join(", ")}`);
   }
@@ -170,6 +252,10 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
       }
     }
   }
+  // Website protection: a page on someone else's verified site is theirs to
+  // register. After URL exclusivity, so a duplicate still reports as one.
+  const prot = _protectedUrlFail(dag, registered_urls, signer_tip_id, at_ms);
+  if (prot) return prot;
   // GitHub repo ownership gate , see _githubRepoOwner above. Runs after URL
   // exclusivity so a duplicate-URL 409 still wins over the ownership check.
   if (Array.isArray(registered_urls) && typeof dag.getPlatformLinksByTipId === "function") {
@@ -310,7 +396,7 @@ const UPDATE_URLS_ALLOWED_STATUSES = Object.freeze([
   CONTENT_STATUS.VERIFIED,
 ]);
 
-function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) {
+function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls, at_ms }) {
   // The update endpoint exists to SET published URLs, so an empty array is a
   // no-op with no legitimate use. Enforced here (not in the shared
   // validateRegisteredUrls, which stays 0-16 for REGISTER_CONTENT) so it
@@ -343,6 +429,10 @@ function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) 
       }
     }
   }
+  // Website protection, new URLs only: adding a page of someone else's
+  // protected site later is the same claim as registering it.
+  const prot = _protectedUrlFail(dag, registered_urls, author_tip_id, at_ms, owned);
+  if (prot) return prot;
   return ok();
 }
 
@@ -581,13 +671,25 @@ function canRevoke(dag, { tx_type, tip_id, issuing_vp_id }) {
 // tip_id AND it's currently verified. Re-binding the SAME tip_id is
 // allowed (re-verify path, post-revoke re-claim); a "revoked" row also
 // doesn't block a new claimant.
-function canBindDomain(dag, { tip_id, domain }) {
+function canBindDomain(dag, { tip_id, domain, at_ms }) {
   if (typeof dag.getDomainBinding !== "function") return ok();
-  const existing = dag.getDomainBinding(domain);
-  if (!existing) return ok();
-  if (existing.tip_id === tip_id) return ok();
-  if (existing.binding_state !== "verified") return ok();
-  return fail(409, `Domain "${domain}" is already bound to a different TIP-ID`);
+  const taken = (b) => fail(409, `Domain "${b.domain}" is already bound to a different TIP-ID`);
+  if (!websiteProtectionOn(at_ms)) {
+    const existing = dag.getDomainBinding(domain);
+    if (!existing) return ok();
+    if (existing.tip_id === tip_id) return ok();
+    if (existing.binding_state !== "verified") return ok();
+    return taken(existing);
+  }
+  // Website protection: "www.x" and "x" are one site, and a binding past
+  // its expiry (proof not renewed) no longer blocks whoever proves control
+  // now. A live binding to someone else still does.
+  const key = siteKey(domain);
+  for (const d of [key, "www." + key]) {
+    const b = dag.getDomainBinding(d);
+    if (b && b.tip_id !== tip_id && _bindingLive(b, at_ms)) return taken(b);
+  }
+  return ok();
 }
 
 // ─── Committee rotation (§4 + #34 — chain-of-trust) ─────────────────────────
@@ -711,6 +813,10 @@ module.exports = {
   canRegisterVp,
   canRegisterNode,
   canRegisterContent,
+  websiteProtectionOn,
+  siteKey,
+  siteOwnerOf,
+  liveSitesOf,
   canVerify,
   canUpdateOrigin,
   canUpdateRegisteredUrls,

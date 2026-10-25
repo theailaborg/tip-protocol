@@ -18,8 +18,9 @@
  *   method      string,  required (enum: http / dns / auto)
  *   tip_id      string,  required (tip://id/...)
  *
- * Org-only: the resolved identity MUST have tip_id_type === "organization".
- * Personal TIP-IDs cannot bind a domain — see my-notes/DOMAIN_VERIFICATION.md §2.
+ * Organizations bind domains; from the website-protection activation
+ * (validators/website-gate.js) personal TIP-IDs may too, so people can
+ * protect their own sites. See my-notes/DOMAIN_VERIFICATION.md §2.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -36,6 +37,7 @@ const {
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
 } = require("../../../shared/constants");
 const { nowMs, isValidMs } = require("../../../shared/time");
+const { mayBindDomain } = require("../validators/website-gate");
 
 // GH #51 — unified signature storage. Publisher signs the canonical
 // payload returned by buildSigningPayload.
@@ -100,7 +102,7 @@ function isValidDomain(raw) {
  * or non-organization. Throws structured errors so the route layer surfaces
  * them with the right HTTP status.
  */
-function resolveClaimant(tipId, dag) {
+function resolveClaimant(tipId, dag, atMs = nowMs()) {
   const identity = dag.getIdentity(tipId);
   if (!identity) {
     throw schemaError(412, `TIP-ID not registered on DAG: ${tipId}`, "signer_not_registered");
@@ -108,7 +110,7 @@ function resolveClaimant(tipId, dag) {
   if (typeof dag.isRevoked === "function" && dag.isRevoked(tipId)) {
     throw schemaError(403, `TIP-ID is revoked: ${tipId}`, "signer_revoked");
   }
-  if ((identity.tip_id_type || TIP_ID_TYPES.PERSONAL) !== TIP_ID_TYPES.ORGANIZATION) {
+  if (!mayBindDomain(identity.tip_id_type, atMs)) {
     throw schemaError(
       403,
       "Domain binding requires an organization TIP-ID",

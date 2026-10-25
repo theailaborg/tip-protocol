@@ -989,8 +989,13 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // same-batch races. (Deviation from #87's proposed snippet,
         // which keyed on (tip_id, domain) — see PR discussion.)
         if (!d.domain) return { valid: true };
+        // From website protection on, "www.x" and "x" are one site, so
+        // they share the key (same race, two spellings).
+        const sameSite = rules.websiteProtectionOn(tx.timestamp)
+          ? (a, b) => rules.siteKey(a) === rules.siteKey(b)
+          : (a, b) => a === b;
         const inBatch = validated.find(t =>
-          t.tx_type === TX_TYPES.BIND_DOMAIN && t.data?.domain === d.domain);
+          t.tx_type === TX_TYPES.BIND_DOMAIN && typeof t.data?.domain === "string" && sameSite(t.data.domain, d.domain));
         if (inBatch) return { valid: false, error: `duplicate BIND_DOMAIN in batch for domain ${d.domain}` };
         return { valid: true };
       }
@@ -1020,6 +1025,15 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
    * between submit and commit (e.g. content disputed or author revoked
    * mid-flight). Closes the silent-divergence gap multi-node #14.
    */
+  // Website protection decides on the later of tx.timestamp and the
+  // certificate's time: tx.timestamp is chosen by the submitting node and is
+  // not covered by the user's signature, so a backdated stamp must never
+  // slip a page past the activation or a live binding. certTimestamp is the
+  // same on every node, so the decision stays deterministic.
+  function _siteAt(txMs, certTimestamp) {
+    return Math.max(Number.isFinite(txMs) ? txMs : 0, Number.isFinite(certTimestamp) ? certTimestamp : 0);
+  }
+
   function _statefulCheck(tx, now, commitRound = 0, certTimestamp = 0) {
     const d = tx.data || {};
     switch (tx.tx_type) {
@@ -1042,7 +1056,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       case TX_TYPES.REGISTER_CONTENT: {
         const r = rules.canRegisterContent(dag, {
           signer_tip_id: d.signer_tip_id, ctid: d.ctid, origin_code: d.origin_code,
-          registered_urls: d.registered_urls,
+          registered_urls: d.registered_urls, at_ms: _siteAt(now, certTimestamp),
         });
         if (!r.valid) return { valid: false, error: r.error.message };
         // Authors: DAG presence, type and org roster, activation-gated.
@@ -1063,7 +1077,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       }
 
       case TX_TYPES.UPDATE_REGISTERED_URLS: {
-        const r = rules.canUpdateRegisteredUrls(dag, { ctid: d.ctid, author_tip_id: d.author_tip_id, registered_urls: d.registered_urls });
+        const r = rules.canUpdateRegisteredUrls(dag, { ctid: d.ctid, author_tip_id: d.author_tip_id, registered_urls: d.registered_urls, at_ms: _siteAt(now, certTimestamp) });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
@@ -1075,7 +1089,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       case TX_TYPES.BIND_DOMAIN: {
         // Closes the gossip-bypass gap: a peer-submitted tx that didn't go
         // through the API service's 409 still hits the same predicate here.
-        const r = rules.canBindDomain(dag, { tip_id: d.tip_id, domain: d.domain });
+        const r = rules.canBindDomain(dag, { tip_id: d.tip_id, domain: d.domain, at_ms: _siteAt(now, certTimestamp) });
         if (!r.valid) return { valid: false, error: r.error.message };
         // Schema-level state checks: node active, claimant is an active
         // organization, user's claim_signature attestation still verifies.
