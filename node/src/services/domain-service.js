@@ -24,8 +24,9 @@
 const {
   TX_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHODS,
   DOMAIN_DNS_TXT_PREFIX, DOMAIN_WELL_KNOWN_PATH,
-  SIGNED_BY_KIND,
+  SIGNED_BY_KIND, DOMAIN_VERIFICATION_METHOD_VALUES,
 } = require("../../../shared/constants");
+const DOMAIN_VERIFICATION_METHOD_VALUES_LIST = [...DOMAIN_VERIFICATION_METHOD_VALUES];
 const { nowMs } = require("../../../shared/time");
 const registerDomainSchema = require("../schemas/register-domain");
 const bindDomainSchema = require("../schemas/bind-domain");
@@ -34,6 +35,7 @@ const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
 const domainVerifier = require("../domain/verifier");
+const { websiteProtectionOn } = require("../validators/website-gate");
 const { log } = require("../logger");
 
 /**
@@ -44,7 +46,27 @@ function _txtInstruction(domain, tipId) {
   return `${DOMAIN_DNS_TXT_PREFIX}.${domain} TXT "tip-id=${tipId}"`;
 }
 
-function createDomainService({ dag, config, submitTx, verifier = domainVerifier }) {
+function createDomainService({ dag, config, submitTx, verifier = domainVerifier, websitePages = null }) {
+
+  // A plan protects a number of websites (Free 1). Asked before the node
+  // probes or attests, so a site past the plan is never verified or renewed.
+  // `keep` = this site is already one of the owner's (renewal): it may stay
+  // only while it is among the plan's oldest sites.
+  async function _checkSitePlace(tipId, domain, now, keep) {
+    if (!websitePages || !websitePages.enabled || !websiteProtectionOn(now)) return;
+    const key = rules.siteKey(domain);
+    const sites = rules.liveSitesOf(dag, tipId, now);
+    const ans = await websitePages.sitesLimit({ tip_id: tipId });
+    if (!ans) return;
+    const limit = Math.max(0, ans.sites_limit);
+    const ok = keep ? sites.indexOf(key) > -1 && sites.indexOf(key) < limit
+      : sites.includes(key) || sites.length < limit;
+    if (ok) return;
+    throw schemaError(402,
+      `Your plan protects ${limit} website${limit === 1 ? "" : "s"}. Choose a plan with more websites to protect ${domain}.`,
+      "website_site_limit",
+      { domain, sites_used: sites.length, sites_limit: limit, plan: ans.plan || null, upgrade_url: ans.upgrade_url || "/plans#websites" });
+  }
 
   // ── POST /v1/domain/register ─────────────────────────────────────────
   // Records the user-signed claim locally. Idempotent on (domain, tip_id):
@@ -69,7 +91,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
     // State precondition: domain already bound to a DIFFERENT tip_id.
     // Same predicate runs at consensus time in commit-handler._statefulCheck
     // so a direct tx-submission bypassing this API still gets dropped.
-    const r = rules.canBindDomain(dag, { tip_id: body.tip_id, domain });
+    const r = rules.canBindDomain(dag, { tip_id: body.tip_id, domain, at_ms: nowMs() });
     if (!r.valid) {
       throw schemaError(r.error.status, r.error.message, "domain_already_claimed");
     }
@@ -122,10 +144,12 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
     // State precondition: domain not bound to a DIFFERENT tip_id. Same
     // predicate runs at consensus time so a direct tx submission bypassing
     // this API still gets dropped.
-    const r = rules.canBindDomain(dag, { tip_id: claim.tip_id, domain });
+    const r = rules.canBindDomain(dag, { tip_id: claim.tip_id, domain, at_ms: nowMs() });
     if (!r.valid) {
       throw schemaError(r.error.status, r.error.message, "domain_already_claimed");
     }
+
+    await _checkSitePlace(claim.tip_id, domain, nowMs(), false);
 
     // Node hits DNS / HTTP. Failure short-circuits with a structured code
     // straight from verifier.js — surfaced verbatim to the API caller.
@@ -138,6 +162,13 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
       throw schemaError(422, msg, code);
     }
 
+    return _proposeBinding({ claim, domain, result });
+  }
+
+  // Node attestation + BIND_DOMAIN submission, shared by verify (a fresh
+  // claim) and renew (the owner's original claim, re-proved today).
+  // `claim` = { tip_id, claimed_at, method (what the user signed), signature }.
+  function _proposeBinding({ claim, domain, result }) {
     if (!config.nodePrivateKey) {
       // Node misconfiguration — without a private key we can't attest.
       throw schemaError(500, "Node missing private key — cannot sign binding attestation", "node_unconfigured");
@@ -280,10 +311,94 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
     };
   }
 
+  // ── POST /v1/domain/renew ────────────────────────────────────────────
+  // A binding lapses DOMAIN_HEALTHY_EXPIRY_MS after it was verified, and a
+  // lapsed binding no longer protects the site or blocks a new owner. Renew
+  // re-proves control TODAY and re-commits the owner's ORIGINAL signed claim
+  // with a fresh verified_at, so an owner whose DNS record or well-known file
+  // is still in place never has to sign again. Anyone may ask (it can only
+  // confirm what the domain itself says); it does nothing before the renewal
+  // window and at most once an hour per domain.
+  const RENEW_WINDOW_MS = 10 * 24 * 60 * 60 * 1000;
+  // Short, so a renewal tried during a brief outage cannot block retries for long.
+  const RENEW_COOLDOWN_MS = 10 * 60 * 1000;
+  const _renewTried = new Map();   // domain -> last attempt (bounded)
+
+  async function renew(body) {
+    const domain = registerDomainSchema.normalizeDomain(body && body.domain);
+    const binding = dag.getDomainBinding(domain);
+    if (!binding || binding.binding_state !== DOMAIN_BINDING_STATUS.VERIFIED) {
+      throw schemaError(404, `No binding to renew for ${domain}`, "domain_not_found");
+    }
+    const now = nowMs();
+    if (Number.isFinite(binding.expires_at) && binding.expires_at - now > RENEW_WINDOW_MS) {
+      return { domain, tip_id: binding.tip_id, renewed: false, reason: "not_due", expires_at: binding.expires_at };
+    }
+    const last = _renewTried.get(domain);
+    if (last && now - last < RENEW_COOLDOWN_MS) {
+      throw schemaError(429, `Renewal for ${domain} was tried in the last 10 minutes`, "renew_too_soon");
+    }
+    if (_renewTried.size >= 10000) _renewTried.delete(_renewTried.keys().next().value);
+    _renewTried.set(domain, now);
+
+    const identity = registerDomainSchema.resolveClaimant(binding.tip_id, dag, now);
+    // The binding keeps the claim signature but not which method the owner
+    // signed; the signature itself says which one it covers.
+    const claimedMethod = DOMAIN_VERIFICATION_METHOD_VALUES_LIST.find(m =>
+      typeof binding.claim_signature === "string" && registerDomainSchema.verifySignature(
+        registerDomainSchema.buildSigningPayload({
+          claimed_at: binding.claimed_at, domain, method: m, tip_id: binding.tip_id,
+        }),
+        binding.claim_signature, identity.public_key,
+      ));
+    if (!claimedMethod) {
+      throw schemaError(409, "The owner's key changed since this site was added. Add the site again to renew it.", "renewal_needs_new_claim");
+    }
+    const r = rules.canBindDomain(dag, { tip_id: binding.tip_id, domain, at_ms: now });
+    if (!r.valid) throw schemaError(r.error.status, r.error.message, "domain_already_claimed");
+
+    await _checkSitePlace(binding.tip_id, domain, now, true);
+
+    const result = await verifier.verify(DOMAIN_VERIFICATION_METHODS.AUTO, domain, binding.tip_id, {
+      expectedPublicKey: identity.public_key,
+    });
+    if (!result.verified) {
+      const code = (result.error && result.error.code) || "verification_failed";
+      const msg = (result.error && result.error.message) || "Node could not independently verify the binding";
+      throw schemaError(422, msg, code);
+    }
+    const out = _proposeBinding({
+      claim: { tip_id: binding.tip_id, claimed_at: binding.claimed_at, method: claimedMethod, signature: binding.claim_signature },
+      domain, result,
+    });
+    log.info(`Domain binding renewed: ${domain} -> ${binding.tip_id}`);
+    return { ...out, renewed: true };
+  }
+
+  // ── GET /v1/domains?tip_id= ──────────────────────────────────────────
+  // Every site a TIP-ID has bound, in the same public shape as GET
+  // /v1/domain/:domain. Bindings are public DAG state already.
+  function listByTip(tipId) {
+    if (typeof tipId !== "string" || !/^tip:\/\/id\/[A-Z]{2}-[0-9a-f]{16}$/.test(tipId)) {
+      throw schemaError(400, "tip_id must look like tip://id/US-0123456789abcdef", "tip_id_invalid");
+    }
+    const rows = typeof dag.getDomainBindingsByTipId === "function" ? dag.getDomainBindingsByTipId(tipId) : [];
+    return {
+      tip_id: tipId,
+      domains: rows
+        .map(b => get(b.domain))
+        .filter(b => b.tip_id === tipId)
+        .map(({ binding_signature, ...rest }) => rest)   // eslint-disable-line no-unused-vars
+        .sort((a, b) => String(a.domain).localeCompare(String(b.domain))),
+    };
+  }
+
   return {
     register,
     verify,
+    renew,
     get,
+    listByTip,
   };
 }
 

@@ -172,6 +172,14 @@ function loadConfig() {
       timeoutMs: parseInt(process.env.TIP_MEDIA_QUOTA_TIMEOUT_MS || "", 10) || MEDIA_QUOTA_CLIENT.TIMEOUT_MS,
     },
 
+    // ── Website pages (optional billing service) ──────────────────────────────
+    // Same channel as mediaQuota; see services/website-pages-client.js.
+    websitePages: {
+      url: process.env.TIP_WEBSITE_PAGES_URL || process.env.TIP_MEDIA_QUOTA_URL || "",
+      key: process.env.TIP_WEBSITE_PAGES_KEY || process.env.TIP_MEDIA_QUOTA_KEY || "",
+      timeoutMs: parseInt(process.env.TIP_WEBSITE_PAGES_TIMEOUT_MS || "", 10) || 3000,
+    },
+
     // ── Team seats (optional billing service) ─────────────────────────────────
     // Same channel as mediaQuota; see services/seat-allowance-client.js.
     seats: {

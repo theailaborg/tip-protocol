@@ -56,6 +56,7 @@ const {
 } = require("../../../shared/constants");
 const { isValidMs } = require("../../../shared/time");
 const registerDomainSchema = require("./register-domain");
+const { mayBindDomain } = require("../validators/website-gate");
 
 const TX_TYPE = TX_TYPES.BIND_DOMAIN;
 
@@ -176,7 +177,9 @@ function verifyTx(tx, dag) {
   if (typeof dag.isRevoked === "function" && dag.isRevoked(d.tip_id)) {
     return { ok: false, status: 403, error: `Claimant TIP-ID is revoked: ${d.tip_id}`, code: "signer_revoked" };
   }
-  if ((identity.tip_id_type || TIP_ID_TYPES.PERSONAL) !== TIP_ID_TYPES.ORGANIZATION) {
+  // Organizations always; people too from the website-protection
+  // activation, decided on the frozen tx.timestamp.
+  if (!mayBindDomain(identity.tip_id_type, tx.timestamp)) {
     return { ok: false, status: 403, error: "Claimant TIP-ID is not an organization", code: "tip_id_not_authorised" };
   }
 
