@@ -16,6 +16,7 @@ const { findSimilarCtids, matchFingerprintItems } = require("../perceptual/simil
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
+const { createUrlTakeovers } = require("./url-takeovers");
 const { withTxId, buildPrescanDescriptor } = require("./helpers");
 const contentType = require("./content-type");
 // Imported via the module reference (not destructured) so tests can
@@ -24,7 +25,45 @@ const helpers = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createContentService({ dag, scoring, config, submitTx, prescanJobs, mediaService }) {
+function createContentService({ dag, scoring, config, submitTx, prescanJobs, mediaService, websitePages = null }) {
+  const urlTakeovers = createUrlTakeovers({ dag });
+
+  // Pages of the signer's own protected website count against the site
+  // owner's plan. One reservation per site; a refusal names the limit and
+  // where to raise it. Unreachable billing lets the page through (see
+  // services/website-pages-client.js).
+  async function _reserveWebsitePages(urls, signerTipId, atMs, ctid) {
+    if (!websitePages || !websitePages.enabled || !Array.isArray(urls) || !urls.length) return;
+    const bySite = new Map();
+    for (const u of urls) {
+      const owner = rules.siteOwnerOf(dag, u, atMs);
+      if (!owner) continue;
+      const k = owner.domain;
+      if (!bySite.has(k)) bySite.set(k, { owner, urls: [] });
+      bySite.get(k).urls.push(u);
+    }
+    for (const { owner, urls: siteUrls } of bySite.values()) {
+      const answer = await websitePages.reserve({
+        owner_tip_id: owner.tip_id, signer_tip_id: signerTipId, domain: owner.domain, urls: siteUrls, ctid,
+      });
+      if (answer && answer.allowed === false) {
+        const siteFull = answer.reason === "site_limit";
+        throw schemaError(
+          429,
+          siteFull
+            ? `${owner.domain} is beyond the number of websites on this plan`
+            : `${owner.domain} has used this month's new pages on this plan`,
+          siteFull ? "website_site_limit" : "website_page_limit",
+          {
+            domain: owner.domain, used: answer.used ?? null, limit: answer.limit ?? null,
+            sites_used: answer.sites_used ?? null, sites_limit: answer.sites_limit ?? null,
+            resets_at: answer.resets_at ?? null, upgrade_url: answer.upgrade_url || "/plans#websites",
+          },
+        );
+      }
+    }
+  }
+
 
   // Enqueue the prescan job for the worker. The job payload carries
   // everything the worker needs (text, origin_code, resolved content_type,
@@ -321,9 +360,16 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const registeredAt = nowMs();
     const ctid = generateCTID(origin_code, contentHashShort, signer_tip_id);
 
+    // Owner takeover: addresses this registration wins back from other
+    // records (protected site, owner or team only). Declared on the tx and
+    // re-checked against committed state at commit.
+    const plan = rules.urlTakeoverPlan(dag, {
+      signer_tip_id, ctid, urls: canonicalPayload.registered_urls, at_ms: registeredAt,
+    });
+    const urlTakeovers = plan.takeovers && plan.takeovers.length ? plan.takeovers : undefined;
     const { valid, error } = rules.canRegisterContent(dag, {
       signer_tip_id, ctid, origin_code,
-      registered_urls: canonicalPayload.registered_urls,
+      registered_urls: canonicalPayload.registered_urls, at_ms: registeredAt, url_takeovers: urlTakeovers,
     });
     if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
 
@@ -345,6 +391,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         "url_already_registered",
       );
     }
+
+    // Last gate before the tx exists: every check that can refuse for free
+    // has passed, so a counted page is one that is about to register.
+    await _reserveWebsitePages(canonicalPayload.registered_urls, signer_tip_id, registeredAt, ctid);
 
     const assignedNodeId = config.nodeRegisteredId || config.nodeId || null;
 
@@ -402,6 +452,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         ...(canonicalPayload.parent_url
           ? { parent_url: canonicalPayload.parent_url }
           : {}),
+        // ── Owner takeover, same strip rule: present only when this
+        //    registration wins addresses back (not part of the signature;
+        //    commit recomputes it from committed state and must agree).
+        ...(urlTakeovers ? { url_takeovers: urlTakeovers } : {}),
       },
       // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
       signature,
@@ -618,6 +672,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       similar,
     };
     if (opts.includeFingerprints) out.fingerprints = await _projectFingerprints(ctid, opts);
+    // Addresses this record gave up to a protected site's owner (strip rule:
+    // the key is present only when there is one).
+    // Advisory: a failure here never breaks the record itself.
+    let released = [];
+    try { released = urlTakeovers.releasedBy(ctid); } catch (e) { log.warn?.(`released_urls for ${ctid}: ${e.message}`); }
+    if (released.length) out.released_urls = released;
     return out;
   }
 
@@ -872,7 +932,14 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     validate(body, { author_tip_id: { required: true }, registered_urls: { required: true }, signature: { required: true } });
     contentRegisterSchema.validateRegisteredUrls(body.registered_urls);
 
-    const { valid, error } = rules.canUpdateRegisteredUrls(dag, { ctid, author_tip_id: body.author_tip_id, registered_urls: body.registered_urls });
+    const updatedAt = nowMs();
+    const before = dag.getContent(ctid);
+    const plan = before ? rules.urlTakeoverPlan(dag, {
+      signer_tip_id: body.author_tip_id, ctid, urls: body.registered_urls, at_ms: updatedAt,
+      skip: new Set(Array.isArray(before.registered_urls) ? before.registered_urls : []),
+    }) : { takeovers: [] };
+    const urlTakeovers = plan.takeovers && plan.takeovers.length ? plan.takeovers : undefined;
+    const { valid, error } = rules.canUpdateRegisteredUrls(dag, { ctid, author_tip_id: body.author_tip_id, registered_urls: body.registered_urls, at_ms: updatedAt, url_takeovers: urlTakeovers });
     if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
     const author = dag.getIdentity(body.author_tip_id);
 
@@ -884,15 +951,28 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       throw schemaError(403, "Author signature verification failed", "signature_invalid");
     }
 
-    const updateTx = withTxId({
-      tx_type: TX_TYPES.UPDATE_REGISTERED_URLS, timestamp: nowMs(),
-      data: { ctid, registered_urls: body.registered_urls, author_tip_id: body.author_tip_id },
-      signature: body.signature,
-    }, dag);
-    submitTx(updateTx);
+    // Only URLs new to this record count as new pages. Stays synchronous
+    // (and throws synchronously) unless a protected site's page needs
+    // counting; the route awaits either.
+    const had = new Set(Array.isArray(dag.getContent(ctid)?.registered_urls) ? dag.getContent(ctid).registered_urls : []);
+    const fresh = body.registered_urls.filter(u => !had.has(u));
+    const finish = () => {
+      const updateTx = withTxId({
+        tx_type: TX_TYPES.UPDATE_REGISTERED_URLS, timestamp: updatedAt,
+        data: { ctid, registered_urls: body.registered_urls, author_tip_id: body.author_tip_id,
+          ...(urlTakeovers ? { url_takeovers: urlTakeovers } : {}) },
+        signature: body.signature,
+      }, dag);
+      submitTx(updateTx);
 
-    log.info(`Registered URLs update proposed: ${ctid} (${body.registered_urls.length} urls, by ${body.author_tip_id})`);
-    return { success: true, ctid, registered_urls: body.registered_urls, tx_id: updateTx.tx_id, confirmation: "proposed" };
+      log.info(`Registered URLs update proposed: ${ctid} (${body.registered_urls.length} urls, by ${body.author_tip_id})`);
+      return { success: true, ctid, registered_urls: body.registered_urls, tx_id: updateTx.tx_id, confirmation: "proposed" };
+    };
+    const needsCount = websitePages && websitePages.enabled
+      && fresh.some(u => rules.siteOwnerOf(dag, u, updatedAt));
+    return needsCount
+      ? _reserveWebsitePages(fresh, body.author_tip_id, updatedAt, ctid).then(finish)
+      : finish();
   }
 
   function retract(ctid, body) {

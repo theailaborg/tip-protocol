@@ -41,6 +41,8 @@
 "use strict";
 
 const dns = require("dns").promises;
+const dnsCb = require("dns");
+const net = require("net");
 const https = require("https");
 const http = require("http");
 const {
@@ -96,6 +98,50 @@ function _fail(method, code, message, evidence = _evidence()) {
   };
 }
 
+// A claimed domain is attacker-chosen, so its name must never steer the
+// node's fetch at its own network: loopback, private, link-local (cloud
+// metadata), CGNAT, multicast and reserved ranges are refused. The check runs
+// inside the connection's own DNS lookup, so a name cannot pass it and then
+// re-resolve elsewhere.
+function isNonPublicAddress(addr, family) {
+  const a = String(addr || "").toLowerCase();
+  if (family === 6 || a.includes(":")) {
+    if (a === "::" || a === "::1") return true;
+    const v4 = a.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (v4) return isNonPublicAddress(v4[1], 4);
+    return /^(fc|fd|fe8|fe9|fea|feb|ff)/.test(a) || a.startsWith("64:ff9b:") || a.startsWith("2001:db8");
+  }
+  const p = a.split(".").map(Number);
+  if (p.length !== 4 || p.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  const [x, y] = p;
+  return x === 0 || x === 10 || x === 127 || x >= 224
+    || (x === 100 && y >= 64 && y <= 127)
+    || (x === 169 && y === 254)
+    || (x === 172 && y >= 16 && y <= 31)
+    || (x === 192 && y === 168)
+    || (x === 192 && y === 0)
+    || (x === 198 && (y === 18 || y === 19));
+}
+
+// Node's connect path (autoSelectFamily, the default since Node 20) asks for
+// every address ({ all: true }) and expects an array back; older paths ask for
+// one. Every address must be public either way, and the answer keeps the
+// shape that was asked for.
+function _publicOnlyLookup(hostname, options, callback) {
+  const opts = typeof options === "object" && options ? options : { family: options };
+  dnsCb.lookup(hostname, { ...opts, all: true }, (err, list) => {
+    if (err) return callback(err);
+    const addrs = Array.isArray(list) ? list : [];
+    if (!addrs.length || addrs.some(a => isNonPublicAddress(a.address, a.family))) {
+      const e = new Error(`${hostname} resolves to a non-public address`);
+      e.code = "ENONPUBLIC";
+      return callback(e);
+    }
+    if (opts.all) return callback(null, addrs);
+    callback(null, addrs[0].address, addrs[0].family);
+  });
+}
+
 /**
  * Fetch a small JSON document over HTTPS (or HTTP, if `allowInsecure`).
  * Returns { status, headers, body } on success. Throws structured Error
@@ -120,7 +166,16 @@ function _fetchJson(urlString, { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, maxBytes 
       return reject(e);
     }
 
-    const req = client.get(url, { timeout: timeoutMs, headers: { "user-agent": "tip-node-domain-verifier/1.0" } }, (res) => {
+    // Local dev (allowInsecure) fetches loopback on purpose; production never.
+    // Node skips the lookup for an IP literal, so those are checked here.
+    const lookup = allowInsecure ? undefined : _publicOnlyLookup;
+    const literal = url.hostname.replace(/^\[|\]$/g, "");
+    if (!allowInsecure && net.isIP(literal) && isNonPublicAddress(literal, net.isIP(literal))) {
+      const e = new Error(`refusing well-known fetch to a non-public address: ${literal}`);
+      e.code = "well_known_unreachable";
+      return reject(e);
+    }
+    const req = client.get(url, { timeout: timeoutMs, lookup, headers: { "user-agent": "tip-node-domain-verifier/1.0" } }, (res) => {
       if (res.statusCode < 200 || res.statusCode >= 300) {
         res.resume();
         const e = new Error(`HTTP ${res.statusCode}`);
@@ -325,6 +380,9 @@ async function verify(method, domain, tipId, deps = {}) {
 }
 
 module.exports = {
+  isNonPublicAddress,
+  _publicOnlyLookup,
+  _fetchJson,
   verify,
   verifyHttp,
   verifyDns,

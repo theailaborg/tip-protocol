@@ -42,6 +42,7 @@ const { createMediaStorage } = require("./services/media-storage");
 const { createChunkedUploadService } = require("./services/chunked-upload-service");
 const { createMediaQuotaClient } = require("./services/media-quota-client");
 const { createSeatAllowanceClient } = require("./services/seat-allowance-client");
+const { createWebsitePagesClient } = require("./services/website-pages-client");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -99,8 +100,12 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // url + key) points at a billing service.
   const seatAllowance = createSeatAllowanceClient({ ...config.seats, log: getLogger("tip.org.seats") });
 
+  // Pages per protected website: unlimited unless config.websitePages (or
+  // the media quota url + key) points at a billing service.
+  const websitePages = createWebsitePagesClient({ ...(config.websitePages || {}), log: getLogger("tip.website.pages") });
+
   const ctx = {
-    dag, scoring, config, submitTx, submitBatch, seatAllowance,
+    dag, scoring, config, submitTx, submitBatch, seatAllowance, websitePages,
     consensus: consensusRef, network: networkRef, prescanJobs, mediaService,
   };
 

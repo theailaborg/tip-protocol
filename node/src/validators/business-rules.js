@@ -34,6 +34,7 @@
 const {
   TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
   TIP_ID_TYPES, ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
+  SHARED_HOST_DOMAINS, ORG_MEMBER_STATUS,
 } = require("../../../shared/constants");
 const { DISPUTE, APPEAL, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
@@ -130,7 +131,151 @@ function _githubRepoOwner(rawUrl) {
   return seg.length > 0 ? seg[0] : "";
 }
 
-function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls }) {
+// ─── Website protection ─────────────────────────────────────────────────────
+//
+// A live domain binding protects that site's pages: only the owner (or an
+// active member of an owning organization) may register or add a URL on it.
+// Activation lives in website-gate.js (shared with the domain schemas).
+// `atMs` is the frozen tx.timestamp at commit time and the same value the
+// API stamps on the tx.
+const { websiteProtectionOn, takeoverOn } = require("./website-gate");
+const _SHARED_HOSTS = new Set(SHARED_HOST_DOMAINS);
+
+// "www.Example.com." and "example.com" are the same site.
+function siteKey(host) {
+  return String(host || "").toLowerCase().replace(/\.+$/, "").replace(/^www\./, "");
+}
+
+function _bindingLive(b, atMs) {
+  if (!b || b.binding_state !== "verified") return false;
+  return !Number.isFinite(b.expires_at) || atMs <= b.expires_at;
+}
+
+// The live binding for a site (either spelling), or null.
+function liveBindingFor(dag, host, atMs) {
+  if (typeof dag.getDomainBinding !== "function") return null;
+  const key = siteKey(host);
+  if (!key || _SHARED_HOSTS.has(key)) return null;
+  for (const d of [key, "www." + key]) {
+    const b = dag.getDomainBinding(d);
+    if (_bindingLive(b, atMs)) return b;
+  }
+  return null;
+}
+
+// The sites a TIP-ID protects right now (live bindings, www. and the apex
+// as one), oldest claim first. Plans count websites in this order, so a
+// downgrade keeps the oldest sites protected.
+function liveSitesOf(dag, tipId, atMs) {
+  if (typeof dag.getDomainBindingsByTipId !== "function") return [];
+  const seen = new Map();
+  for (const b of dag.getDomainBindingsByTipId(tipId)) {
+    if (!_bindingLive(b, atMs)) continue;
+    const k = siteKey(b.domain);
+    if (_SHARED_HOSTS.has(k)) continue;
+    if (!seen.has(k) || (b.claimed_at || 0) < seen.get(k)) seen.set(k, b.claimed_at || 0);
+  }
+  return [...seen.entries()].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1)).map(([k]) => k);
+}
+
+// Who owns the site this URL is on, while protection applies; else null.
+function siteOwnerOf(dag, url, atMs) {
+  if (!websiteProtectionOn(atMs) || typeof url !== "string") return null;
+  let host;
+  try { host = new URL(url).hostname; } catch { return null; }
+  const b = liveBindingFor(dag, host, atMs);
+  return b ? { domain: b.domain, tip_id: b.tip_id } : null;
+}
+
+// The owner itself, or an active member of the owning organization.
+function _mayPublishOn(dag, owner, signerTipId) {
+  if (owner.tip_id === signerTipId) return true;
+  if (typeof dag.getOrgMembersByOrg !== "function") return false;
+  return dag.getOrgMembersByOrg(owner.tip_id)
+    .some(m => m.member_tip_id === signerTipId && m.status === ORG_MEMBER_STATUS.ACTIVE);
+}
+
+function _protectedUrlFail(dag, urls, signerTipId, atMs, skip) {
+  if (!Array.isArray(urls)) return null;
+  for (const u of urls) {
+    if (typeof u !== "string" || !u || (skip && skip.has(u))) continue;
+    const owner = siteOwnerOf(dag, u, atMs);
+    if (owner && !_mayPublishOn(dag, owner, signerTipId)) {
+      return fail(
+        403,
+        `${owner.domain} is a protected website. Only its owner can register its pages: ${u}`,
+        "domain_protected",
+        { url: u, domain: owner.domain },
+      );
+    }
+  }
+  return null;
+}
+
+// ─── Owner takeover ──────────────────────────────────────────────────────────
+//
+// URL exclusivity is first-wins, except that from the takeover activation the
+// owner of a live-protected site (or an active member of an owning org) wins a
+// page of that site back from a record by anyone else. The plan is computed
+// from committed state only (a pending claim is never taken over) and must
+// match the tx's declared `url_takeovers` exactly, so a submitting node can
+// neither invent a takeover nor leave one out.
+//
+// Returns { fail } when a url is taken and cannot be won back, else
+// { takeovers: [{ url, ctid, tip_id }] } in the tx's url order.
+function _claimantOf(c) { return c.signer_tip_id || c.author_tip_id; }
+
+function urlTakeoverPlan(dag, { signer_tip_id, ctid, urls, at_ms, skip }) {
+  const takeovers = [];
+  if (!Array.isArray(urls) || typeof dag.listContent !== "function") return { takeovers };
+  for (const u of urls) {
+    if (typeof u !== "string" || !u || (skip && skip.has(u))) continue;
+    const live = dag.listContent({ url: u, limit: 100 })
+      .filter(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
+    if (!live.length) continue;
+    const owner = takeoverOn(at_ms) ? siteOwnerOf(dag, u, at_ms) : null;
+    for (const c of live) {
+      const holder = _claimantOf(c);
+      const winnable = owner && _mayPublishOn(dag, owner, signer_tip_id) && !_mayPublishOn(dag, owner, holder);
+      if (!winnable) {
+        return {
+          fail: fail(
+            409,
+            `URL already registered to existing content (CTID: ${c.ctid}): ${u}`,
+            "url_already_registered",
+            { url: u, conflict_ctid: c.ctid },
+          ),
+        };
+      }
+      takeovers.push({ url: u, ctid: c.ctid, tip_id: holder });
+    }
+  }
+  return { takeovers };
+}
+
+// Order-insensitive: stores may list claimants in different orders, and the
+// decision must not depend on it (identical on every node).
+function _sameTakeovers(a, b) {
+  const norm = (x) => JSON.stringify((Array.isArray(x) ? x : [])
+    .map(t => [String(t && t.url), String(t && t.ctid), String(t && t.tip_id)])
+    .sort((p, q) => (p[0] + "\n" + p[1] < q[0] + "\n" + q[1] ? -1 : p[0] + "\n" + p[1] > q[0] + "\n" + q[1] ? 1 : 0)));
+  return norm(a) === norm(b);
+}
+
+function _checkTakeovers(plan, declared, at_ms) {
+  // Before the activation the field means nothing: it is not signed, old
+  // nodes ignore it, and so must this one, or a peer attaching a bogus list
+  // to an ordinary registration would split old and new nodes.
+  if (!takeoverOn(at_ms)) declared = undefined;
+  if (plan.fail) return plan.fail;
+  if (declared === undefined && !plan.takeovers.length) return null;
+  if (!_sameTakeovers(plan.takeovers, declared)) {
+    return fail(409, "url_takeovers does not match the addresses this registration takes over", "url_takeovers_mismatch");
+  }
+  return null;
+}
+
+function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls, at_ms, url_takeovers }) {
   if (!ORIGIN_CODES.includes(origin_code)) {
     return fail(400, `Invalid origin_code. Must be one of: ${ORIGIN_CODES.join(", ")}`);
   }
@@ -150,26 +295,15 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
   // across all three stores, which commit-time enforcement requires.
   // The registration's URLs are part of the signed payload, so the value
   // checked here is exactly what the signer attested to.
-  if (Array.isArray(registered_urls) && typeof dag.listContent === "function") {
-    for (const u of registered_urls) {
-      if (typeof u !== "string" || !u) continue;
-      // Retraction releases the URL: only a LIVE claimant blocks. Scan all
-      // matches (a URL accumulates one row per retract-and-rebind cycle, so
-      // the live one is not necessarily first); at most one live claimant
-      // can exist at a time, so under the limit the "any live" predicate is
-      // order-independent and store-identical.
-      const claimants = dag.listContent({ url: u, limit: 100 });
-      const live = claimants.find(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
-      if (live) {
-        return fail(
-          409,
-          `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
-          "url_already_registered",
-          { url: u, conflict_ctid: live.ctid },
-        );
-      }
-    }
-  }
+  // Owner takeover (see urlTakeoverPlan) is the only exception to
+  // first-wins, and only for the protected site's own owner or team.
+  const excl = _checkTakeovers(
+    urlTakeoverPlan(dag, { signer_tip_id, ctid, urls: registered_urls, at_ms }), url_takeovers, at_ms);
+  if (excl) return excl;
+  // Website protection: a page on someone else's verified site is theirs to
+  // register. After URL exclusivity, so a duplicate still reports as one.
+  const prot = _protectedUrlFail(dag, registered_urls, signer_tip_id, at_ms);
+  if (prot) return prot;
   // GitHub repo ownership gate , see _githubRepoOwner above. Runs after URL
   // exclusivity so a duplicate-URL 409 still wins over the ownership check.
   if (Array.isArray(registered_urls) && typeof dag.getPlatformLinksByTipId === "function") {
@@ -310,7 +444,7 @@ const UPDATE_URLS_ALLOWED_STATUSES = Object.freeze([
   CONTENT_STATUS.VERIFIED,
 ]);
 
-function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) {
+function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls, at_ms, url_takeovers }) {
   // The update endpoint exists to SET published URLs, so an empty array is a
   // no-op with no legitimate use. Enforced here (not in the shared
   // validateRegisteredUrls, which stays 0-16 for REGISTER_CONTENT) so it
@@ -328,21 +462,13 @@ function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls }) 
   // Only urls NEW to this ctid are checked, so re-declaring your own is valid;
   // a retracted claimant releases its url.
   const owned = new Set(Array.isArray(rec.registered_urls) ? rec.registered_urls : []);
-  if (typeof dag.listContent === "function") {
-    for (const u of registered_urls) {
-      if (typeof u !== "string" || !u || owned.has(u)) continue;
-      const claimants = dag.listContent({ url: u, limit: 100 });
-      const live = claimants.find(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
-      if (live) {
-        return fail(
-          409,
-          `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
-          "url_already_registered",
-          { url: u, conflict_ctid: live.ctid },
-        );
-      }
-    }
-  }
+  const excl = _checkTakeovers(
+    urlTakeoverPlan(dag, { signer_tip_id: author_tip_id, ctid, urls: registered_urls, at_ms, skip: owned }), url_takeovers, at_ms);
+  if (excl) return excl;
+  // Website protection, new URLs only: adding a page of someone else's
+  // protected site later is the same claim as registering it.
+  const prot = _protectedUrlFail(dag, registered_urls, author_tip_id, at_ms, owned);
+  if (prot) return prot;
   return ok();
 }
 
@@ -581,13 +707,25 @@ function canRevoke(dag, { tx_type, tip_id, issuing_vp_id }) {
 // tip_id AND it's currently verified. Re-binding the SAME tip_id is
 // allowed (re-verify path, post-revoke re-claim); a "revoked" row also
 // doesn't block a new claimant.
-function canBindDomain(dag, { tip_id, domain }) {
+function canBindDomain(dag, { tip_id, domain, at_ms }) {
   if (typeof dag.getDomainBinding !== "function") return ok();
-  const existing = dag.getDomainBinding(domain);
-  if (!existing) return ok();
-  if (existing.tip_id === tip_id) return ok();
-  if (existing.binding_state !== "verified") return ok();
-  return fail(409, `Domain "${domain}" is already bound to a different TIP-ID`);
+  const taken = (b) => fail(409, `Domain "${b.domain}" is already bound to a different TIP-ID`);
+  if (!websiteProtectionOn(at_ms)) {
+    const existing = dag.getDomainBinding(domain);
+    if (!existing) return ok();
+    if (existing.tip_id === tip_id) return ok();
+    if (existing.binding_state !== "verified") return ok();
+    return taken(existing);
+  }
+  // Website protection: "www.x" and "x" are one site, and a binding past
+  // its expiry (proof not renewed) no longer blocks whoever proves control
+  // now. A live binding to someone else still does.
+  const key = siteKey(domain);
+  for (const d of [key, "www." + key]) {
+    const b = dag.getDomainBinding(d);
+    if (b && b.tip_id !== tip_id && _bindingLive(b, at_ms)) return taken(b);
+  }
+  return ok();
 }
 
 // ─── Committee rotation (§4 + #34 — chain-of-trust) ─────────────────────────
@@ -711,6 +849,12 @@ module.exports = {
   canRegisterVp,
   canRegisterNode,
   canRegisterContent,
+  websiteProtectionOn,
+  siteKey,
+  siteOwnerOf,
+  liveSitesOf,
+  urlTakeoverPlan,
+  takeoverOn,
   canVerify,
   canUpdateOrigin,
   canUpdateRegisteredUrls,

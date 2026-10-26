@@ -12,6 +12,7 @@ const {
 const { DISPUTE, JURY, APPEAL, AI_CLASSIFIER, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
+const { createUrlTakeovers } = require("./url-takeovers");
 const { selectJury, selectExperts } = require("../jury");
 const { withTxId, nodeSignedAuto, preScanContent } = require("./helpers");
 const { validate } = require("../middleware/validate");
@@ -66,6 +67,7 @@ const shortDisputeId = (disputeTxId) => disputeTxId.slice(0, DISPUTE_SHORT_ID_LE
 const DISPUTE_ID_RE = new RegExp(`^[0-9a-f]{${DISPUTE_SHORT_ID_LEN},}$`, "i");
 
 function createDisputeService({ dag, scoring, config, submitTx, submitBatch, disputeDetailsService }) {
+  const _urlTakeovers = createUrlTakeovers({ dag });
 
   // Persist the off-chain body when fileDispute is called with an
   // `evidence: { payload, signature }` block. Returns
@@ -1280,6 +1282,23 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           claimed_origin: dispute.data?.claimed_origin,
           declared_origin: dispute.data?.declared_origin,
         },
+      });
+    }
+
+    // ── A site's owner took a page address back from my record (90 days) ─
+    for (const r of _urlTakeovers.takenFrom(tipId, now - 90 * 24 * 60 * 60 * 1000)) {
+      items.push({
+        id: `url_taken_over:${r.ctid}:${r.url}`,
+        type: "url_taken_over",
+        priority: "info",
+        title: "A page address now belongs to its website's owner",
+        summary: `${r.domain || "The website"} is verified to its owner, who registered ${r.url}. Your record ${_ctidLabel(r.ctid)} keeps its CTID without that address.`,
+        role: "author",
+        ctid: r.ctid,
+        dispute_id: null,
+        deadline: null,
+        action: { kind: "view_content", label: "View your record", href: `/content/${encodeURIComponent(r.ctid)}` },
+        metadata: { url: r.url, domain: r.domain, owner_tip_id: r.to_tip_id, owner_ctid: r.to_ctid, at: r.at },
       });
     }
 

@@ -236,7 +236,7 @@ curl -s http://localhost:4000/health | python3 -m json.tool
         "node_id": "tip://node/<your-node-id>",
         "node_type": "full",
         "dag_count": 2070,
-        "version": "2.7.9",
+        "version": "2.8.0",
         "protocol": "2.0.0",
         "peers": { "connected": 3, "peer_ids": ["12D3KooW...", "..."] },
         ...
@@ -369,17 +369,17 @@ setup; agree it with The AI Lab team first.
 
 ## Upgrading a node
 
-Releases are tags on `main` (`v2.7.9`). One node at a time, never two down at
+Releases are tags on `main` (`v2.8.0`). One node at a time, never two down at
 once; on a 3-node federation quorum is 2. Order: the node that others bootstrap
 from goes last. Run on the node host:
 
 ```bash
-cd ~/tip-protocol && scripts/upgrade-node.sh v2.7.9 https://node.theailab.org   # peer = a node NOT being upgraded now
+cd ~/tip-protocol && scripts/upgrade-node.sh v2.8.0 https://node.theailab.org   # peer = a node NOT being upgraded now
 ```
 
 How that deploys the new version:
 
-1. fetches the tags and checks out `v2.7.9`, so that release's source is on disk
+1. fetches the tags and checks out `v2.8.0`, so that release's source is on disk
    (refusing first if your `genesis.json` is modified or would change);
 2. `docker compose build tip-node` builds a new image from that source;
 3. stops the running container;
