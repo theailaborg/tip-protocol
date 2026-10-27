@@ -21,7 +21,8 @@ PARTNER="${1:-}"
 # Name of the folder the partner sees after extracting.
 ORG="${2:-$(basename "$PARTNER")}"
 
-command -v 7zz >/dev/null || { echo "7zz missing: brew install sevenzip" >&2; exit 1; }
+# Homebrew ships 7-Zip as 7zz; Ubuntu's 7zip package ships it as 7z.
+SEVENZIP=$(command -v 7zz || command -v 7z) || { echo "7-Zip missing: brew install sevenzip (Mac) or sudo apt-get install -y 7zip (Ubuntu)" >&2; exit 1; }
 
 # Outputs live next to the partner dir (typically under gitignored my-notes),
 # NEVER next to this script: a repo checkout must not accumulate credential zips.
@@ -76,7 +77,7 @@ else
   done
 fi
 
-( cd "$STAGE" && 7zz a -tzip -mem=AES256 -p"$PASS" -bso0 -bsp0 "$ZIP" "$ORG" >/dev/null )
+( cd "$STAGE" && "$SEVENZIP" a -tzip -mem=AES256 -p"$PASS" -bso0 -bsp0 "$ZIP" "$ORG" >/dev/null )
 chmod 600 "$ZIP"
 
 # Append-only: a rebuild invalidates the password already sent, so keep the old

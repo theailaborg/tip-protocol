@@ -1056,9 +1056,9 @@ const REGISTER_CREDIT = Object.freeze({
   TOTAL: 350,
   ACTIVATION_MS: 1784522400000, // 2026-07-20 04:40:00 UTC mainnet activation
   // Commit-time cap is a new reject rule; a mixed fleet would fork, so gate it
-  // on this epoch-ms and enforce fleet-wide together. Operator sets the real
-  // value (or TIP_REG_CREDIT_CAP_ACTIVATION_MS) once all nodes ship.
-  CAP_ENFORCE_ACTIVATION_MS: 1784868000000, // 2026-07-24 04:40:00 UTC
+  // on this epoch-ms. The default IS the mainnet epoch, so a new node needs no
+  // env; TIP_REG_CREDIT_CAP_ACTIVATION_MS exists for networks with their own history.
+  CAP_ENFORCE_ACTIVATION_MS: 1784836800000, // 2026-07-23 20:00:00 UTC mainnet activation
 
   AWARD_REASON_PREFIX: "reg_credit:",
   REVERSAL_REASON_PREFIX: "reg_credit_rev:",
@@ -1069,6 +1069,38 @@ const REGISTER_CREDIT = Object.freeze({
 // org votes/disputes scale with an attacker's budget. New commit-time reject
 // rule, so gated on tx.timestamp to keep a mixed fleet from forking.
 const ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS = 1786114800000; // 2026-08-07 15:00:00 UTC
+
+// Website protection. From this instant (frozen tx.timestamp, so a mixed fleet
+// cannot fork): a personal TIP-ID may bind a domain as well as an
+// organization, a live binding stops any other signer registering that site's
+// pages, and a binding past its expires_at no longer blocks a new owner.
+const WEBSITE_PROTECTION_ACTIVATION_MS = 1793491200000; // 2026-11-01 00:00:00 UTC
+
+// Owner takeover. From this instant a protected site's owner (or an active
+// member of an owning organization) registering one of the site's pages
+// takes the address over from a record by anyone else: that record keeps
+// its CTID but loses the address. Same consensus discipline as above.
+const URL_TAKEOVER_ACTIVATION_MS = 1794700800000; // 2026-11-15 00:00:00 UTC
+
+// Domains where many people publish under one name. A binding on one of these
+// (or its www.) never protects pages: one account must not lock everyone
+// else's posts on the platform. A subdomain someone controls (alice.github.io)
+// is its own site and is not on this list.
+const SHARED_HOST_DOMAINS = Object.freeze([
+  "x.com", "twitter.com", "t.co", "facebook.com", "fb.com", "fb.watch", "instagram.com",
+  "linkedin.com", "lnkd.in", "youtube.com", "youtu.be", "tiktok.com", "threads.net", "threads.com",
+  "reddit.com", "redd.it", "bsky.app", "truthsocial.com", "rooverse.app", "medium.com", "substack.com",
+  "wordpress.com", "blogger.com", "blogspot.com", "ghost.io", "github.com", "github.io", "gitlab.com",
+  "tumblr.com", "vimeo.com", "soundcloud.com", "spotify.com", "bandcamp.com", "discord.com", "discord.gg",
+  "weibo.com", "weixin.qq.com", "qq.com", "beehiiv.com", "news.ycombinator.com", "scribd.com",
+  "slideshare.net", "dev.to", "hashnode.com", "hashnode.dev", "pinterest.com", "pin.it", "mastodon.social",
+  "t.me", "telegram.org", "whatsapp.com", "wa.me", "wix.com", "wixsite.com", "squarespace.com",
+  "weebly.com", "netlify.app", "vercel.app", "pages.dev", "web.app", "firebaseapp.com", "herokuapp.com",
+  "notion.site", "notion.so", "google.com", "sites.google.com", "docs.google.com", "drive.google.com",
+  "dropbox.com", "icloud.com", "apple.com", "amazon.com", "quora.com", "patreon.com", "ko-fi.com",
+  "linktr.ee", "kick.com", "twitch.tv", "flickr.com", "behance.net", "dribbble.com", "deviantart.com",
+  "archive.org", "wikipedia.org", "theailab.org", "findtip.org",
+]);
 
 // Stage-1 review no-show cap. A flagged post whose assigned reviewers kept
 // missing the SLA was reassigned every window with no end (48 rounds on one
@@ -1178,6 +1210,9 @@ module.exports = {
   STATS_SCORING_CACHE_MS,
   REGISTER_CREDIT,
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
+  WEBSITE_PROTECTION_ACTIVATION_MS,
+  URL_TAKEOVER_ACTIVATION_MS,
+  SHARED_HOST_DOMAINS,
   PRESCAN_REVIEW_CAP,
   ORG_MEMBERS,
   KEY_RETIREMENT_GRACE_MS,

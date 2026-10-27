@@ -31,6 +31,58 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.8.0: website protection and owner takeover (consensus, two activation dates)**
+- Website protection, active from **2026-11-01 00:00 UTC**
+  (`WEBSITE_PROTECTION_ACTIVATION_MS`): a personal TIP-ID may bind a domain as
+  well as an organization; a live binding stops any other signer registering
+  that site's pages; `www.x` and `x` count as one site; a binding past its
+  `expires_at` no longer blocks a new owner. Domains where many people publish
+  under one name (`SHARED_HOST_DOMAINS`: x.com, github.io, medium.com, ...) never
+  protect pages.
+- Owner takeover, active from **2026-11-15 00:00 UTC**
+  (`URL_TAKEOVER_ACTIVATION_MS`): the owner of a protected site (or an active
+  member of the owning organization) registering one of its pages takes the
+  address over from a record by anyone else; that record keeps its CTID but
+  loses the address. Content transactions carry the new `url_takeovers` field
+  only from this date.
+- Both rules are judged on the later of `tx.timestamp` and the certificate
+  time, so every node decides the same way; before the dates the node behaves
+  exactly as 2.7.9 (no new field, same validity, same state root), which is
+  what makes a rolling upgrade safe. **Every node, partners included, must run
+  2.8.0 before 2026-11-01 00:00 UTC.**
+- Optional website page allowance at registration, asked of the operator's
+  billing service (`TIP_WEBSITE_PAGES_URL` / `_KEY` / `_TIMEOUT_MS`, falling
+  back to the media quota URL and key). Unreachable billing lets the page
+  through.
+
+**`scripts/upgrade-node.sh`**: the gated one-node upgrade we run on every
+release (checkout tag, rebuild, stop, root gate against an untouched peer,
+start only on MATCH, wait for `/ready`), committed instead of living in `/tmp`
+on each box.
+
+### Changed
+
+**Operator runbooks leave the public repo.** Node registration, key
+distribution, S3 setup, log shipping and partner emails are now delivered by
+The AI Lab team as part of a guided join; `docs/DEPLOYMENT.md` describes the
+process and the requirements. `make-secure-bundle.sh` also accepts Ubuntu's
+`7z`, `register-org.js` prints the org type, and the unmaintained
+`seed:python` script is gone.
+
+### Fixed
+
+**Node 2.8.0: the reg-credit cap epoch default is the mainnet epoch**
+
+`REGISTER_CREDIT.CAP_ENFORCE_ACTIVATION_MS` now equals the epoch mainnet
+activated the cap with (2026-07-23 20:00 UTC), which the fleet had been pinning
+through `TIP_REG_CREDIT_CAP_ACTIVATION_MS`. A new node no longer needs that env
+line (or `register-node.js --reg-credit-activation-ms`) to agree with the
+fleet; the override stays for networks that activated at another time. No
+behaviour change on nodes that already carry the env value. `.env.example` and
+the registration and deployment docs drop the "read it off a node" step.
+
+### Added
+
 **Node 2.7.9: built-in status page and public node registry**
 - `GET /status` on every node: one page, no key, refreshed every 3 s, showing
   this node (id, version, uptime, join state, endpoint, memory, chain id),

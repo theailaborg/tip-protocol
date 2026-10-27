@@ -37,9 +37,9 @@
  *                                classifier URL, CORS origins, strict classifier
  *                                fallback, mainnet rate limit and prescan
  *                                concurrency, and container-relative data/log paths
- *   --reg-credit-activation-ms N CONSENSUS GATE: must equal what the rest of the
- *                                fleet runs or the node forks. Read it off a node
- *                                already in the network
+ *   --reg-credit-activation-ms N Override the reg-credit cap epoch (consensus gate).
+ *                                Mainnet uses the code default; pass only for a
+ *                                network that activated at a different time
  *   --dry-run                    Render the env and print the plan; register nothing
  *   --operated-by tip://id/...   Identity responsible for this node (optional)
  *   --operator-key-file ./x.json That identity's .tip.json; required with --operated-by,
@@ -245,12 +245,12 @@ async function main() {
     const healthData = health.data || health;
     if (healthData.status !== "ok") {
       if (forceHalted && healthData.status === "halted") {
-        info(`Node halted (--force) — tx will queue until peers join. DAG: ${healthData.dag_count} txs`);
+        info(`Node halted (--force), tx will queue until peers join. DAG: ${healthData.dag_count} txs`);
       } else {
         throw new Error(`Node unhealthy: ${healthData.status}`);
       }
     } else {
-      ok(`Node healthy — DAG: ${healthData.dag_count} txs`);
+      ok(`Node healthy, DAG: ${healthData.dag_count} txs`);
     }
   } catch (err) {
     fail(`Cannot reach node: ${err.message}`);
@@ -383,7 +383,7 @@ async function main() {
     (health && health.p2p && health.p2p.bootstrap_addr) ||
     "";
   if (bootstrapAddr) ok(`Bootstrap multiaddr: ${bootstrapAddr}`);
-  else fail(`Could not read bootstrap_addr from ${nodeUrl}/health — set TIP_BOOTSTRAP_PEERS manually after generation`);
+  else fail(`Could not read bootstrap_addr from ${nodeUrl}/health, set TIP_BOOTSTRAP_PEERS manually after generation`);
 
   // Per-node data dir lives inside the generated node directory so each
   // generated node keeps its DB + keystore self-contained. The path is
@@ -434,12 +434,6 @@ async function main() {
   });
   fs.writeFileSync(envPath, envContent, { mode: 0o600 });
   ok(`Env file: ${outDir}/${envFileName}`);
-  if (isProduction && !regCreditActivationMs) {
-    warn("TIP_REG_CREDIT_CAP_ACTIVATION_MS is unset. It is a consensus gate: a node");
-    warn("  that disagrees with the fleet forks. Read it off a node already in the");
-    warn("  network (grep TIP_REG_CREDIT_CAP_ACTIVATION_MS .env) and re-run with");
-    warn("  --reg-credit-activation-ms <value>, or set it by hand before first boot.");
-  }
 
   // 8. Print setup instructions
   const envRel = envRelForLaunch;
@@ -462,7 +456,7 @@ async function main() {
   label("Name", name);
   label("API port", apiPort);
   label("P2P port", p2pPort);
-  label("Bootstrap", bootstrapAddr || "(none — fill in TIP_BOOTSTRAP_PEERS manually)");
+  label("Bootstrap", bootstrapAddr || "(none: fill in TIP_BOOTSTRAP_PEERS manually)");
   label("Output dir", outDir);
   console.log();
 }

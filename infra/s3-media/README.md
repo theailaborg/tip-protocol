@@ -248,7 +248,8 @@ See `examples/` for complete IRSA and EC2 wirings.
    systemd unit / docker-compose env).
 6. For EKS only: annotate the pod's service account with the
    `eks.amazonaws.com/role-arn` output.
-7. Verify end-to-end: see `docs/PROD_S3_SETUP.md` for the smoke test.
+7. Verify end-to-end: upload a media file through the node and confirm the
+   object lands in the bucket.
 
 ## Relationship to the app
 
