@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-**Node 2.7.10: a flagged post is no longer reassigned to reviewers forever**
+**Node 2.8.1: a flagged post is no longer reassigned to reviewers forever**
 - A HIGH/CRITICAL post whose assigned reviewers kept missing the 48 h SLA was
   reassigned every window with no end: one mainnet post went through 48
   assignments in three months, nobody acted, and nothing downstream could
@@ -25,11 +25,27 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A no-show auto-confirm pays no reviewer bonus on accept-correction, and the
   jury's reviewer bonus/clawback already skip a review without a reviewer.
 - Commit rule change, gated on the round's cert timestamp:
-  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-10-22 00:00 UTC), every node on
-  2.7.10 before then. `TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS` overrides it on an
+  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-11-08 00:00 UTC), every node on
+  2.8.1 before then. `TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS` overrides it on an
   isolated cluster (warning-logged).
 
 ### Added
+
+**Node 2.8.1: review desk, a named reviewer can take over an open review**
+- Roster members of the genesis organization (the AI Lab on mainnet) holding
+  the `reviewer` role form the review desk. A desk member takes over any open
+  review at once with a reviewer-signed `PRESCAN_REVIEW_CLAIMED`
+  (`POST /v1/reviews/:id/claim`): the open slot closes as `claimed_over`, which
+  is not a no-show for the replaced reviewer, and a new slot opens assigned to
+  the claimer with its SLA starting at the certificate time.
+- Nobody claims a post they signed or are listed on as an author. Another
+  org's `reviewer` role grants nothing, and nobody assigns a reviewer to
+  someone else. Desk membership is managed with the existing roster invite,
+  accept and remove flow.
+- `GET /v1/reviews/open` lists open assignments with their idle time; with
+  `?reviewer_tip_id=` each row says whether that person may claim it.
+- Commit rule change, shipped with the no-show cap under the same
+  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-11-08 00:00 UTC).
 
 **Node 2.8.0: website protection and owner takeover (consensus, two activation dates)**
 - Website protection, active from **2026-11-01 00:00 UTC**
