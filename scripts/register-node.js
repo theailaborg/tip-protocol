@@ -245,12 +245,12 @@ async function main() {
     const healthData = health.data || health;
     if (healthData.status !== "ok") {
       if (forceHalted && healthData.status === "halted") {
-        info(`Node halted (--force) — tx will queue until peers join. DAG: ${healthData.dag_count} txs`);
+        info(`Node halted (--force), tx will queue until peers join. DAG: ${healthData.dag_count} txs`);
       } else {
         throw new Error(`Node unhealthy: ${healthData.status}`);
       }
     } else {
-      ok(`Node healthy — DAG: ${healthData.dag_count} txs`);
+      ok(`Node healthy, DAG: ${healthData.dag_count} txs`);
     }
   } catch (err) {
     fail(`Cannot reach node: ${err.message}`);
@@ -383,7 +383,7 @@ async function main() {
     (health && health.p2p && health.p2p.bootstrap_addr) ||
     "";
   if (bootstrapAddr) ok(`Bootstrap multiaddr: ${bootstrapAddr}`);
-  else fail(`Could not read bootstrap_addr from ${nodeUrl}/health — set TIP_BOOTSTRAP_PEERS manually after generation`);
+  else fail(`Could not read bootstrap_addr from ${nodeUrl}/health, set TIP_BOOTSTRAP_PEERS manually after generation`);
 
   // Per-node data dir lives inside the generated node directory so each
   // generated node keeps its DB + keystore self-contained. The path is
@@ -456,7 +456,7 @@ async function main() {
   label("Name", name);
   label("API port", apiPort);
   label("P2P port", p2pPort);
-  label("Bootstrap", bootstrapAddr || "(none — fill in TIP_BOOTSTRAP_PEERS manually)");
+  label("Bootstrap", bootstrapAddr || "(none: fill in TIP_BOOTSTRAP_PEERS manually)");
   label("Output dir", outDir);
   console.log();
 }

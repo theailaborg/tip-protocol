@@ -35,6 +35,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   back to the media quota URL and key). Unreachable billing lets the page
   through.
 
+**`scripts/upgrade-node.sh`**: the gated one-node upgrade we run on every
+release (checkout tag, rebuild, stop, root gate against an untouched peer,
+start only on MATCH, wait for `/ready`), committed instead of living in `/tmp`
+on each box.
+
+### Changed
+
+**Operator runbooks leave the public repo.** Node registration, key
+distribution, S3 setup, log shipping and partner emails are now delivered by
+The AI Lab team as part of a guided join; `docs/DEPLOYMENT.md` describes the
+process and the requirements. `make-secure-bundle.sh` also accepts Ubuntu's
+`7z`, `register-org.js` prints the org type, and the unmaintained
+`seed:python` script is gone.
+
 ### Fixed
 
 **Node 2.8.0: the reg-credit cap epoch default is the mainnet epoch**
