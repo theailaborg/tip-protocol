@@ -257,9 +257,8 @@ curl -s http://localhost:$PORT/health | jq -r '.data.p2p.bootstrap_addr'
 The `bootstrap_addr` is what every other node will use as
 `TIP_BOOTSTRAP_PEERS` when it joins.
 
-The full multi-node bring-up (0 to a live, converged federation: git deploy,
-per-node keys, S3 media, observability, validation gates, and the reset order
-for an existing chain) is the runbook in
+Production nodes join the network through a guided process with The AI Lab
+team (on-chain registration, key delivery, setup and upgrades); see
 [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md).
 
 ---
@@ -575,9 +574,7 @@ cp terraform.tfvars.example terraform.tfvars   # fill 3 values
 ```
 
 Full start-to-end guide (including how to get AWS credentials):
-[`infra/s3-media/README.md`](./infra/s3-media/README.md). Operator
-runbook with console paths and smoke tests:
-[`docs/PROD_S3_SETUP.md`](./docs/PROD_S3_SETUP.md).
+[`infra/s3-media/README.md`](./infra/s3-media/README.md).
 
 ---
 
@@ -785,8 +782,7 @@ tip-protocol/
 ├── docs/                        ← Extended documentation
 │   ├── API.md                   ← Full REST API reference
 │   ├── GETTING_STARTED.md       ← Step-by-step integration guide
-│   ├── DEPLOYMENT.md            ← Node + federation deploy (0 to live)
-│   ├── PROD_S3_SETUP.md         ← Production S3 media backend setup
+│   ├── DEPLOYMENT.md            ← Running a node on the TIP network
 │   ├── TESTING_RUNBOOK.md       ← Test suites + live-cluster validation
 │   ├── VP_ACCREDITATION.md      ← How to become a Verification Provider
 │   ├── GDPR_COMPLIANCE.md       ← GDPR and privacy architecture

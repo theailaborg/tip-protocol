@@ -1,9 +1,7 @@
 # scripts/
 
-Dev-time tooling. None of these run in production. Genesis bootstrap
-(`seed.js`, `register-node.js`, `zk-setup.js`) is documented in
-`docs/DEPLOYMENT.md`; this README focuses on the two scripts you'll
-use most often when iterating on dispute-flow work.
+Dev-time tooling. None of these run in production. This README focuses on
+the two scripts you'll use most often when iterating on dispute-flow work.
 
 ---
 

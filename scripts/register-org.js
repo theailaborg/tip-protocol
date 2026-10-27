@@ -227,6 +227,7 @@ async function main() {
   label("Region", region);
   label("Reg number", `${scheme.normalized} (${scheme.name})`);
   label("Incorporated", incorporated);
+  label("Org type", orgType || "(none)");
   label("Target", nodeUrl);
   console.log("");
 
