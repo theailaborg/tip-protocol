@@ -184,6 +184,10 @@ const SCHEMA = {
     required: ["review_id", "reviewer_tip_id"],
     types: { review_id: "string", reviewer_tip_id: "string" },
   },
+  [TX_TYPES.PRESCAN_REVIEW_CLAIMED]: {
+    required: ["review_id", "reviewer_tip_id"],
+    types: { review_id: "string", reviewer_tip_id: "string" },
+  },
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: {
     // review_id is always required. reviewer_tip_id is user-recuse only;
     // node-emitted auto-recuse (data.auto = true) carries node_id
@@ -592,7 +596,8 @@ function validateBusinessRules(tx, dag = null) {
     case TX_TYPES.PRESCAN_REVIEW_TRIGGERED:
     case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
     case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
-    case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+    case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+    case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
       // Format checks for ids present on each. Existence + state-machine
       // gating happens in the per-tx schema module's verifyTx.
       if (d.ctid && !/^tip:\/\/c\/(OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}$/.test(d.ctid)) {
@@ -796,7 +801,8 @@ function validateState(tx, dag) {
 
     case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
     case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
-    case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+    case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+    case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
       // Review existence + reviewer-assignment + state checks live in
       // schemas/prescan-review-*.resolveReview. This layer only does
       // identity-existence sanity.

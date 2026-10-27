@@ -34,6 +34,8 @@ const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggere
 const prescanReviewDismissedSchema = require("../schemas/prescan-review-dismissed");
 const prescanReviewConfirmedSchema = require("../schemas/prescan-review-confirmed");
 const prescanReviewRecusedSchema = require("../schemas/prescan-review-recused");
+const prescanReviewClaimedSchema = require("../schemas/prescan-review-claimed");
+const { _deriveClaimReviewId } = require("./prescan-review-trigger");
 const prescanCompletedSchema = require("../schemas/prescan-completed");
 const registerDomainSchema = require("../schemas/register-domain");
 const prescanReviewAcceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
@@ -195,6 +197,7 @@ function _actorTipId(tx) {
     case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
     case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
     case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+    case TX_TYPES.PRESCAN_REVIEW_CLAIMED:
       return d.reviewer_tip_id ?? null;
     default:
       return null;
@@ -855,15 +858,17 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
 
       case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
       case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
-      case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+      case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+      case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
         // Cross-type: each review_id gets exactly ONE terminal decision
-        // per batch. Real collision: reviewer decision racing the
-        // scheduler's SLA auto-recuse at the 48h boundary.
+        // per batch. Real collisions: reviewer decision racing the
+        // scheduler's SLA auto-recuse at the 48h boundary, or a desk claim.
         if (!d.review_id) return { valid: true };
         const TERMINAL_TYPES = [
           TX_TYPES.PRESCAN_REVIEW_DISMISSED,
           TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
           TX_TYPES.PRESCAN_REVIEW_RECUSED,
+          TX_TYPES.PRESCAN_REVIEW_CLAIMED,
         ];
         const inBatch = validated.find(t =>
           TERMINAL_TYPES.includes(t.tx_type) && t.data?.review_id === d.review_id);
@@ -1268,6 +1273,13 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const r = prescanReviewRecusedSchema.verifyTx(tx, dag);
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
+      case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
+        if (!_reviewCapActive(certTimestamp)) {
+          return { valid: false, error: `review claim for ${d.review_id} before the review desk activation` };
+        }
+        const r = prescanReviewClaimedSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
 
       // GH #60 — key rotation + recovery state checks. Signature is
       // verified by the unified dispatcher (OLD key for KEY_ROTATED;
@@ -1526,6 +1538,30 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           if (dag.getContent(review.ctid)) {
             dag.updateContentStatus(review.ctid, CONTENT_STATUS.REGISTERED);
           }
+        }
+        break;
+      }
+
+      case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
+        // A desk member took the case: close the open slot without a no-show
+        // and open the claimer's slot, its SLA clock starting now (the
+        // auto-recuse keys off triggered_at_ms). Content stays PENDING_REVIEW.
+        const review = dag.getPrescanReview(d.review_id);
+        if (review) {
+          dag.savePrescanReview({
+            ...review,
+            state: PRESCAN_REVIEW_STATES.CLAIMED_OVER,
+            decided_at_round: round,
+          });
+          dag.savePrescanReview({
+            review_id: _deriveClaimReviewId(review.ctid, round),
+            ctid: review.ctid,
+            creator_tip_id: review.creator_tip_id,
+            assigned_reviewer: d.reviewer_tip_id,
+            triggered_at_round: round,
+            triggered_at_ms: _committedCertTimestamp || null,
+            state: PRESCAN_REVIEW_STATES.TRIGGERED,
+          });
         }
         break;
       }

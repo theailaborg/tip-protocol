@@ -5,6 +5,8 @@
  *
  *   dismiss(reviewId, body)          → PRESCAN_REVIEW_DISMISSED
  *   confirm(reviewId, body)          → PRESCAN_REVIEW_CONFIRMED
+ *   claim(reviewId, body)            → PRESCAN_REVIEW_CLAIMED (desk takeover)
+ *   listOpenReviews(query)           → open assignments for the review desk
  *   acceptCorrection(reviewId, body) → UPDATE_ORIGIN (commit-handler
  *                                      auto-flips the review row to
  *                                      CLOSED_ACCEPTED_PRIVATE)
@@ -22,7 +24,7 @@
 
 "use strict";
 
-const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
 const { nowMs, nowPlusMs } = require("../../../shared/time");
 const { REVIEWER, JURY, DISPUTE } = require("../../../shared/protocol-constants");
 const { selectJury } = require("../jury");
@@ -30,6 +32,7 @@ const { validateTransaction } = require("../validators/tx-validator");
 const dismissedSchema = require("../schemas/prescan-review-dismissed");
 const confirmedSchema = require("../schemas/prescan-review-confirmed");
 const recusedSchema = require("../schemas/prescan-review-recused");
+const claimedSchema = require("../schemas/prescan-review-claimed");
 const acceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
 const disputeSchema = require("../schemas/prescan-review-dispute");
 const { schemaError } = require("../schemas/_common");
@@ -47,6 +50,7 @@ const OUTCOME_LABELS = Object.freeze({
   [PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT]: "SELF_CORRECTED",
   [PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE]: "ESCALATED",
   [PRESCAN_REVIEW_STATES.RECUSED]: "RECUSED",
+  [PRESCAN_REVIEW_STATES.CLAIMED_OVER]: "CLAIMED_OVER",
 });
 
 // Score-history → review attribution. Two paths:
@@ -203,6 +207,79 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     submitTx(tx);
     log.info(`Review recused: ${reviewId} by ${safeBody.reviewer_tip_id}`);
     return { review_id: reviewId, tx_id: tx.tx_id, confirmation: "proposed" };
+  }
+
+  function _deskActive(atMs) {
+    const gate = Number.isFinite(config?.prescanReviewCapActivationMs)
+      ? config.prescanReviewCapActivationMs : PRESCAN_REVIEW_CAP.ACTIVATION_MS;
+    return atMs >= gate;
+  }
+
+  function claim(reviewId, body) {
+    const timestamp = nowMs();
+    if (!_deskActive(timestamp)) {
+      throw schemaError(403, "The review desk is not active yet", "review_desk_inactive");
+    }
+    const safeBody = { ...(body || {}), review_id: reviewId };
+    claimedSchema.validateRequest(safeBody, { dag });
+
+    const claimer = dag.getIdentity(safeBody.reviewer_tip_id);
+    const payload = claimedSchema.buildSigningPayload(safeBody);
+    if (!claimedSchema.verifySignature(payload, safeBody.signature, claimer.public_key)) {
+      throw schemaError(403, "Reviewer signature verification failed", "signature_invalid");
+    }
+
+    const review = dag.getPrescanReview(reviewId);
+    const tx = withTxId({
+      tx_type: TX_TYPES.PRESCAN_REVIEW_CLAIMED,
+      timestamp,
+      data: {
+        review_id: reviewId,
+        reviewer_tip_id: safeBody.reviewer_tip_id,
+        ctid: review.ctid,
+        creator_tip_id: review.creator_tip_id,
+        previous_reviewer_tip_id: review.assigned_reviewer,
+      },
+      signature: safeBody.signature,
+    }, dag);
+    const validation = validateTransaction(tx, dag, {});
+    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
+
+    submitTx(tx);
+    log.info(`Review claimed: ${reviewId} by ${safeBody.reviewer_tip_id} (was ${review.assigned_reviewer})`);
+    return { review_id: reviewId, tx_id: tx.tx_id, confirmation: "proposed" };
+  }
+
+  // Desk view of open assignments. With reviewer_tip_id, each row says whether
+  // that person may claim it (same checks as the claim itself).
+  function listOpenReviews(query = {}) {
+    const now = nowMs();
+    const who = typeof query.reviewer_tip_id === "string" ? query.reviewer_tip_id : null;
+    let deskError = null;
+    if (who) {
+      try { claimedSchema.resolveClaimer(who, dag); } catch (err) { deskError = err.code || "not_desk_member"; }
+    }
+    const reviews = dag.listTriggeredPrescanReviews().map(r => {
+      const content = dag.getContent(r.ctid);
+      const row = {
+        review_id: r.review_id,
+        ctid: r.ctid,
+        prescan_tier: content ? content.prescan_tier : null,
+        assigned_reviewer: r.assigned_reviewer,
+        triggered_at_ms: r.triggered_at_ms,
+        idle_ms: Number.isFinite(r.triggered_at_ms) ? Math.max(0, now - r.triggered_at_ms) : null,
+      };
+      if (who) {
+        let reason = deskError;
+        if (!reason) {
+          try { claimedSchema.resolveReview(r.review_id, who, dag); } catch (err) { reason = err.code || "not_claimable"; }
+        }
+        row.claimable = !reason;
+        row.not_claimable_reason = reason;
+      }
+      return row;
+    });
+    return { desk_active: _deskActive(now), count: reviews.length, reviews };
   }
 
   function acceptCorrection(reviewId, body) {
@@ -507,7 +584,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     return { pool: rows, count: rows.length };
   }
 
-  return { getReview, dismiss, confirm, recuse, acceptCorrection, dispute, listReviewerPool, listReviewsByReviewer };
+  return { getReview, dismiss, confirm, recuse, claim, listOpenReviews, acceptCorrection, dispute, listReviewerPool, listReviewsByReviewer };
 }
 
 module.exports = { createReviewService };

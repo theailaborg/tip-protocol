@@ -261,6 +261,7 @@ const PRESCAN_NEXT_STEPS = Object.freeze({
 //   confirmed → (creator accepts correction privately)       → closed_accepted_private
 //   confirmed → (24h elapses without creator action)         → escalated_to_dispute
 //   triggered → assigned reviewer recuses                    → recused
+//   triggered → a review desk member claims the case         → claimed_over
 const PRESCAN_REVIEW_STATES = Object.freeze({
   TRIGGERED: "triggered",                              // reviewer assigned, awaiting decision
   CLOSED_SELF_CORRECT: "closed_self_correct",          // creator updated origin within window
@@ -269,6 +270,7 @@ const PRESCAN_REVIEW_STATES = Object.freeze({
   CLOSED_ACCEPTED_PRIVATE: "closed_accepted_private",  // creator accepted correction privately
   ESCALATED_TO_DISPUTE: "escalated_to_dispute",        // auto-escalated to CONTENT_DISPUTED after creator window
   RECUSED: "recused",                                  // reviewer recused; reassigned (terminal for this review_id slot)
+  CLAIMED_OVER: "claimed_over",                        // a desk member took the case; the claimer's slot replaces it
 });
 
 const PRESCAN_REVIEW_STATE_VALUES = Object.freeze(Object.values(PRESCAN_REVIEW_STATES));
@@ -654,6 +656,7 @@ const TX_TYPES = Object.freeze({
   PRESCAN_REVIEW_DISMISSED: "PRESCAN_REVIEW_DISMISSED",
   PRESCAN_REVIEW_CONFIRMED: "PRESCAN_REVIEW_CONFIRMED",
   PRESCAN_REVIEW_RECUSED: "PRESCAN_REVIEW_RECUSED",
+  PRESCAN_REVIEW_CLAIMED: "PRESCAN_REVIEW_CLAIMED",
   // Async prescan: emitted by the worker on the assigned API node (or a
   // failover leader) once the classifier call returns. Carries the
   // probability/tier/modality breakdown for downstream consumers.
@@ -1111,9 +1114,17 @@ const SHARED_HOST_DOMAINS = Object.freeze([
 // like the others (TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS on an isolated cluster).
 const PRESCAN_REVIEW_CAP = Object.freeze({
   MAX_NO_SHOWS: 3,
-  ACTIVATION_MS: 1792627200000, // 2026-10-22 00:00:00 UTC
+  ACTIVATION_MS: 1794096000000, // 2026-11-08 00:00:00 UTC
   AUTO_DECISION_NOTE: "reviewer_pool_no_show",
   AUTO_SUGGESTED_ORIGIN: "AG",
+});
+
+// Review desk. Roster members of the genesis organization holding ROLE may
+// take over an open review at once (PRESCAN_REVIEW_CLAIMED). Nobody assigns a
+// reviewer to someone else, and no other org's roster grants this. Ships with
+// the no-show cap, so it shares PRESCAN_REVIEW_CAP.ACTIVATION_MS.
+const PRESCAN_REVIEW_DESK = Object.freeze({
+  ROLE: "reviewer",
 });
 
 // Organization roster (org_members). An org invites a registered personal
@@ -1214,6 +1225,7 @@ module.exports = {
   URL_TAKEOVER_ACTIVATION_MS,
   SHARED_HOST_DOMAINS,
   PRESCAN_REVIEW_CAP,
+  PRESCAN_REVIEW_DESK,
   ORG_MEMBERS,
   KEY_RETIREMENT_GRACE_MS,
   KEY_RETIREMENT_ACTIVATION_MS,

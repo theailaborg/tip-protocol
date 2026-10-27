@@ -23,6 +23,7 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: require("./prescan-review-dismissed"),
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: require("./prescan-review-confirmed"),
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: require("./prescan-review-recused"),
+  [TX_TYPES.PRESCAN_REVIEW_CLAIMED]: require("./prescan-review-claimed"),
   [TX_TYPES.PRESCAN_COMPLETED]: require("./prescan-completed"),
   [TX_TYPES.KEY_ROTATED]: require("./key-rotated"),
   [TX_TYPES.KEY_RECOVERY]: require("./key-recovery"),

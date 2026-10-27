@@ -1526,7 +1526,8 @@ class MemoryStore {
   // through, causing the trigger to fire again on every round after a
   // DISMISS/accept/etc., spawning a fresh reviewer + extra +5 bonus
   // every round. RECUSED is the only terminal state that intentionally
-  // re-triggers (we need a new reviewer to take the case).
+  // re-triggers (we need a new reviewer to take the case); CLAIMED_OVER is
+  // skipped too, since the claimer's own slot carries the case.
   getContentsNeedingReview(nowMs) {
     const cutoff = nowMs - CONTENT_GRACE.FLAGGED_MS;
     const out = [];
@@ -1546,7 +1547,8 @@ class MemoryStore {
       const anchorMs = c.prescan_completed_at;
       if (!Number.isFinite(anchorMs) || anchorMs > cutoff) continue;
       const prior = [...this._prescanReviews.values()].filter(r =>
-        r.ctid === c.ctid && r.state !== PRESCAN_REVIEW_STATES.RECUSED);
+        r.ctid === c.ctid && r.state !== PRESCAN_REVIEW_STATES.RECUSED
+        && r.state !== PRESCAN_REVIEW_STATES.CLAIMED_OVER);
       if (prior.length > 0) continue;
       out.push({ ...c });
     }
@@ -1586,6 +1588,12 @@ class MemoryStore {
         && r.triggered_at_ms != null
         && r.triggered_at_ms <= cutoff)
       .sort((a, b) => a.triggered_at_ms - b.triggered_at_ms)
+      .map(r => ({ ...r }));
+  }
+  listTriggeredPrescanReviews() {
+    return [...this._prescanReviews.values()]
+      .filter(r => r.state === PRESCAN_REVIEW_STATES.TRIGGERED)
+      .sort((a, b) => (a.triggered_at_ms ?? 0) - (b.triggered_at_ms ?? 0) || (a.review_id < b.review_id ? -1 : 1))
       .map(r => ({ ...r }));
   }
 
@@ -2943,11 +2951,12 @@ class SQLiteStore {
       // not just the open ones — so the trigger doesn't re-fire after
       // a DISMISS / accept-private / self-correct / dispute escalation
       // closes the case. RECUSED is the only terminal state that
-      // intentionally re-triggers (new reviewer needed).
+      // intentionally re-triggers (new reviewer needed); CLAIMED_OVER is
+      // skipped too, since the claimer's own slot carries the case.
       getContentsNeedingReview: this.db.prepare(
         `SELECT c.* FROM content c
          LEFT JOIN prescan_reviews r
-           ON r.tip_ctid = c.tip_ctid AND r.state != 'recused'
+           ON r.tip_ctid = c.tip_ctid AND r.state NOT IN ('recused','claimed_over')
          WHERE c.status = 'registered'
            AND c.origin_code = 'OH'
            AND c.prescan_status = 'completed'
@@ -2981,6 +2990,10 @@ class SQLiteStore {
       // Reviews in state=triggered whose reviewer SLA has elapsed —
       // candidates for node-emitted auto-recuse. triggered_at_ms is set
       // on TRIGGERED apply from cert.ts.
+      listTriggeredPrescanReviews: this.db.prepare(
+        `SELECT * FROM prescan_reviews WHERE state = 'triggered'
+         ORDER BY COALESCE(triggered_at_ms, 0) ASC, review_id ASC`
+      ),
       getReviewsNeedingAutoRecuse: this.db.prepare(
         `SELECT * FROM prescan_reviews
          WHERE state = 'triggered'
@@ -3986,6 +3999,9 @@ class SQLiteStore {
   getReviewsNeedingAutoEscalation(nowMs) {
     return this._stmts.getReviewsNeedingAutoEscalation.all(nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS).map(r => this._hydratePrescanReview(r));
   }
+  listTriggeredPrescanReviews() {
+    return this._stmts.listTriggeredPrescanReviews.all().map(r => this._hydratePrescanReview(r));
+  }
   getReviewsNeedingAutoRecuse(nowMs) {
     return this._stmts.getReviewsNeedingAutoRecuse.all(nowMs - REVIEWER.AUTO_RECUSE_AGE_MS).map(r => this._hydratePrescanReview(r));
   }
@@ -4941,6 +4957,7 @@ function _buildDagHandle(store, config) {
     getContentsStuckInPrescan: (cutoffMs) => store.getContentsStuckInPrescan(cutoffMs),
     getReviewsNeedingAutoEscalation: (nowMs) => store.getReviewsNeedingAutoEscalation(nowMs),
     getReviewsNeedingAutoRecuse: (nowMs) => store.getReviewsNeedingAutoRecuse(nowMs),
+    listTriggeredPrescanReviews: () => store.listTriggeredPrescanReviews(),
 
     // #75 rotation participation tally
     incrementRotationParticipation: (nodeId, rotationNumber, bucket) => store.incrementRotationParticipation(nodeId, rotationNumber, bucket),

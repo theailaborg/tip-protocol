@@ -38,6 +38,7 @@ const prescanReviewTriggered = require(path.join(SRC, "schemas", "prescan-review
 const prescanReviewDismissed = require(path.join(SRC, "schemas", "prescan-review-dismissed"));
 const prescanReviewConfirmed = require(path.join(SRC, "schemas", "prescan-review-confirmed"));
 const prescanReviewRecused = require(path.join(SRC, "schemas", "prescan-review-recused"));
+const prescanReviewClaimed = require(path.join(SRC, "schemas", "prescan-review-claimed"));
 const keyRotatedSchema = require(path.join(SRC, "schemas", "key-rotated"));
 const keyRecoverySchema = require(path.join(SRC, "schemas", "key-recovery"));
 const interestRegisteredSchema = require(path.join(SRC, "schemas", "interest-registered"));
@@ -56,6 +57,7 @@ const SCHEMA_FOR_TX_TYPE = {
   [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: prescanReviewDismissed,
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: prescanReviewConfirmed,
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: prescanReviewRecused,
+  [TX_TYPES.PRESCAN_REVIEW_CLAIMED]: prescanReviewClaimed,
   [TX_TYPES.KEY_ROTATED]: keyRotatedSchema,
   [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
   [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,

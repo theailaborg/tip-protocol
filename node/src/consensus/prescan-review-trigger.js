@@ -333,4 +333,10 @@ function _deriveAutoReviewId(ctid, round) {
   return `pr_${h}`;
 }
 
-module.exports = { createPrescanReviewTrigger, _deriveReviewId, _deriveAutoReviewId };
+// The claimer's new slot, in its own namespace for the same reason.
+function _deriveClaimReviewId(ctid, round) {
+  const h = shake256(`prescan_review_claim:${ctid}:${round}`).slice(0, 32);
+  return `pr_${h}`;
+}
+
+module.exports = { createPrescanReviewTrigger, _deriveReviewId, _deriveAutoReviewId, _deriveClaimReviewId };
