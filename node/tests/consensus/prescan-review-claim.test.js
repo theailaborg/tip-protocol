@@ -140,12 +140,29 @@ function _setup({ sqlite = false, activationMs = ACTIVATION, keys: sharedKeys = 
     const review = dag.getPrescanReview(reviewId);
     const tx = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_CLAIMED, timestamp, prev: [],
-      data: { ...fields, ctid: review.ctid, creator_tip_id: review.creator_tip_id, previous_reviewer_tip_id: review.assigned_reviewer, ...extra },
+      data: { ...fields, creator_tip_id: review.creator_tip_id, previous_reviewer_tip_id: review.assigned_reviewer, ...extra },
       signature,
     };
     tx.prev = dag.prevFor(tx.tx_type, tx.data);
     tx.tx_id = computeTxId(tx);
     return tx;
+  }
+  function pickupTx(claimer, ctid, { timestamp = ACTIVATION + 1000, extra = {} } = {}) {
+    const fields = { ctid, reviewer_tip_id: claimer };
+    const signature = claimedSchema.sign(claimedSchema.buildSigningPayload(fields), keys[claimer].privateKey);
+    const tx = {
+      tx_type: TX_TYPES.PRESCAN_REVIEW_CLAIMED, timestamp, prev: [],
+      data: { ...fields, creator_tip_id: dag.getContent(ctid).author_tip_id, ...extra },
+      signature,
+    };
+    tx.prev = dag.prevFor(tx.tx_type, tx.data);
+    tx.tx_id = computeTxId(tx);
+    return tx;
+  }
+  // A flagged post past the creator window that the empty pool never assigned.
+  function waiting(ctid, author = CREATOR, { completedAt = T0, authors } = {}) {
+    content(ctid, author, authors);
+    dag.saveContent({ ...dag.getContent(ctid), status: CONTENT_STATUS.REGISTERED, prescan_completed_at: completedAt });
   }
   function dismissTx(reviewer, { reviewId = OPEN_ID, timestamp = ACTIVATION + 1000 } = {}) {
     const fields = { review_id: reviewId, reviewer_tip_id: reviewer, decision_note: null };
@@ -156,7 +173,7 @@ function _setup({ sqlite = false, activationMs = ACTIVATION, keys: sharedKeys = 
     return tx;
   }
 
-  return { dag, commit, submitted, prescanReviewTrigger, reviewService, keys, content, openReview, claimTx, dismissTx };
+  return { dag, commit, submitted, prescanReviewTrigger, reviewService, keys, content, openReview, claimTx, pickupTx, waiting, dismissTx };
 }
 
 describe.each([["memory", false], ["sqlite", true]])("review desk claim (%s store)", (_label, sqlite) => {
@@ -293,6 +310,83 @@ describe.each([["memory", false], ["sqlite", true]])("review desk claim (%s stor
     expect(fx.dag.getOpenPrescanReviewByCtid(CTID)).toBeNull();
   });
 
+  test("pickup: a desk reviewer takes a flagged post the empty pool never assigned", () => {
+    const fx = _setup({ sqlite });
+    const W = "tip://c/OH-55555555555555-0005";
+    fx.waiting(W);
+    const certTs = ACTIVATION + 60_000;
+    const { res, round } = fx.commit([fx.pickupTx(DESK, W)], certTs);
+    expect(res.committed).toBe(1);
+    const open = fx.dag.getOpenPrescanReviewByCtid(W);
+    expect(open).toMatchObject({
+      review_id: _deriveClaimReviewId(W, round), assigned_reviewer: DESK, creator_tip_id: CREATOR,
+      state: PRESCAN_REVIEW_STATES.TRIGGERED, triggered_at_round: round,
+    });
+    expect(open.triggered_at_ms).toBe(certTs);
+    expect(fx.dag.getContent(W).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
+    // The automatic trigger leaves it alone now.
+    fx.prescanReviewTrigger.checkPending(certTs + 1000, 900);
+    expect(fx.submitted.filter(t => t.tx_type === TX_TYPES.PRESCAN_REVIEW_TRIGGERED && t.data.ctid === W)).toEqual([]);
+  });
+
+  test("pickup follows the trigger's rule: not inside the creator window, not unflagged, not already in review", () => {
+    const fx = _setup({ sqlite });
+    const certTs = ACTIVATION + 60_000;
+    const fresh = "tip://c/OH-66666666666666-0006";
+    fx.waiting(fresh, CREATOR, { completedAt: certTs - 1000 });
+    expect(claimedSchema.verifyTx(fx.pickupTx(DESK, fresh), fx.dag, { nowMs: certTs })).toMatchObject({ ok: false, code: "not_waiting_for_review" });
+
+    const low = "tip://c/OH-77777777777777-0007";
+    fx.waiting(low);
+    fx.dag.saveContent({ ...fx.dag.getContent(low), prescan_tier: "low" });
+    expect(claimedSchema.verifyTx(fx.pickupTx(DESK, low), fx.dag, { nowMs: certTs })).toMatchObject({ ok: false, code: "not_waiting_for_review" });
+
+    // CTID already has an open review: take it over by review_id instead.
+    expect(claimedSchema.verifyTx(fx.pickupTx(DESK, CTID), fx.dag, { nowMs: certTs })).toMatchObject({ ok: false, code: "not_waiting_for_review" });
+  });
+
+  test("pickup keeps the desk-only and own-post rules", () => {
+    const fx = _setup({ sqlite });
+    const certTs = ACTIVATION + 60_000;
+    const W = "tip://c/OH-88888888888888-0008";
+    fx.waiting(W);
+    expect(claimedSchema.verifyTx(fx.pickupTx(OTHER_REVIEWER, W), fx.dag, { nowMs: certTs })).toMatchObject({ ok: false, code: "not_desk_member" });
+    const mine = "tip://c/OH-99999999999999-0009";
+    fx.waiting(mine, DESK);
+    expect(claimedSchema.verifyTx(fx.pickupTx(DESK, mine), fx.dag, { nowMs: certTs })).toMatchObject({ ok: false, code: "own_content" });
+    const org = "tip://c/OH-aaaaaaaaaaaaaa-000a";
+    fx.waiting(org, DESK_ORG, { authors: [{ tip_id: DESK_ORG, key_mode: "attribution", role: "contributor", signed: false, tip_id_type: "organization" }] });
+    expect(claimedSchema.verifyTx(fx.pickupTx(DESK, org), fx.dag, { nowMs: certTs })).toEqual({ ok: true });
+  });
+
+  test("pickup is rejected before the activation and names exactly one target", () => {
+    const fx = _setup({ sqlite });
+    const W = "tip://c/OH-bbbbbbbbbbbbbb-000b";
+    fx.waiting(W);
+    const { res } = fx.commit([fx.pickupTx(DESK, W, { timestamp: ACTIVATION - 5000 })], ACTIVATION - 1);
+    expect(res.committed).toBe(0);
+    expect(fx.dag.getContent(W).status).toBe(CONTENT_STATUS.REGISTERED);
+    expect(() => claimedSchema.buildSigningPayload({ ctid: W, review_id: OPEN_ID, reviewer_tip_id: DESK })).toThrow(expect.objectContaining({ code: "claim_target_invalid" }));
+    expect(claimedSchema.verifyTx(fx.pickupTx(DESK, W, { extra: { creator_tip_id: OTHER_ORG } }), fx.dag, { nowMs: ACTIVATION + 60_000 })).toMatchObject({ ok: false, code: "claim_context_mismatch" });
+  });
+
+  test("two desk pickups of one post in a batch: the first wins", () => {
+    const fx = _setup({ sqlite });
+    const second = "tip://id/US-5555eeee5555eeee";
+    const W = "tip://c/OH-cccccccccccccc-000c";
+    fx.waiting(W);
+    fx.dag.saveIdentity({ ...fx.dag.getIdentity(DESK), tip_id: second, public_key: fx.keys[DESK].publicKey, root_public_key: fx.keys[DESK].publicKey, tx_id: shake256("second") });
+    fx.keys[second] = fx.keys[DESK];
+    fx.dag.saveOrgMember({
+      invite_tx_id: shake256("inv2"), org_tip_id: DESK_ORG, member_tip_id: second, role: "reviewer",
+      status: ORG_MEMBER_STATUS.ACTIVE, invited_at: REG, invited_claim: REG, accepted_at: REG,
+      add_tx_id: shake256("add2"), removed_at: null, remove_tx_id: null, removed_by: null,
+    });
+    const { res } = fx.commit([fx.pickupTx(DESK, W), fx.pickupTx(second, W)], ACTIVATION + 60_000);
+    expect(res.committed).toBe(1);
+    expect(fx.dag.getOpenPrescanReviewByCtid(W).assigned_reviewer).toBe(DESK);
+  });
+
   test("replaying the same claim leaves identical state", () => {
     const a = _setup({ sqlite });
     const b = _setup({ sqlite, keys: a.keys });
@@ -320,7 +414,8 @@ describe("review desk API", () => {
     const out = fx.reviewService.claim(OPEN_ID, { ...fields, signature });
     expect(out).toMatchObject({ review_id: OPEN_ID, confirmation: "proposed" });
     const tx = fx.submitted.find(t => t.tx_type === TX_TYPES.PRESCAN_REVIEW_CLAIMED);
-    expect(tx.data).toMatchObject({ review_id: OPEN_ID, reviewer_tip_id: DESK, ctid: CTID, creator_tip_id: CREATOR, previous_reviewer_tip_id: VOLUNTEER });
+    expect(tx.data).toMatchObject({ review_id: OPEN_ID, reviewer_tip_id: DESK, creator_tip_id: CREATOR, previous_reviewer_tip_id: VOLUNTEER });
+    expect(tx.data.ctid).toBeUndefined();
     expect(claimedSchema.verifyTx(tx, fx.dag)).toEqual({ ok: true });
   });
 
@@ -330,6 +425,23 @@ describe("review desk API", () => {
     const fields = { review_id: OPEN_ID, reviewer_tip_id: DESK };
     const signature = claimedSchema.sign(claimedSchema.buildSigningPayload(fields), fx.keys[CREATOR].privateKey);
     expect(() => fx.reviewService.claim(OPEN_ID, { ...fields, signature })).toThrow(expect.objectContaining({ code: "signature_invalid" }));
+  });
+
+  test("pickup through the API, and waiting posts in the open list", () => {
+    const fx = _setup();
+    const W = "tip://c/OH-dddddddddddddd-000d";
+    fx.waiting(W);
+    jest.setSystemTime(ACTIVATION + 1000);
+    const list = fx.reviewService.listOpenReviews({ reviewer_tip_id: DESK });
+    expect(list.waiting_for_reviewer.find(r => r.ctid === W)).toMatchObject({ review_id: null, assigned_reviewer: null, claimable: true, not_claimable_reason: null });
+
+    const fields = { ctid: W, reviewer_tip_id: DESK };
+    const signature = claimedSchema.sign(claimedSchema.buildSigningPayload(fields), fx.keys[DESK].privateKey);
+    const out = fx.reviewService.claim(null, { ...fields, signature });
+    expect(out).toMatchObject({ review_id: null, ctid: W, confirmation: "proposed" });
+    const tx = fx.submitted.find(t => t.tx_type === TX_TYPES.PRESCAN_REVIEW_CLAIMED);
+    expect(tx.data).toEqual({ ctid: W, reviewer_tip_id: DESK, creator_tip_id: CREATOR });
+    expect(claimedSchema.verifyTx(tx, fx.dag, { nowMs: ACTIVATION + 1000 })).toEqual({ ok: true });
   });
 
   test("open list shows idle time and, per person, what they may claim", () => {

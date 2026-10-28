@@ -9,6 +9,7 @@
  *   POST /v1/reviews/:id/accept-correction — creator's Option 1 (private)
  *   GET  /v1/reviews/open                — open assignments (review desk)
  *   POST /v1/reviews/:id/claim           — a desk member takes over a review
+ *   POST /v1/reviews/claim               — a desk member picks up a waiting post (body.ctid)
  *
  * Body signature verification, state-machine gating, and signed-payload
  * canonicalization all live in the schema modules + business-rules; the
@@ -52,6 +53,10 @@ function createRouter({ reviewService }) {
 
   router.post("/reviews/:id/recuse", asyncHandler((req, res) => {
     res.status(202).json(reviewService.recuse(req.params.id, req.body));
+  }));
+
+  router.post("/reviews/claim", asyncHandler((req, res) => {
+    res.status(202).json(reviewService.claim(null, req.body));
   }));
 
   router.post("/reviews/:id/claim", asyncHandler((req, res) => {

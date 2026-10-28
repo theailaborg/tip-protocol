@@ -42,8 +42,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   org's `reviewer` role grants nothing, and nobody assigns a reviewer to
   someone else. Desk membership is managed with the existing roster invite,
   accept and remove flow.
-- `GET /v1/reviews/open` lists open assignments with their idle time; with
-  `?reviewer_tip_id=` each row says whether that person may claim it.
+- A desk member can also pick up a flagged post that is due for review but
+  never got a reviewer (empty or exhausted volunteer pool): the same
+  transaction names the `ctid` instead of a review (`POST /v1/reviews/claim`),
+  accepted only on the automatic trigger's own rule (Original Human, high or
+  critical, past the creator window, no live review). Both pools were empty on
+  mainnet and the test cluster, so without this nothing was claimable.
+- `GET /v1/reviews/open` lists open assignments and posts waiting for a
+  reviewer, with their idle time; with `?reviewer_tip_id=` each row says
+  whether that person may claim it.
 - Commit rule change, shipped with the no-show cap under the same
   `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-11-08 00:00 UTC).
 

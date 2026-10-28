@@ -5,7 +5,8 @@
  *
  *   dismiss(reviewId, body)          → PRESCAN_REVIEW_DISMISSED
  *   confirm(reviewId, body)          → PRESCAN_REVIEW_CONFIRMED
- *   claim(reviewId, body)            → PRESCAN_REVIEW_CLAIMED (desk takeover)
+ *   claim(reviewId, body)            → PRESCAN_REVIEW_CLAIMED (desk takeover,
+ *                                      or pickup of a waiting post by ctid)
  *   listOpenReviews(query)           → open assignments for the review desk
  *   acceptCorrection(reviewId, body) → UPDATE_ORIGIN (commit-handler
  *                                      auto-flips the review row to
@@ -26,7 +27,7 @@
 
 const { TX_TYPES, PRESCAN_REVIEW_STATES, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
 const { nowMs, nowPlusMs } = require("../../../shared/time");
-const { REVIEWER, JURY, DISPUTE } = require("../../../shared/protocol-constants");
+const { REVIEWER, JURY, DISPUTE, CONTENT_GRACE } = require("../../../shared/protocol-constants");
 const { selectJury } = require("../jury");
 const { validateTransaction } = require("../validators/tx-validator");
 const dismissedSchema = require("../schemas/prescan-review-dismissed");
@@ -215,13 +216,16 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     return atMs >= gate;
   }
 
+  // reviewId set: take over that open review. reviewId null: body.ctid names a
+  // waiting post to pick up.
   function claim(reviewId, body) {
     const timestamp = nowMs();
     if (!_deskActive(timestamp)) {
       throw schemaError(403, "The review desk is not active yet", "review_desk_inactive");
     }
-    const safeBody = { ...(body || {}), review_id: reviewId };
-    claimedSchema.validateRequest(safeBody, { dag });
+    const safeBody = { ...(body || {}) };
+    if (reviewId) { safeBody.review_id = reviewId; delete safeBody.ctid; } else { delete safeBody.review_id; }
+    const target = claimedSchema.validateRequest(safeBody, { dag, nowMs: timestamp });
 
     const claimer = dag.getIdentity(safeBody.reviewer_tip_id);
     const payload = claimedSchema.buildSigningPayload(safeBody);
@@ -229,29 +233,34 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       throw schemaError(403, "Reviewer signature verification failed", "signature_invalid");
     }
 
-    const review = dag.getPrescanReview(reviewId);
-    const tx = withTxId({
-      tx_type: TX_TYPES.PRESCAN_REVIEW_CLAIMED,
-      timestamp,
-      data: {
+    let data;
+    if (target === "review") {
+      const review = dag.getPrescanReview(reviewId);
+      data = {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
-        ctid: review.ctid,
         creator_tip_id: review.creator_tip_id,
         previous_reviewer_tip_id: review.assigned_reviewer,
-      },
-      signature: safeBody.signature,
-    }, dag);
+      };
+    } else {
+      data = {
+        ctid: safeBody.ctid,
+        reviewer_tip_id: safeBody.reviewer_tip_id,
+        creator_tip_id: dag.getContent(safeBody.ctid).author_tip_id,
+      };
+    }
+    const tx = withTxId({ tx_type: TX_TYPES.PRESCAN_REVIEW_CLAIMED, timestamp, data, signature: safeBody.signature }, dag);
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
     submitTx(tx);
-    log.info(`Review claimed: ${reviewId} by ${safeBody.reviewer_tip_id} (was ${review.assigned_reviewer})`);
-    return { review_id: reviewId, tx_id: tx.tx_id, confirmation: "proposed" };
+    log.info(`Review claimed: ${reviewId || safeBody.ctid} by ${safeBody.reviewer_tip_id}`);
+    return { review_id: reviewId || null, ctid: data.ctid || null, tx_id: tx.tx_id, confirmation: "proposed" };
   }
 
-  // Desk view of open assignments. With reviewer_tip_id, each row says whether
-  // that person may claim it (same checks as the claim itself).
+  // Desk view: open assignments plus flagged posts waiting with no reviewer.
+  // With reviewer_tip_id, each row says whether that person may claim it
+  // (same checks as the claim itself).
   function listOpenReviews(query = {}) {
     const now = nowMs();
     const who = typeof query.reviewer_tip_id === "string" ? query.reviewer_tip_id : null;
@@ -279,7 +288,32 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       }
       return row;
     });
-    return { desk_active: _deskActive(now), count: reviews.length, reviews };
+    const waiting = dag.getContentsNeedingReview(now).map(c => {
+      const since = Number.isFinite(c.prescan_completed_at) ? c.prescan_completed_at + CONTENT_GRACE.FLAGGED_MS : null;
+      const row = {
+        review_id: null,
+        ctid: c.ctid,
+        prescan_tier: c.prescan_tier,
+        assigned_reviewer: null,
+        waiting_since_ms: since,
+        idle_ms: since != null ? Math.max(0, now - since) : null,
+      };
+      if (who) {
+        let reason = deskError;
+        if (!reason) {
+          try { claimedSchema.resolvePickup(c.ctid, who, dag, now); } catch (err) { reason = err.code || "not_claimable"; }
+        }
+        row.claimable = !reason;
+        row.not_claimable_reason = reason;
+      }
+      return row;
+    });
+    return {
+      desk_active: _deskActive(now),
+      count: reviews.length + waiting.length,
+      reviews,
+      waiting_for_reviewer: waiting,
+    };
   }
 
   function acceptCorrection(reviewId, body) {

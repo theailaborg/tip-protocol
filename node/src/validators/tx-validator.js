@@ -185,8 +185,10 @@ const SCHEMA = {
     types: { review_id: "string", reviewer_tip_id: "string" },
   },
   [TX_TYPES.PRESCAN_REVIEW_CLAIMED]: {
-    required: ["review_id", "reviewer_tip_id"],
-    types: { review_id: "string", reviewer_tip_id: "string" },
+    // review_id (takeover) or ctid (pickup of a waiting post); the schema
+    // module requires exactly one.
+    required: ["reviewer_tip_id"],
+    types: { reviewer_tip_id: "string" },
   },
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: {
     // review_id is always required. reviewer_tip_id is user-recuse only;

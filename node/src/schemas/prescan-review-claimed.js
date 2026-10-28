@@ -1,9 +1,13 @@
 /**
  * @file @tip-protocol/node/src/schemas/prescan-review-claimed.js
  * @description Canonical schema for `PRESCAN_REVIEW_CLAIMED`: a review desk
- * member takes over an open review. The open slot closes as CLAIMED_OVER (no
- * no-show for the replaced reviewer) and commit-handler opens a new TRIGGERED
- * slot assigned to the claimer, its SLA clock starting at the cert time.
+ * member takes a case. Two forms:
+ *   review_id: take over an open review. The open slot closes as CLAIMED_OVER
+ *              (no no-show for the replaced reviewer).
+ *   ctid:      pick up a flagged post that is due for review but has no
+ *              reviewer (empty or exhausted pool), on the trigger's own rule.
+ * Either way commit-handler opens a TRIGGERED slot assigned to the claimer,
+ * its SLA clock starting at the cert time.
  *
  * The desk is the genesis organization's roster members holding
  * PRESCAN_REVIEW_DESK.ROLE. A claimer may never take a post they signed or
@@ -11,11 +15,12 @@
  *
  * Signed by: the claimer's ML-DSA-65 key (body signature).
  *
- * Canonical signed fields (alphabetical):
+ * Canonical signed fields (alphabetical), exactly one of ctid / review_id:
+ *   ctid               string, the waiting post being picked up
  *   review_id          string, the open review being taken over
  *   reviewer_tip_id    string, the claimer
- * Unsigned context added by the API (checked against the review at commit):
- *   ctid, creator_tip_id, previous_reviewer_tip_id
+ * Unsigned context added by the API (checked at commit):
+ *   creator_tip_id, previous_reviewer_tip_id (takeover only)
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -82,13 +87,37 @@ function resolveReview(reviewId, claimerTipId, dag) {
   return review;
 }
 
+// Due on the trigger's own predicate, so a pickup and an automatic assignment
+// can never disagree on which posts are waiting.
+function resolvePickup(ctid, claimerTipId, dag, atMs) {
+  const content = dag.getContent(ctid);
+  if (!content) {
+    throw schemaError(404, `Content not found: ${ctid}`, "content_not_found");
+  }
+  if (_isOwnContent(content, claimerTipId)) {
+    throw schemaError(403, "You cannot review content you signed or authored", "own_content");
+  }
+  const due = Number.isFinite(atMs) && dag.getContentsNeedingReview(atMs).some(c => c.ctid === ctid);
+  if (!due) {
+    throw schemaError(409, "This post is not waiting for a reviewer", "not_waiting_for_review");
+  }
+  return content;
+}
+
+function _target(input) {
+  const hasReview = typeof input.review_id === "string" && input.review_id.length > 0;
+  const hasCtid = typeof input.ctid === "string" && input.ctid.length > 0;
+  if (hasReview === hasCtid) {
+    throw schemaError(400, "exactly one of review_id or ctid is required", "claim_target_invalid");
+  }
+  return hasReview ? "review" : "post";
+}
+
 function validateRequest(body, deps) {
   if (!body || typeof body !== "object") {
     throw schemaError(400, "request body is required", "body_invalid");
   }
-  if (typeof body.review_id !== "string" || body.review_id.length === 0) {
-    throw schemaError(400, "review_id is required", "review_id_required");
-  }
+  const target = _target(body);
   if (typeof body.reviewer_tip_id !== "string" || !body.reviewer_tip_id.startsWith("tip://id/")) {
     throw schemaError(400, "reviewer_tip_id is required (tip://id/...)", "reviewer_tip_id_required");
   }
@@ -96,20 +125,20 @@ function validateRequest(body, deps) {
     throw schemaError(400, "signature is required", "signature_required");
   }
   resolveClaimer(body.reviewer_tip_id, deps.dag);
-  resolveReview(body.review_id, body.reviewer_tip_id, deps.dag);
+  if (target === "review") resolveReview(body.review_id, body.reviewer_tip_id, deps.dag);
+  else resolvePickup(body.ctid, body.reviewer_tip_id, deps.dag, deps.nowMs);
+  return target;
 }
 
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {
     throw schemaError(400, "input must be an object", "input_invalid");
   }
-  if (typeof input.review_id !== "string") {
-    throw schemaError(400, "review_id is required", "review_id_required");
-  }
+  _target(input);
   if (typeof input.reviewer_tip_id !== "string") {
     throw schemaError(400, "reviewer_tip_id is required", "reviewer_tip_id_required");
   }
-  return buildSignedPayload(input, { required: ["review_id", "reviewer_tip_id"] });
+  return buildSignedPayload(input, { required: ["reviewer_tip_id"], optional: ["ctid", "review_id"] });
 }
 
 function sign(payload, privateKeyHex, opts) {
@@ -120,23 +149,31 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
   return verifyPayload(payload, signatureHex, publicKeyHex);
 }
 
-/** State checks at consensus replay; the signature is verified by the unified dispatcher. */
-function verifyTx(tx, dag) {
+/**
+ * State checks at consensus replay; the signature is verified by the unified
+ * dispatcher. A pickup is judged at `nowMs` (the round's cert time at commit).
+ */
+function verifyTx(tx, dag, { nowMs } = {}) {
   const d = tx.data || {};
-  if (!d.review_id) {
-    return { ok: false, status: 400, error: "review_id missing", code: "review_id_missing" };
-  }
   if (!d.reviewer_tip_id) {
     return { ok: false, status: 400, error: "reviewer_tip_id missing", code: "reviewer_tip_id_missing" };
   }
   try {
+    const target = _target(d);
     resolveClaimer(d.reviewer_tip_id, dag);
-    const review = resolveReview(d.review_id, d.reviewer_tip_id, dag);
-    // Unsigned context fields drive attribution, so they must name this review.
-    if ((d.ctid ?? review.ctid) !== review.ctid
-      || (d.creator_tip_id ?? review.creator_tip_id) !== review.creator_tip_id
-      || (d.previous_reviewer_tip_id ?? review.assigned_reviewer) !== review.assigned_reviewer) {
-      return { ok: false, status: 400, error: "claim context does not match the review", code: "claim_context_mismatch" };
+    // Unsigned context fields drive attribution, so they must name the case.
+    let mismatch;
+    if (target === "review") {
+      const review = resolveReview(d.review_id, d.reviewer_tip_id, dag);
+      mismatch = (d.creator_tip_id ?? review.creator_tip_id) !== review.creator_tip_id
+        || (d.previous_reviewer_tip_id ?? review.assigned_reviewer) !== review.assigned_reviewer;
+    } else {
+      const content = resolvePickup(d.ctid, d.reviewer_tip_id, dag, nowMs);
+      mismatch = (d.creator_tip_id ?? content.author_tip_id) !== content.author_tip_id
+        || d.previous_reviewer_tip_id != null;
+    }
+    if (mismatch) {
+      return { ok: false, status: 400, error: "claim context does not match the case", code: "claim_context_mismatch" };
     }
   } catch (err) {
     if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
@@ -152,6 +189,7 @@ module.exports = {
   SUBJECT_TIP_ID_FIELD,
   resolveClaimer,
   resolveReview,
+  resolvePickup,
   validateRequest,
   buildSigningPayload,
   sign,

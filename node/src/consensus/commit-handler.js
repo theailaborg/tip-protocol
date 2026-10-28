@@ -148,6 +148,8 @@ const CONTENT_STATUS_MUTATORS = Object.freeze([
   TX_TYPES.CONTENT_DISPUTED, TX_TYPES.CONTENT_VERIFIED,
   TX_TYPES.CONTENT_RETRACTED, TX_TYPES.UPDATE_ORIGIN,
   TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
+  // Only its ctid form (a desk pickup) carries data.ctid and flips the status.
+  TX_TYPES.PRESCAN_REVIEW_CLAIMED,
 ]);
 
 /**
@@ -863,6 +865,15 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // Cross-type: each review_id gets exactly ONE terminal decision
         // per batch. Real collisions: reviewer decision racing the
         // scheduler's SLA auto-recuse at the 48h boundary, or a desk claim.
+        if (tx.tx_type === TX_TYPES.PRESCAN_REVIEW_CLAIMED && !d.review_id) {
+          // Pickup of a waiting post: one status change per ctid per batch
+          // (races the automatic trigger and any other status mutator).
+          if (!d.ctid) return { valid: true };
+          const sibling = validated.find(t =>
+            CONTENT_STATUS_MUTATORS.includes(t.tx_type) && t.data?.ctid === d.ctid);
+          if (sibling) return { valid: false, error: `content-status conflict in batch: ${sibling.tx_type} already accepted for ${d.ctid}` };
+          return { valid: true };
+        }
         if (!d.review_id) return { valid: true };
         const TERMINAL_TYPES = [
           TX_TYPES.PRESCAN_REVIEW_DISMISSED,
@@ -1277,7 +1288,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         if (!_reviewCapActive(certTimestamp)) {
           return { valid: false, error: `review claim for ${d.review_id} before the review desk activation` };
         }
-        const r = prescanReviewClaimedSchema.verifyTx(tx, dag);
+        const r = prescanReviewClaimedSchema.verifyTx(tx, dag, { nowMs: certTimestamp });
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
@@ -1543,9 +1554,26 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       }
 
       case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
-        // A desk member took the case: close the open slot without a no-show
-        // and open the claimer's slot, its SLA clock starting now (the
-        // auto-recuse keys off triggered_at_ms). Content stays PENDING_REVIEW.
+        // A desk member took the case: open the claimer's slot, its SLA clock
+        // starting now (the auto-recuse keys off triggered_at_ms). A takeover
+        // also closes the open slot without a no-show; a pickup flips the
+        // waiting post to PENDING_REVIEW as a trigger would.
+        if (!d.review_id) {
+          const content = dag.getContent(d.ctid);
+          if (content) {
+            dag.savePrescanReview({
+              review_id: _deriveClaimReviewId(d.ctid, round),
+              ctid: d.ctid,
+              creator_tip_id: content.author_tip_id,
+              assigned_reviewer: d.reviewer_tip_id,
+              triggered_at_round: round,
+              triggered_at_ms: _committedCertTimestamp || null,
+              state: PRESCAN_REVIEW_STATES.TRIGGERED,
+            });
+            dag.updateContentStatus(d.ctid, CONTENT_STATUS.PENDING_REVIEW);
+          }
+          break;
+        }
         const review = dag.getPrescanReview(d.review_id);
         if (review) {
           dag.savePrescanReview({
