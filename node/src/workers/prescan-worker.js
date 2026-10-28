@@ -33,7 +33,8 @@
 
 "use strict";
 
-const { TX_TYPES, PRESCAN_PERMANENT_MEDIA_ERRORS, PRESCAN_JOB } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_PERMANENT_MEDIA_ERRORS, PRESCAN_JOB, PRESCAN_DOCUMENT_NOT_SCANNED } = require("../../../shared/constants");
+const { isDocumentMime } = require("../schemas/media-upload");
 const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { nowMs } = require("../../../shared/time");
 const { aggregate } = require("../services/prescan-aggregator");
@@ -272,7 +273,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
         content_type: contentType,
         content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
         modality_results: [],
-        media_results: [],
+        media_results: mediaResults,
         classifier_version: classifierVersion || "n/a",
         classifier_providers_used: providersUsed || "skipped_locally",
         completed_at: now(),
@@ -575,9 +576,26 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
   async function _runClassifierScan(job, payload) {
     const text = typeof payload.text === "string" ? payload.text : "";
     const originCode = payload.origin_code;
-    const media = Array.isArray(payload.media) ? payload.media : [];
+    const allMedia = Array.isArray(payload.media) ? payload.media : [];
     const cleared = Number.isInteger(payload.creator_cleared_count) ? payload.creator_cleared_count : 0;
     const authorTip = payload.author_tip_id || undefined;
+
+    // Documents are not scanned yet: they never reach the classifier (no
+    // download of a large file it would refuse) and are recorded per file as
+    // not scanned, so text and other media still get a real verdict.
+    const media = allMedia.filter(m => !isDocumentMime(m && m.mime));
+    const notScanned = allMedia.filter(m => isDocumentMime(m && m.mime)).map(m => ({
+      media_id: m.media_id, mime: m.mime, probability: null, provider: PRESCAN_DOCUMENT_NOT_SCANNED,
+    }));
+    if (media.length === 0 && notScanned.length > 0 && text.trim() === "") {
+      return {
+        modalityResults: [],
+        mediaResults: notScanned,
+        providersUsed: PRESCAN_DOCUMENT_NOT_SCANNED,
+        classifierVersion: "n/a",
+        skipped: true,
+      };
+    }
 
     const calls = [];
     if (media.length === 0) {
@@ -649,7 +667,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
 
     return {
       modalityResults,
-      mediaResults,
+      mediaResults: mediaResults.concat(notScanned),
       providersUsed: Array.from(providers).join("|"),
       classifierVersion: version || "unknown",
     };

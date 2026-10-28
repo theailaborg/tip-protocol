@@ -33,6 +33,7 @@
 const express = require("express");
 const { UPLOAD_SESSION_STATE } = require("../../../shared/constants");
 const { asyncHandler } = require("../middleware/error-handler");
+const mediaUploadSchema = require("../schemas/media-upload");
 
 function createRouter({ mediaService, chunkedUploadService }) {
   const router = express.Router();
@@ -159,9 +160,12 @@ function createRouter({ mediaService, chunkedUploadService }) {
         expires_at: out.expires_at,
       });
     }
-    // transport === "stream" — fs backend, direct response.
+    // transport === "stream" — fs backend, direct response. User-uploaded bytes
+    // on the node's own origin: never let a browser sniff or render a document.
     res.setHeader("Content-Type", out.mime);
     res.setHeader("Content-Length", out.bytes.length);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (mediaUploadSchema.isDocumentMime(out.mime)) res.setHeader("Content-Disposition", "attachment");
     res.send(out.bytes);
   }));
 

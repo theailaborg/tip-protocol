@@ -27,6 +27,7 @@ const { Transform } = require("stream");
 const { shake256, shake256Incremental, mldsaVerify } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { MEDIA_LIMITS } = require("../../../shared/constants");
+const { createMediaSniffer } = require("./media-sniff");
 const { schemaError } = require("../schemas/_common");
 const mediaUploadSchema = require("../schemas/media-upload");
 const mediaAccessSchema = require("../schemas/media-access");
@@ -182,24 +183,30 @@ function createMediaService({ storage, dag, log, mediaLimits = MEDIA_LIMITS, sel
     let size = 0;
     let detectedMime = null;
     let sizeLimit = null;
-    let sniffBuf = Buffer.alloc(0);
+    // A ZIP is only known to be a document (and which one) once its end is
+    // seen; until then it streams under the document cap.
+    let zipPending = false;
+    const sniffer = createMediaSniffer();
     const gauge = new Transform({
       transform(chunk, _enc, cb) {
         // Sniff the real type off the first bytes (magic numbers live in
         // the first 16). The detected mime — never the claim — drives the
         // family gate and the size cap, so a mislabeled upload can't dodge
         // a cap or store a wrong label.
-        if (detectedMime === null) {
-          sniffBuf = Buffer.concat([sniffBuf, chunk]);
-          if (sniffBuf.length >= 16) {
-            detectedMime = mediaUploadSchema.detectMime(sniffBuf);
-            try {
+        sniffer.push(chunk);
+        if (detectedMime === null && !zipPending && sniffer.headLength() >= 16) {
+          try {
+            if (sniffer.isZip()) {
+              zipPending = true;
+              sizeLimit = mediaLimits.max_document_bytes;
+              if (!(sizeLimit > 0)) throw schemaError(415, "Mime family disabled on this node: documents", "mime_disabled");
+            } else {
+              detectedMime = mediaUploadSchema.detectMime(sniffer.head());
               sizeLimit = mediaUploadSchema.limitForDetectedMime(detectedMime, mediaLimits);
-            } catch (err) {
-              cb(err);
-              return;
             }
-            sniffBuf = Buffer.alloc(0);
+          } catch (err) {
+            cb(err);
+            return;
           }
         }
         size += chunk.length;
@@ -217,11 +224,13 @@ function createMediaService({ storage, dag, log, mediaLimits = MEDIA_LIMITS, sel
       if (size === 0) {
         throw schemaError(400, "bytes is required (non-empty body)", "bytes_required");
       }
-      // Bodies under 16 bytes never triggered the in-flight sniff; no real
-      // media is that small, and limitForDetectedMime(null) rejects 415.
+      // Bodies under 16 bytes never triggered the in-flight sniff (no real
+      // media is that small, and limitForDetectedMime(null) rejects 415); a
+      // ZIP is resolved now that its central directory has been seen.
       if (detectedMime === null) {
-        detectedMime = mediaUploadSchema.detectMime(sniffBuf);
+        detectedMime = mediaUploadSchema.detectMime(sniffer.head(), sniffer.tail());
         sizeLimit = mediaUploadSchema.limitForDetectedMime(detectedMime, mediaLimits);
+        if (size > sizeLimit) throw schemaError(413, `File too large: ${size} > ${sizeLimit}`, "file_too_large");
       }
       if (detectedMime !== mime) {
         logger.warn?.(`media-upload(stream): claimed mime ${mime} != detected ${detectedMime}; storing detected (signer ${signer_tip_id})`);

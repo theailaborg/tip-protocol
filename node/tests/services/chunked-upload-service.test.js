@@ -1020,3 +1020,59 @@ describe("presigned chunked upload: session token", () => {
     expect(again.media_id).toBe(first.media_id);
   });
 });
+
+describe("presigned chunked upload: documents", () => {
+  const DOCS = path.join(__dirname, "../fixtures/documents");
+  const docBytes = (f) => require("fs").readFileSync(path.join(DOCS, f));
+  const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+  // Re-hash reads the assembled object back in small pieces, like a real S3 body.
+  function _smallChunkReads(fx, size) {
+    const original = fx.storage.getObjectStream.bind(fx.storage);
+    fx.storage.getObjectStream = async (key) => {
+      const { size: total } = await original(key);
+      const buf = fx.storage._objects.get(key);
+      return {
+        size: total,
+        stream: (async function* () { for (let i = 0; i < buf.length; i += size) yield buf.subarray(i, i + size); })(),
+      };
+    };
+  }
+
+  async function _completeUpload(fx, bytes, mime) {
+    const { init, parts } = await _upload(fx, bytes, mime);
+    const ts = nowMs();
+    return fx.svc.complete(init.session_id, {
+      signer_tip_id: TIP, timestamp: ts, parts,
+      signature: _signAction("MEDIA_UPLOAD_COMPLETE", init.session_id, ts, TIP, fx.kp.privateKey),
+    });
+  }
+
+  test("a DOCX whose Word names sit at the end is stored as DOCX", async () => {
+    const fx = _setup();
+    _smallChunkReads(fx, 4096);
+    const docx = docBytes("names-at-end.docx");
+    const out = await _completeUpload(fx, docx, DOCX);
+    expect(out.mime).toBe(DOCX);
+    expect(out.media_id).toBe(shake256(docx));
+  });
+
+  test("a PDF is stored as application/pdf", async () => {
+    const fx = _setup();
+    const out = await _completeUpload(fx, docBytes("fixture.pdf"), "application/pdf");
+    expect(out.mime).toBe("application/pdf");
+  });
+
+  test("a macro-carrying DOCM claimed as DOCX is refused 415 and never promoted", async () => {
+    const fx = _setup();
+    const docm = docBytes("macro.docm");
+    await expect(_completeUpload(fx, docm, DOCX)).rejects.toMatchObject({ status: 415 });
+    expect(fx.storage._objects.has(`media/${shake256(docm)}`)).toBe(false);
+  });
+
+  test("init refuses a non-document application/* claim", async () => {
+    const fx = _setup();
+    const zip = docBytes("archive.zip");
+    await expect(_upload(fx, zip, "application/zip")).rejects.toMatchObject({ status: 415, code: "mime_invalid" });
+  });
+});

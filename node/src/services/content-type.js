@@ -36,6 +36,9 @@
 
 const { CONTENT_TYPE } = require("../../../shared/protocol-constants");
 const { PLATFORM_ALIASES, PLATFORM_CONTENT_TYPE } = require("../../../shared/platforms");
+const { DOCUMENT_MIME_VALUES } = require("../../../shared/constants");
+
+const DOCUMENT_MIME_SET = new Set(DOCUMENT_MIME_VALUES);
 
 const PRIMARY_MODALITY = Object.freeze({
   text: "text",
@@ -57,14 +60,18 @@ function _shape(req) {
   const hasVideo = mimes.some(m => m.startsWith("video/"));
   const hasAudio = mimes.some(m => m.startsWith("audio/"));
   const hasImage = mimes.some(m => m.startsWith("image/"));
+  // A document is mostly text and is not a scanned modality yet, so it adds
+  // no kind; it only makes an otherwise empty post classifiable as text.
+  const hasDocument = mimes.some(m => DOCUMENT_MIME_SET.has(m));
   const kinds = [hasVideo, hasAudio, hasImage].filter(Boolean).length;
 
   return {
     text,
     textLen: text.length,
-    hasVideo, hasAudio, hasImage,
+    hasVideo, hasAudio, hasImage, hasDocument,
     kinds,
     mediaCount: media.length,
+    empty: kinds === 0 && text.length === 0 && !hasDocument,
   };
 }
 
@@ -88,7 +95,7 @@ function deriveContentType(req) {
   if (s.hasImage) {
     return s.textLen >= CONTENT_TYPE.ARTICLE_TEXT_THRESHOLD_CHARS ? "text" : "image";
   }
-  if (s.textLen > 0) return "text";
+  if (s.textLen > 0 || s.hasDocument) return "text";
 
   return null;
 }
@@ -139,12 +146,12 @@ function applyStrategy(strategy, req) {
   // heuristic path.
   if (strategy === "video" || strategy === "audio" || strategy === "image" || strategy === "text") {
     const s = _shape(req);
-    if (s.kinds === 0 && s.textLen === 0) return null;
+    if (s.empty) return null;
     return strategy;
   }
 
   const s = _shape(req);
-  if (s.kinds === 0 && s.textLen === 0) return null;
+  if (s.empty) return null;
 
   if (strategy === "MEDIA_DOMINANT") {
     if (s.kinds >= 2) return "multi";
@@ -155,7 +162,7 @@ function applyStrategy(strategy, req) {
   }
 
   if (strategy === "TEXT_DOMINANT") {
-    if (s.textLen > 0) return "text";
+    if (s.textLen > 0 || (s.kinds === 0 && s.hasDocument)) return "text";
     if (s.kinds >= 2) return "multi";
     if (s.hasVideo) return "video";
     if (s.hasAudio) return "audio";
