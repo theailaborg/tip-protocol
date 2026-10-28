@@ -54,6 +54,27 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Commit rule change, shipped with the no-show cap under the same
   `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-11-08 00:00 UTC).
 
+**Document uploads (PDF, DOCX, PPTX, XLSX, ODT, ODP, ODS, EPUB, RTF)**
+- Documents upload and register as media like images and video: both the
+  single-request and the presigned multipart path, streamed and hashed without
+  buffering, counted in the media quota, capped by a new node-local
+  `max_document_bytes` (default 1 GiB, `TIP_MAX_DOCUMENT_BYTES`, 0 disables;
+  shown in `/health` `media_limits`).
+- The type comes from the bytes: `%PDF-`, `{\rtf`, and for ZIP containers the
+  member names (OpenDocument/EPUB `mimetype` entry, OOXML
+  `[Content_Types].xml` plus `word/`, `ppt/` or `xl/`). The upload keeps the
+  file's first 64 KiB and, for a ZIP, its last 1 MiB, so a document whose
+  names sit at the end is still recognised. Plain archives, macro-enabled
+  OOXML and legacy `.doc`/`.ppt`/`.xls` are refused (415).
+- Not scanned by the classifier yet: documents are never sent to it, the
+  text and other media of the post still get a real verdict, and each
+  document's `media_results` entry carries `probability: null` with provider
+  `document_not_scanned` (already valid for every node, so no activation
+  date). A document-only post resolves to content type `text` and, with no
+  text, gets a skipped verdict that is never flagged.
+- A document fetched over the `fs` transport is a forced download
+  (`Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`).
+
 **Node 2.8.0: website protection and owner takeover (consensus, two activation dates)**
 - Website protection, active from **2026-11-01 00:00 UTC**
   (`WEBSITE_PROTECTION_ACTIVATION_MS`): a personal TIP-ID may bind a domain as

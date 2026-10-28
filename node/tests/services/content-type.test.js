@@ -556,3 +556,26 @@ describe("primaryModality", () => {
     expect(primaryModality("unknown")).toBeNull();
   });
 });
+
+describe("documents", () => {
+  const doc = { media_id: "d".repeat(64), mime: "application/pdf" };
+
+  test("a document-only post is classifiable as text", () => {
+    expect(resolve({ text: "", media: [doc] }).contentType).toBe("text");
+  });
+
+  test("platform strategies treat a lone document as text", () => {
+    expect(applyStrategy("TEXT_DOMINANT", { text: "", media: [doc] })).toBe("text");
+    expect(applyStrategy("MEDIA_DOMINANT", { text: "", media: [doc] })).toBe("text");
+    expect(applyStrategy("MIXED", { text: "", media: [doc] })).toBe("text");
+  });
+
+  test("a document adds no modality to a post with other media", () => {
+    expect(deriveContentType({ text: "hi", media: [doc, { mime: "image/png" }] })).toBe("image");
+    expect(deriveContentType({ text: "", media: [doc, { mime: "video/mp4" }] })).toBe("video");
+  });
+
+  test("an empty post is still not classifiable", () => {
+    expect(() => resolve({ text: "", media: [] })).toThrow(expect.objectContaining({ code: "no_content_to_classify" }));
+  });
+});
