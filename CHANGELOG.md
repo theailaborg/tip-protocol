@@ -11,7 +11,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-**Document uploads (PDF, DOCX, PPTX, XLSX, ODT, ODP, ODS, EPUB, RTF)**
+**Node 2.8.1: document uploads (PDF, DOCX, PPTX, XLSX, ODT, ODP, ODS, EPUB, RTF)**
+- No consensus change and no activation date: nodes can upgrade in any order.
+  Roll the nodes a VP uploads to before deploying that VP's document support,
+  or its document uploads fail with `415 mime_invalid`.
 - Documents upload and register as media like images and video: both the
   single-request and the presigned multipart path, streamed and hashed without
   buffering, counted in the media quota, capped by a new node-local
