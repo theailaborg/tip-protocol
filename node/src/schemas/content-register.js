@@ -59,6 +59,10 @@ const { shake256 } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const roster = require("./_org-members");
 const { validateContentSize } = require("../middleware/validate");
+const { DOCUMENT_MIME_VALUES } = require("../../../shared/constants");
+
+const MEDIA_MIME_RE = /^(image|audio|video)\/[a-z0-9.+\-]+$/i;
+const DOCUMENT_MIME_SET = new Set(DOCUMENT_MIME_VALUES);
 
 const TX_TYPE = TX_TYPES.REGISTER_CONTENT;
 // GH #51 — unified signature storage. The signer (`signer_tip_id` —
@@ -273,8 +277,8 @@ function validateRequest(body, deps) {
       if (typeof m.media_id !== "string" || !/^[0-9a-f]{64}$/.test(m.media_id)) {
         throw schemaError(400, `media[${i}].media_id must be 64-char lowercase hex`, "media_id_invalid");
       }
-      if (typeof m.mime !== "string" || !/^(image|audio|video)\/[a-z0-9.+\-]+$/i.test(m.mime)) {
-        throw schemaError(400, `media[${i}].mime must be image/*, audio/*, or video/*`, "media_mime_invalid");
+      if (typeof m.mime !== "string" || !(MEDIA_MIME_RE.test(m.mime) || DOCUMENT_MIME_SET.has(m.mime.toLowerCase()))) {
+        throw schemaError(400, `media[${i}].mime must be image/*, audio/*, video/* or a supported document type`, "media_mime_invalid");
       }
     }
   }

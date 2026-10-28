@@ -1,0 +1,1 @@
+Generated for node/tests/media-document-detect.test.js: fixture.pdf by macOS cupsfilter, fixture.docx/.odt/.rtf and legacy.doc by macOS textutil, the rest by Python zipfile (see the test file header). Contents are a two-line placeholder text.

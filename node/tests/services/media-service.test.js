@@ -151,7 +151,7 @@ describe("media-service.upload — validation", () => {
   });
 
   test("rejects unsupported mime family", async () => {
-    const input = _signedUpload(Buffer.from("x"), "application/pdf", identity.tip_id, kp);
+    const input = _signedUpload(Buffer.from("x"), "application/zip", identity.tip_id, kp);
     await expect(service.upload(input)).rejects.toMatchObject({ code: "mime_invalid" });
   });
 
@@ -503,7 +503,8 @@ describe("media-service — server-side mime detection", () => {
   });
 
   test("unrecognized format → 415 format_unsupported (buffered + stream)", async () => {
-    const junk = Buffer.concat([Buffer.from("%PDF-1.4 not media"), Buffer.alloc(32)]);
+    // A Windows executable: neither media nor a listed document.
+    const junk = Buffer.concat([Buffer.from([0x4d, 0x5a, 0x90, 0x00]), Buffer.from("This program cannot be run"), Buffer.alloc(32)]);
     await expect(service.upload(_signedUpload(junk, "image/png", identity.tip_id, kp)))
       .rejects.toMatchObject({ status: 415, code: "format_unsupported" });
     const { Readable } = require("stream");
@@ -842,5 +843,77 @@ describe("detectMime: audio/video magic hardening", () => {
 
   test("EBML without a readable DocType falls back to video/webm", () => {
     expect(detectMime(_ebml(null))).toBe("video/webm");
+  });
+});
+
+describe("media-service: document uploads", () => {
+  const DOCS = path.join(__dirname, "../fixtures/documents");
+  const docBytes = (f) => require("fs").readFileSync(path.join(DOCS, f));
+  let storage, service, root, kp, identity;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+    kp = generateMLDSAKeypair();
+    identity = { tip_id: "tip://id/US-ddddeeeeffff0000", public_key: kp.publicKey, status: "active" };
+    service = createMediaService({ storage, dag: _fakeDag(identity) });
+  });
+
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  function chunked(bytes, size) {
+    const out = [];
+    for (let i = 0; i < bytes.length; i += size) out.push(bytes.subarray(i, i + size));
+    return out;
+  }
+
+  test("a buffered PDF upload is stored as application/pdf", async () => {
+    const pdf = docBytes("fixture.pdf");
+    const r = await service.upload(_signedUpload(pdf, "application/pdf", identity.tip_id, kp));
+    expect(r.mime).toBe("application/pdf");
+    expect((await service.fetchBytes(r.media_id)).mime).toBe("application/pdf");
+  });
+
+  test("a streamed DOCX whose Word names sit at the end is detected from its tail", async () => {
+    const docx = docBytes("names-at-end.docx");
+    const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const base = _signedUpload(docx, mime, identity.tip_id, kp);
+    const r = await service.uploadStream({ ...base, bytes: undefined, stream: Readable.from(chunked(docx, 8192)) });
+    expect(r.mime).toBe(mime);
+    expect(r.media_id).toBe(shake256(docx));
+  });
+
+  test("a plain ZIP claimed as DOCX is refused 415 and nothing is kept", async () => {
+    const zip = docBytes("archive.zip");
+    const base = _signedUpload(zip, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", identity.tip_id, kp);
+    await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([zip]) }))
+      .rejects.toMatchObject({ status: 415, code: "format_unsupported" });
+    expect((await storage.head(shake256(zip))).exists).toBe(false);
+    expect(await fs.readdir(await storage.stagingDir())).toEqual([]);
+  });
+
+  test("a ZIP over the document cap is stopped mid-stream with 413", async () => {
+    const svc = createMediaService({ storage, dag: _fakeDag(identity), mediaLimits: { ...MEDIA_LIMITS, max_document_bytes: 4096 } });
+    const docx = docBytes("names-at-end.docx");
+    const base = _signedUpload(docx, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", identity.tip_id, kp);
+    await expect(svc.uploadStream({ ...base, bytes: undefined, stream: Readable.from(chunked(docx, 1024)) }))
+      .rejects.toMatchObject({ code: "file_too_large" });
+    expect(await fs.readdir(await storage.stagingDir())).toEqual([]);
+  });
+
+  test("documents disabled on this node (cap 0) are refused before storing", async () => {
+    const svc = createMediaService({ storage, dag: _fakeDag(identity), mediaLimits: { ...MEDIA_LIMITS, max_document_bytes: 0 } });
+    const pdf = docBytes("fixture.pdf");
+    await expect(svc.upload(_signedUpload(pdf, "application/pdf", identity.tip_id, kp)))
+      .rejects.toMatchObject({ status: 415, code: "mime_disabled" });
+  });
+
+  test("registering a document checks its stored mime like any media", async () => {
+    const pdf = docBytes("fixture.pdf");
+    const r = await service.upload(_signedUpload(pdf, "application/pdf", identity.tip_id, kp));
+    await expect(service.resolveRefs([{ media_id: r.media_id, mime: "application/pdf" }]))
+      .resolves.toEqual([{ media_id: r.media_id, mime: "application/pdf" }]);
+    await expect(service.resolveRefs([{ media_id: r.media_id, mime: "application/rtf" }]))
+      .rejects.toMatchObject({ code: "media_mime_mismatch" });
   });
 });

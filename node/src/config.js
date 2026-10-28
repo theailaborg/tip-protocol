@@ -156,6 +156,7 @@ function loadConfig() {
       max_video_bytes: parseInt(process.env.TIP_MAX_VIDEO_BYTES || MEDIA_LIMITS.max_video_bytes, 10),
       max_image_bytes: parseInt(process.env.TIP_MAX_IMAGE_BYTES || MEDIA_LIMITS.max_image_bytes, 10),
       max_audio_bytes: parseInt(process.env.TIP_MAX_AUDIO_BYTES || MEDIA_LIMITS.max_audio_bytes, 10),
+      max_document_bytes: parseInt(process.env.TIP_MAX_DOCUMENT_BYTES || MEDIA_LIMITS.max_document_bytes, 10),
       max_text_bytes: parseInt(process.env.TIP_MAX_TEXT_BYTES || MEDIA_LIMITS.max_text_bytes, 10),
       // Per-post media[] item ceiling. Comes from protocol-constants
       // (CONTENT_LIMITS.media_items_max), surfaced here so the schema

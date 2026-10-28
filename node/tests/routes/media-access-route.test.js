@@ -130,7 +130,33 @@ describe("GET /v1/content/:ctid/media/:idx — stream transport (fs backend)", (
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toMatch(/^image\/png/);
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-disposition"]).toBeUndefined();
     expect(res.body.equals(Buffer.from("png-bytes-here"))).toBe(true);
+  });
+
+  test("a document is served as a forced download, never rendered on the node's origin", async () => {
+    const pdf = require("fs").readFileSync(path.join(__dirname, "../fixtures/documents/fixture.pdf"));
+    const up = await storage.put(pdf, { mime: "application/pdf" });
+    const content = {
+      ctid: CTID, signer_tip_id: identity.tip_id,
+      media: [{ media_id: up.media_id, mime: "application/pdf" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+    const docApp = _makeApp({ mediaService: createMediaService({ storage, dag: _accessDag({ identity, content }) }) });
+    const sig = _signedAccess(CTID, 0, identity.tip_id, kp);
+    const res = await request(docApp)
+      .get(`/v1/content/${encodeURIComponent(CTID)}/media/0`)
+      .set("X-Requester-TipId", sig.requester_tip_id)
+      .set("X-Signature", sig.signature)
+      .set("X-Timestamp", String(sig.timestamp))
+      .buffer(true)
+      .parse((r, cb) => { const c = []; r.on("data", x => c.push(x)); r.on("end", () => cb(null, Buffer.concat(c))); });
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/^application\/pdf/);
+    expect(res.headers["content-disposition"]).toBe("attachment");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.body.equals(pdf)).toBe(true);
   });
 });
 

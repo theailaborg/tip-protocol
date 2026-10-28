@@ -576,12 +576,24 @@ describe("validateRequest — media[] shape checks", () => {
       .toThrow(expect.objectContaining({ code: "media_id_invalid" }));
   });
 
-  test("mime not image/audio/video → media_mime_invalid", () => {
+  test("mime outside image/audio/video and the document list → media_mime_invalid", () => {
     const kp = generateMLDSAKeypair();
     const tipId = "tip://id/US-m3-badmime";
-    const body = { ..._baseBody(tipId), media: [{ media_id: "a".repeat(64), mime: "application/pdf" }] };
-    expect(() => schema.validateRequest(body, _depsFor(tipId, kp)))
-      .toThrow(expect.objectContaining({ code: "media_mime_invalid" }));
+    for (const mime of ["application/zip", "application/msword", "text/html"]) {
+      const body = { ..._baseBody(tipId), media: [{ media_id: "a".repeat(64), mime }] };
+      expect(() => schema.validateRequest(body, _depsFor(tipId, kp)))
+        .toThrow(expect.objectContaining({ code: "media_mime_invalid" }));
+    }
+  });
+
+  test("supported document mimes are accepted as media", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-m3-docmime";
+    const { DOCUMENT_MIME_VALUES } = require(path.join(SHARED, "constants"));
+    for (const mime of DOCUMENT_MIME_VALUES) {
+      const body = { ..._baseBody(tipId), media: [{ media_id: "a".repeat(64), mime }] };
+      expect(() => schema.validateRequest(body, _depsFor(tipId, kp))).not.toThrow();
+    }
   });
 
   test("happy path: media[] with one image accepted", () => {

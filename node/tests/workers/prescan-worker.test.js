@@ -854,3 +854,79 @@ describe("run — concurrency", () => {
     expect(submitter.txs).toHaveLength(1);
   });
 });
+
+// ── documents: never sent to the classifier, recorded as not scanned ─────
+describe("tick: documents are not scanned", () => {
+  const prescanCompletedSchema = require(path.resolve(__dirname, "../../src/schemas/prescan-completed"));
+  const PDF = "application/pdf";
+  const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const MID_DOC = "d".repeat(64);
+  const MID_IMG = "a".repeat(64);
+  const NOT_SCANNED = { probability: null, provider: "document_not_scanned" };
+
+  test("text + document → text-only classifier call, real verdict, document marked not scanned", async () => {
+    const clock = makeClock();
+    const calls = [];
+    const mediaService = makeMediaService({});
+    const { dag, jobs, submitter, worker } = await setup({
+      now: clock.now,
+      mediaService,
+      classifierHandler: (args) => { calls.push(args); return R({ modalities: [{ modality: "text", probability: 0.2 }] }); },
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "Quarterly report", origin_code: "OH", content_type: "text", media: [{ media_id: MID_DOC, mime: PDF }] } });
+    await worker.tick();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].files).toBeUndefined();
+    const tx = submitter.txs[0];
+    expect(tx.data.failed).toBe(false);
+    expect(tx.data.overall_degraded).toBe(false);
+    expect(tx.data.probability).toBe(0.2);
+    expect(tx.data.media_results).toEqual([{ media_id: MID_DOC, mime: PDF, ...NOT_SCANNED }]);
+    // Any node, old or new, accepts it at commit.
+    expect(prescanCompletedSchema.verifyTx(tx, dag)).toEqual({ ok: true });
+  });
+
+  test("image + document → only the image goes in files[]; both appear in media_results", async () => {
+    const clock = makeClock();
+    let lastArgs = null;
+    const mediaService = makeMediaService({ [MID_IMG]: { base64: "b64", mime: "image/png" } });
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      mediaService,
+      classifierHandler: (args) => {
+        lastArgs = args;
+        return R({ modalities: [{ modality: "text", probability: 0.1 }, { modality: "image", probability: 0.7, media_id: MID_IMG }] });
+      },
+    });
+    jobs.enqueue({ ctid: CTID, payload: {
+      text: "cover", origin_code: "OH", content_type: "image",
+      media: [{ media_id: MID_IMG, mime: "image/png" }, { media_id: MID_DOC, mime: DOCX }],
+    } });
+    await worker.tick();
+    expect(lastArgs.files.map(f => f.media_id)).toEqual([MID_IMG]);
+    expect(submitter.txs[0].data.media_results).toEqual([
+      { media_id: MID_IMG, mime: "image/png", probability: 0.7, provider: "ensemble(ollama,statistical,heuristic)" },
+      { media_id: MID_DOC, mime: DOCX, ...NOT_SCANNED },
+    ]);
+  });
+
+  test("document only, no text → no classifier call, clean skipped verdict, not flagged", async () => {
+    const clock = makeClock();
+    let called = 0;
+    const { dag, jobs, submitter, worker } = await setup({
+      now: clock.now,
+      mediaService: makeMediaService({}),
+      classifierHandler: () => { called += 1; return R({}); },
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "  ", origin_code: "OH", content_type: "text", media: [{ media_id: MID_DOC, mime: PDF }] } });
+    await worker.tick();
+    expect(called).toBe(0);
+    const d = submitter.txs[0].data;
+    expect(d).toMatchObject({
+      probability: 0.5, flagged: false, overall_degraded: false, failed: false,
+      classifier_providers_used: "document_not_scanned",
+      media_results: [{ media_id: MID_DOC, mime: PDF, ...NOT_SCANNED }],
+    });
+    expect(prescanCompletedSchema.verifyTx(submitter.txs[0], dag)).toEqual({ ok: true });
+  });
+});
