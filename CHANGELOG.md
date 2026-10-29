@@ -25,7 +25,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A no-show auto-confirm pays no reviewer bonus on accept-correction, and the
   jury's reviewer bonus/clawback already skip a review without a reviewer.
 - Commit rule change, gated on the round's cert timestamp:
-  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-11-08 00:00 UTC), every node on
+  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-10-29 12:00 UTC), every node on
   2.8.2 before then. `TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS` overrides it on an
   isolated cluster (warning-logged).
 
@@ -54,7 +54,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `count`) it lists flagged posts still inside the creator window with the
   time each opens for review (`claimable_at_ms`, `opens_in_ms`).
 - Commit rule change, shipped with the no-show cap under the same
-  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-11-08 00:00 UTC).
+  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-10-29 12:00 UTC).
 
 **Node 2.8.1: document uploads (PDF, DOCX, PPTX, XLSX, ODT, ODP, ODS, EPUB, RTF)**
 - No consensus change and no activation date: nodes can upgrade in any order.

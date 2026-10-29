@@ -1138,7 +1138,7 @@ const SHARED_HOST_DOMAINS = Object.freeze([
 // like the others (TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS on an isolated cluster).
 const PRESCAN_REVIEW_CAP = Object.freeze({
   MAX_NO_SHOWS: 3,
-  ACTIVATION_MS: 1794096000000, // 2026-11-08 00:00:00 UTC
+  ACTIVATION_MS: 1793275200000, // 2026-10-29 12:00:00 UTC
   AUTO_DECISION_NOTE: "reviewer_pool_no_show",
   AUTO_SUGGESTED_ORIGIN: "AG",
 });
