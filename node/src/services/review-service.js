@@ -258,8 +258,9 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     return { review_id: reviewId || null, ctid: data.ctid || null, tx_id: tx.tx_id, confirmation: "proposed" };
   }
 
-  // Desk view: open assignments plus flagged posts waiting with no reviewer.
-  // With reviewer_tip_id, each row says whether that person may claim it
+  // Desk view: open assignments, flagged posts waiting with no reviewer, and
+  // flagged posts still inside the creator window (read-only). With
+  // reviewer_tip_id, each row says whether that person may claim it
   // (same checks as the claim itself).
   function listOpenReviews(query = {}) {
     const now = nowMs();
@@ -308,11 +309,34 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       }
       return row;
     });
+    // Due by the end of a window starting now but not yet: the trigger's own
+    // predicate decides both lists, so a post moves from one to the other.
+    const dueNow = new Set(waiting.map(r => r.ctid));
+    const upcoming = dag.getContentsNeedingReview(now + CONTENT_GRACE.FLAGGED_MS)
+      .filter(c => !dueNow.has(c.ctid))
+      .map(c => {
+        const opensAt = c.prescan_completed_at + CONTENT_GRACE.FLAGGED_MS;
+        const row = {
+          review_id: null,
+          ctid: c.ctid,
+          prescan_tier: c.prescan_tier,
+          assigned_reviewer: null,
+          claimable_at_ms: opensAt,
+          opens_in_ms: Math.max(0, opensAt - now),
+        };
+        if (who) {
+          row.claimable = false;
+          row.not_claimable_reason = deskError || (claimedSchema.isOwnContent(c, who) ? "own_content" : "creator_window");
+        }
+        return row;
+      })
+      .sort((a, b) => a.claimable_at_ms - b.claimable_at_ms);
     return {
       desk_active: _deskActive(now),
       count: reviews.length + waiting.length,
       reviews,
       waiting_for_reviewer: waiting,
+      upcoming,
     };
   }
 

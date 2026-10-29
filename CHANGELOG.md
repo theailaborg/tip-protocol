@@ -50,7 +50,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mainnet and the test cluster, so without this nothing was claimable.
 - `GET /v1/reviews/open` lists open assignments and posts waiting for a
   reviewer, with their idle time; with `?reviewer_tip_id=` each row says
-  whether that person may claim it.
+  whether that person may claim it. Under `upcoming` (read-only, not in
+  `count`) it lists flagged posts still inside the creator window with the
+  time each opens for review (`claimable_at_ms`, `opens_in_ms`).
 - Commit rule change, shipped with the no-show cap under the same
   `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-11-08 00:00 UTC).
 

@@ -190,6 +190,7 @@ module.exports = {
   resolveClaimer,
   resolveReview,
   resolvePickup,
+  isOwnContent: _isOwnContent,
   validateRequest,
   buildSigningPayload,
   sign,

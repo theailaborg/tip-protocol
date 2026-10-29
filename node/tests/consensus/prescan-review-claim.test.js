@@ -32,7 +32,7 @@ const {
   TX_TYPES, PRESCAN_REVIEW_STATES, CONTENT_STATUS, RECUSAL_REASONS, ORG_MEMBER_STATUS,
 } = require(path.join(SHARED, "constants"));
 const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
-const { REVIEWER } = require(path.join(SHARED, "protocol-constants"));
+const { REVIEWER, CONTENT_GRACE } = require(path.join(SHARED, "protocol-constants"));
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -461,5 +461,50 @@ describe("review desk API", () => {
 
     const outsider = fx.reviewService.listOpenReviews({ reviewer_tip_id: OTHER_REVIEWER });
     expect(outsider.reviews.every(r => r.claimable === false && r.not_claimable_reason === "not_desk_member")).toBe(true);
+  });
+
+  test("flagged posts still inside the creator window are listed as upcoming, then move to waiting", () => {
+    const fx = _setup();
+    const FLAGGED = CONTENT_GRACE.FLAGGED_MS;
+    const now = ACTIVATION + 1000;
+    const U = "tip://c/OH-eeeeeeeeeeeeee-000e";
+    const MINE = "tip://c/OH-ffffffffffffff-000f";
+    fx.waiting(U, CREATOR, { completedAt: now - 3600_000 });
+    fx.waiting(MINE, DESK, { completedAt: now - 7200_000 });
+    jest.setSystemTime(now);
+
+    const list = fx.reviewService.listOpenReviews({ reviewer_tip_id: DESK });
+    expect(list.waiting_for_reviewer.some(r => r.ctid === U || r.ctid === MINE)).toBe(false);
+    expect(list.upcoming.map(r => r.ctid)).toEqual([MINE, U]);
+    expect(list.upcoming[1]).toEqual({
+      review_id: null, ctid: U, prescan_tier: "critical", assigned_reviewer: null,
+      claimable_at_ms: now - 3600_000 + FLAGGED, opens_in_ms: FLAGGED - 3600_000,
+      claimable: false, not_claimable_reason: "creator_window",
+    });
+    expect(list.upcoming[0].not_claimable_reason).toBe("own_content");
+    expect(list.count).toBe(list.reviews.length + list.waiting_for_reviewer.length);
+
+    const outsider = fx.reviewService.listOpenReviews({ reviewer_tip_id: OTHER_REVIEWER });
+    expect(outsider.upcoming.every(r => r.not_claimable_reason === "not_desk_member")).toBe(true);
+    expect(fx.reviewService.listOpenReviews({}).upcoming[0].claimable).toBeUndefined();
+
+    jest.setSystemTime(now - 3600_000 + FLAGGED + 1);
+    const later = fx.reviewService.listOpenReviews({ reviewer_tip_id: DESK });
+    expect(later.upcoming.some(r => r.ctid === U)).toBe(false);
+    expect(later.waiting_for_reviewer.find(r => r.ctid === U)).toMatchObject({ claimable: true, not_claimable_reason: null });
+  });
+
+  test("upcoming leaves out posts already in review, below high risk, or not labelled Original Human", () => {
+    const fx = _setup();
+    const now = ACTIVATION + 1000;
+    const inReview = "tip://c/OH-12121212121212-0012";
+    const elevated = "tip://c/OH-13131313131313-0013";
+    const aiLabelled = "tip://c/AG-14141414141414-0014";
+    for (const c of [inReview, elevated, aiLabelled]) fx.waiting(c, CREATOR, { completedAt: now - 3600_000 });
+    fx.openReview(inReview, { reviewId: "pr_in_review" });
+    fx.dag.saveContent({ ...fx.dag.getContent(elevated), prescan_tier: "elevated", prescan_probability: 0.75 });
+    fx.dag.saveContent({ ...fx.dag.getContent(aiLabelled), origin_code: "AG" });
+    jest.setSystemTime(now);
+    expect(fx.reviewService.listOpenReviews({ reviewer_tip_id: DESK }).upcoming).toEqual([]);
   });
 });
