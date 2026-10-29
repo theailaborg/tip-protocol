@@ -7,7 +7,8 @@
  *
  *   schema (here):                          service (media-service.js):
  *     - shape (bytes, mime, signer, sig)      - signature verifies against
- *     - mime format (image/audio/video)         identity's public_key
+ *     - mime format (image/audio/video or       identity's public_key
+ *       a listed document type)
  *     - mime family enabled (video gate)      - storage.put
  *     - per-mime size limit (node-local deps.mediaLimits)
  *     - replay window (nowMs ± window)
@@ -25,11 +26,27 @@
 
 const { schemaError } = require("./_common");
 const { isValidMs, nowMs } = require("../../../shared/time");
-const { UPLOAD_CHECKSUM_CRC32 } = require("../../../shared/constants");
+const { UPLOAD_CHECKSUM_CRC32, DOCUMENT_MIMES, DOCUMENT_MIME_VALUES } = require("../../../shared/constants");
 
 const TIP_ID_RE = /^tip:\/\/id\/[A-Z]{2}-[0-9a-f]{16}$/;
 const HEX_RE = /^[0-9a-f]+$/i;
 const MIME_RE = /^(image|audio|video)\/[a-z0-9.+\-]+$/i;
+const DOCUMENT_MIME_SET = new Set(DOCUMENT_MIME_VALUES);
+// Browsers label RTF either way; the stored mime is the sniffed one anyway.
+const DOCUMENT_MIME_ALIASES = new Set(["text/rtf"]);
+
+function isDocumentMime(mime) {
+  return typeof mime === "string" && DOCUMENT_MIME_SET.has(mime.toLowerCase());
+}
+
+function isAcceptedMime(mime) {
+  if (typeof mime !== "string") return false;
+  const m = mime.toLowerCase();
+  return MIME_RE.test(m) || DOCUMENT_MIME_SET.has(m) || DOCUMENT_MIME_ALIASES.has(m);
+}
+
+const SUPPORTED_FORMATS = "png, jpeg, gif, webp, heic, heif, avif, mp3, wav, ogg, flac, m4a, mp4, webm, mkv, "
+  + "pdf, rtf, docx, pptx, xlsx, odt, odp, ods, epub";
 
 // ISO-BMFF `ftyp` brands that mark the mp4 container as carrying a still
 // image, not audio/video. HEIC/AVIF/HEIF reuse the mp4 `ftyp` box, so a
@@ -50,6 +67,7 @@ function _resolveSizeLimit(mime, limits) {
   if (mime.startsWith("image/")) return limits.max_image_bytes;
   if (mime.startsWith("audio/")) return limits.max_audio_bytes;
   if (mime.startsWith("video/")) return limits.max_video_bytes;
+  if (isDocumentMime(mime) || DOCUMENT_MIME_ALIASES.has(mime.toLowerCase())) return limits.max_document_bytes;
   return null;
 }
 
@@ -62,12 +80,19 @@ function _resolveSizeLimit(mime, limits) {
  * is a pure function of the bytes.
  *
  * Reads the first 16 bytes for the base magic numbers, and further into the
- * `ftyp` box when present to resolve the mp4-container brand. Returns null
- * for any format outside the supported set; callers reject those with 415.
+ * `ftyp` box when present to resolve the mp4-container brand. ZIP-based
+ * documents are told apart by their member names: `tail` (the file's last
+ * bytes) carries the central directory; without it the head is used. Returns
+ * null for any format outside the supported set; callers reject those with 415.
  */
-function detectMime(bytes) {
+function detectMime(bytes, tail = null) {
   if (!bytes || bytes.length < 12) return null;
   const b = bytes;
+
+  // documents
+  if (_hasPdfHeader(b)) return DOCUMENT_MIMES.PDF;
+  if (b.slice(0, 5).toString("latin1") === "{\\rtf") return DOCUMENT_MIMES.RTF;
+  if (b.readUInt32LE(0) === ZIP_LOCAL_SIG) return _zipMime(b, tail || b);
 
   // image
   if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
@@ -106,6 +131,98 @@ function detectMime(bytes) {
   if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return _ebmlMime(b);
 
   return null;
+}
+
+// The PDF spec lets a few bytes of junk precede the header, within 1024.
+function _hasPdfHeader(b) {
+  return b.slice(0, Math.min(b.length, 1024)).indexOf("%PDF-", 0, "latin1") !== -1;
+}
+
+const ZIP_LOCAL_SIG = 0x04034b50;
+const ZIP_CENTRAL_SIG = 0x02014b50;
+const ZIP_EOCD_SIG = 0x06054b50;
+const ODF_MIMETYPES = Object.freeze({
+  "application/vnd.oasis.opendocument.text": DOCUMENT_MIMES.ODT,
+  "application/vnd.oasis.opendocument.presentation": DOCUMENT_MIMES.ODP,
+  "application/vnd.oasis.opendocument.spreadsheet": DOCUMENT_MIMES.ODS,
+  "application/epub+zip": DOCUMENT_MIMES.EPUB,
+});
+const OOXML_PARTS = Object.freeze([
+  ["word/", DOCUMENT_MIMES.DOCX],
+  ["ppt/", DOCUMENT_MIMES.PPTX],
+  ["xl/", DOCUMENT_MIMES.XLSX],
+]);
+
+// A ZIP is only a document when its members say so. OpenDocument and EPUB
+// store an uncompressed `mimetype` first entry naming the type; OOXML has
+// `[Content_Types].xml` plus its main folder. Macro-carrying OOXML (any
+// vbaProject.bin) is refused so a registration can never vouch for macros.
+// Anything else (plain archives, APKs, JARs) is not a document.
+function _zipMime(head, tail) {
+  const odf = _odfMimetype(head);
+  if (odf) return ODF_MIMETYPES[odf] || null;
+  const names = _zipCentralNames(tail) || _zipLocalNames(head);
+  if (!names.includes("[Content_Types].xml")) return null;
+  if (names.some(n => /(^|\/)vbaProject\.bin$/i.test(n))) return null;
+  for (const [prefix, mime] of OOXML_PARTS) {
+    if (names.some(n => n.startsWith(prefix))) return mime;
+  }
+  return null;
+}
+
+function _odfMimetype(b) {
+  if (b.length < 30 || b.readUInt32LE(0) !== ZIP_LOCAL_SIG) return null;
+  const method = b.readUInt16LE(8);
+  const size = b.readUInt32LE(18);
+  const nameLen = b.readUInt16LE(26);
+  const extraLen = b.readUInt16LE(28);
+  if (method !== 0 || size === 0 || size > 128) return null;
+  if (b.slice(30, 30 + nameLen).toString("latin1") !== "mimetype") return null;
+  const start = 30 + nameLen + extraLen;
+  if (start + size > b.length) return null;
+  return b.slice(start, start + size).toString("latin1");
+}
+
+// Member names from the central directory, or null when the end-of-central-
+// directory record (or the directory itself) is not inside `tail`.
+function _zipCentralNames(t) {
+  const minEocd = 22;
+  if (!t || t.length < minEocd) return null;
+  let eocd = -1;
+  for (let i = t.length - minEocd; i >= 0 && i >= t.length - minEocd - 0xffff; i--) {
+    if (t.readUInt32LE(i) === ZIP_EOCD_SIG) { eocd = i; break; }
+  }
+  if (eocd < 0) return null;
+  // ZIP64 directories (0xffffffff) are not parsed; the head fallback covers them.
+  const cdSize = t.readUInt32LE(eocd + 12);
+  const cdEnd = eocd;
+  if (cdSize === 0xffffffff) return null;
+  const cdStart = cdEnd - cdSize;
+  if (cdStart < 0) return null;
+  const names = [];
+  for (let p = cdStart; p + 46 <= cdEnd;) {
+    if (t.readUInt32LE(p) !== ZIP_CENTRAL_SIG) return null;
+    const nameLen = t.readUInt16LE(p + 28);
+    const extraLen = t.readUInt16LE(p + 30);
+    const commentLen = t.readUInt16LE(p + 32);
+    names.push(t.slice(p + 46, p + 46 + nameLen).toString("utf8"));
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return names;
+}
+
+// Fallback when only the head is known: local headers found by signature
+// search, so entries written with data descriptors (sizes after the data,
+// common in streamed exports) are still listed.
+function _zipLocalNames(b) {
+  const names = [];
+  for (let i = b.indexOf("PK\x03\x04", 0, "latin1"); i !== -1 && i + 30 <= b.length;
+    i = b.indexOf("PK\x03\x04", i + 4, "latin1")) {
+    const nameLen = b.readUInt16LE(i + 26);
+    if (nameLen === 0 || i + 30 + nameLen > b.length) continue;
+    names.push(b.slice(i + 30, i + 30 + nameLen).toString("utf8"));
+  }
+  return names;
 }
 
 // Resolve an ISO-BMFF `ftyp` file to its mime by brand. Collects the major
@@ -153,7 +270,7 @@ function _ebmlMime(b) {
  */
 function limitForDetectedMime(mime, mediaLimits) {
   if (mime === null) {
-    throw schemaError(415, "Unrecognized file format; supported: png, jpeg, gif, webp, heic, heif, avif, mp3, wav, ogg, flac, mp4, webm", "format_unsupported");
+    throw schemaError(415, `Unrecognized file format; supported: ${SUPPORTED_FORMATS}`, "format_unsupported");
   }
   const limit = _resolveSizeLimit(mime, mediaLimits);
   if (limit <= 0) {
@@ -194,8 +311,8 @@ function _validateMeta(input, deps) {
   if (typeof input.mime !== "string" || input.mime.length === 0) {
     throw schemaError(400, "mime is required", "mime_required");
   }
-  if (!MIME_RE.test(input.mime)) {
-    throw schemaError(415, `mime must match image/*, audio/*, or video/* (got ${input.mime})`, "mime_invalid");
+  if (!isAcceptedMime(input.mime)) {
+    throw schemaError(415, `mime must be image/*, audio/*, video/* or a supported document type (got ${input.mime})`, "mime_invalid");
   }
 
   const sizeLimit = _resolveSizeLimit(input.mime, deps?.mediaLimits);
@@ -339,6 +456,8 @@ module.exports = {
   validateChecksumMode,
   validatePartChecksums,
   detectMime,
+  isDocumentMime,
+  isAcceptedMime,
   limitForDetectedMime,
   resolveSigner,
   buildChallenge,

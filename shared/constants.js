@@ -820,8 +820,32 @@ const MEDIA_LIMITS = Object.freeze({
   max_video_bytes: 15 * 1024 * 1024 * 1024,  // 15 GiB
   max_image_bytes: 1024 * 1024 * 1024,       // 1 GiB
   max_audio_bytes: 1024 * 1024 * 1024,       // 1 GiB
+  max_document_bytes: 1024 * 1024 * 1024,    // 1 GiB
   max_text_bytes: 10 * 1024 * 1024,          // 10 MB
 });
+
+// Document types accepted as media, each recognised from its own bytes
+// (media-upload.detectMime), never from the client's claim. Not scanned by
+// the classifier yet; the prescan records them as not scanned.
+const DOCUMENT_MIMES = Object.freeze({
+  PDF: "application/pdf",
+  RTF: "application/rtf",
+  DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  PPTX: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  XLSX: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ODT: "application/vnd.oasis.opendocument.text",
+  ODP: "application/vnd.oasis.opendocument.presentation",
+  ODS: "application/vnd.oasis.opendocument.spreadsheet",
+  EPUB: "application/epub+zip",
+});
+const DOCUMENT_MIME_VALUES = Object.freeze(Object.values(DOCUMENT_MIMES));
+// Provider label on a document's media_results entry (probability null) and
+// on the verdict of a post with nothing else to scan.
+const PRESCAN_DOCUMENT_NOT_SCANNED = "document_not_scanned";
+// Bytes kept from each end of an upload for type detection: a ZIP's first
+// entry sits at the start, its full member list (central directory) at the end.
+const MEDIA_SNIFF_HEAD_BYTES = 64 * 1024;
+const MEDIA_SNIFF_TAIL_BYTES = 1024 * 1024;
 
 // S3 rejects a single CopyObject over 5 GB; a bigger staged object is promoted
 // with a server-side multipart copy in S3_COPY_PART_BYTES ranges.
@@ -1311,6 +1335,11 @@ module.exports = {
   SCORE_DISPLAY,
   JURISDICTION_TIERS,
   MEDIA_LIMITS,
+  DOCUMENT_MIMES,
+  DOCUMENT_MIME_VALUES,
+  PRESCAN_DOCUMENT_NOT_SCANNED,
+  MEDIA_SNIFF_HEAD_BYTES,
+  MEDIA_SNIFF_TAIL_BYTES,
   S3_SINGLE_COPY_MAX_BYTES,
   S3_COPY_PART_BYTES,
   S3_COPY_CONCURRENCY,

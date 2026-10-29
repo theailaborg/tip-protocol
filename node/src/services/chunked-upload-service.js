@@ -26,6 +26,7 @@ const { shake256Incremental, mldsaVerify } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { schemaError } = require("../schemas/_common");
 const mediaUploadSchema = require("../schemas/media-upload");
+const { createMediaSniffer } = require("./media-sniff");
 const {
   MEDIA_LIMITS, UPLOAD_SESSION_STATE, CHUNKED_COMPLETE_SYNC_WAIT_MS, CHUNKED_STATUS_POLL_MS, CHUNKED_RESULT_TTL_MS,
   CHUNKED_REHASH_ATTEMPTS, CHUNKED_REHASH_RETRY_MS,
@@ -495,19 +496,21 @@ function createChunkedUploadService({
   }
 
   // Stream the assembled tmp object from S3: SHAKE-256 over the whole thing plus
-  // the first 64 bytes for MIME sniffing, without buffering the file in RAM.
+  // its first and last bytes for MIME sniffing, without buffering the file in RAM.
   async function _hashS3Object(key) {
     const { stream } = await storage.getObjectStream(key);
     const hasher = shake256Incremental(32);
+    const sniffer = createMediaSniffer();
     let size = 0;
-    let head = Buffer.alloc(0);
     for await (const chunk of stream) {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       hasher.update(buf);
       size += buf.length;
-      if (head.length < 64) head = Buffer.concat([head, buf.subarray(0, 64 - head.length)]);
+      sniffer.push(buf);
     }
-    const detectedMime = head.length >= 16 ? mediaUploadSchema.detectMime(head) : "application/octet-stream";
+    const detectedMime = sniffer.headLength() >= 16
+      ? mediaUploadSchema.detectMime(sniffer.head(), sniffer.tail())
+      : "application/octet-stream";
     return { hashHex: hasher.digest("hex"), detectedMime, actualSize: size };
   }
 
