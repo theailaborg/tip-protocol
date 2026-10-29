@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-**Node 2.8.1: a flagged post is no longer reassigned to reviewers forever**
+**Node 2.8.2: a flagged post is no longer reassigned to reviewers forever**
 - A HIGH/CRITICAL post whose assigned reviewers kept missing the 48 h SLA was
   reassigned every window with no end: one mainnet post went through 48
   assignments in three months, nobody acted, and nothing downstream could
@@ -26,12 +26,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   jury's reviewer bonus/clawback already skip a review without a reviewer.
 - Commit rule change, gated on the round's cert timestamp:
   `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-11-08 00:00 UTC), every node on
-  2.8.1 before then. `TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS` overrides it on an
+  2.8.2 before then. `TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS` overrides it on an
   isolated cluster (warning-logged).
 
 ### Added
 
-**Node 2.8.1: review desk, a named reviewer can take over an open review**
+**Node 2.8.2: review desk, a named reviewer can take over an open review**
 - Roster members of the genesis organization (the AI Lab on mainnet) holding
   the `reviewer` role form the review desk. A desk member takes over any open
   review at once with a reviewer-signed `PRESCAN_REVIEW_CLAIMED`
