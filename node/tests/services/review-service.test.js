@@ -388,6 +388,29 @@ describe("review-service.acceptCorrection", () => {
     expect(out.score_delta).toBe(REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA);
   });
 
+  test("a no-show auto-confirm (no reviewer) still charges the creator and pays nobody", () => {
+    const { REVIEWER } = require(path.join(SHARED, "protocol-constants"));
+    const fx = _setup();
+    fx.dag.savePrescanReview({
+      review_id: "rv_auto", ctid: CTID_1, creator_tip_id: CREATOR,
+      assigned_reviewer: null, triggered_at_round: 1,
+      decided_at_round: 2, confirmed_at_round: 2, confirmed_at_ms: nowMs(),
+      state: PRESCAN_REVIEW_STATES.CONFIRMED, suggested_origin: "AG",
+      decision_note: "reviewer_pool_no_show",
+    });
+    _seedContent(fx);
+
+    const signature = _signUpdate(fx.creatorKp, { author_tip_id: CREATOR, new_origin_code: "AG" });
+    const out = fx.service.acceptCorrection("rv_auto", {
+      author_tip_id: CREATOR, new_origin_code: "AG", signature,
+    });
+
+    const scoreTxs = fx.submitted.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE);
+    expect(scoreTxs.map(t => [t.data.tip_id, t.data.delta])).toEqual([[CREATOR, REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA]]);
+    expect(out.reviewer_bonus).toBe(0);
+    expect(out.reviewer_score_tx_id).toBeNull();
+  });
+
   test("defaults new_origin_code to review.suggested_origin when omitted", () => {
     const fx = _setup();
     _seedConfirmedReview(fx, { reviewId: "rv_acc2", suggestedOrigin: "MX" });

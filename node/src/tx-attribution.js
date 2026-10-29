@@ -107,6 +107,8 @@ function subjectTipIds(tx) {
       // creator_tip_id embedded by review-service.js so the creator also sees
       // the verdict on their content, not just the reviewer's own action.
       return _clean([d.reviewer_tip_id, d.creator_tip_id]);
+    case TX_TYPES.PRESCAN_REVIEW_CLAIMED:
+      return _clean([d.reviewer_tip_id, d.previous_reviewer_tip_id, d.creator_tip_id]);
 
     // ── Multi-party: disputes & appeals (#40) ───────────────────────────
     // Both parties see the whole lifecycle, not just their own action.

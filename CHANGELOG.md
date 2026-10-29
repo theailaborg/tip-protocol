@@ -9,7 +9,52 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+**Node 2.8.2: a flagged post is no longer reassigned to reviewers forever**
+- A HIGH/CRITICAL post whose assigned reviewers kept missing the 48 h SLA was
+  reassigned every window with no end: one mainnet post went through 48
+  assignments in three months, nobody acted, and nothing downstream could
+  fire because escalation only follows a reviewer's decision. Once a post
+  carries `PRESCAN_REVIEW_CAP.MAX_NO_SHOWS` (3) `sla_expired` recusals, the
+  trigger stops assigning and emits a node-signed `PRESCAN_REVIEW_CONFIRMED`
+  (`auto: true`, no reviewer, suggested origin AG). That opens the creator's
+  existing 24 h window: accept the correction (-10) or let the existing
+  auto-escalation file the dispute. History counts, so a post already past
+  the cap closes on the first round after activation.
+- A no-show auto-confirm pays no reviewer bonus on accept-correction, and the
+  jury's reviewer bonus/clawback already skip a review without a reviewer.
+- Commit rule change, gated on the round's cert timestamp:
+  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-10-29 12:00 UTC), every node on
+  2.8.2 before then. `TIP_PRESCAN_REVIEW_CAP_ACTIVATION_MS` overrides it on an
+  isolated cluster (warning-logged).
+
 ### Added
+
+**Node 2.8.2: review desk, a named reviewer can take over an open review**
+- Roster members of the genesis organization (the AI Lab on mainnet) holding
+  the `reviewer` role form the review desk. A desk member takes over any open
+  review at once with a reviewer-signed `PRESCAN_REVIEW_CLAIMED`
+  (`POST /v1/reviews/:id/claim`): the open slot closes as `claimed_over`, which
+  is not a no-show for the replaced reviewer, and a new slot opens assigned to
+  the claimer with its SLA starting at the certificate time.
+- Nobody claims a post they signed or are listed on as an author. Another
+  org's `reviewer` role grants nothing, and nobody assigns a reviewer to
+  someone else. Desk membership is managed with the existing roster invite,
+  accept and remove flow.
+- A desk member can also pick up a flagged post that is due for review but
+  never got a reviewer (empty or exhausted volunteer pool): the same
+  transaction names the `ctid` instead of a review (`POST /v1/reviews/claim`),
+  accepted only on the automatic trigger's own rule (Original Human, high or
+  critical, past the creator window, no live review). Both pools were empty on
+  mainnet and the test cluster, so without this nothing was claimable.
+- `GET /v1/reviews/open` lists open assignments and posts waiting for a
+  reviewer, with their idle time; with `?reviewer_tip_id=` each row says
+  whether that person may claim it. Under `upcoming` (read-only, not in
+  `count`) it lists flagged posts still inside the creator window with the
+  time each opens for review (`claimable_at_ms`, `opens_in_ms`).
+- Commit rule change, shipped with the no-show cap under the same
+  `PRESCAN_REVIEW_CAP.ACTIVATION_MS` (2026-10-29 12:00 UTC).
 
 **Node 2.8.1: document uploads (PDF, DOCX, PPTX, XLSX, ODT, ODP, ODS, EPUB, RTF)**
 - No consensus change and no activation date: nodes can upgrade in any order.

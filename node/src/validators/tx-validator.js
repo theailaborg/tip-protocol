@@ -184,6 +184,12 @@ const SCHEMA = {
     required: ["review_id", "reviewer_tip_id"],
     types: { review_id: "string", reviewer_tip_id: "string" },
   },
+  [TX_TYPES.PRESCAN_REVIEW_CLAIMED]: {
+    // review_id (takeover) or ctid (pickup of a waiting post); the schema
+    // module requires exactly one.
+    required: ["reviewer_tip_id"],
+    types: { reviewer_tip_id: "string" },
+  },
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: {
     // review_id is always required. reviewer_tip_id is user-recuse only;
     // node-emitted auto-recuse (data.auto = true) carries node_id
@@ -194,11 +200,11 @@ const SCHEMA = {
   },
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: {
     // GH #51: reviewer's signature lives at tx.signature, not tx.data.
-    required: ["review_id", "reviewer_tip_id", "suggested_origin"],
-    types: {
-      review_id: "string", reviewer_tip_id: "string",
-      suggested_origin: "string",
-    },
+    // reviewer_tip_id is reviewer-confirm only; the node-emitted no-show
+    // auto-confirm (data.auto = true) carries node_id instead, and the
+    // schema module's getSignatureContract branches on data.auto.
+    required: ["review_id", "suggested_origin"],
+    types: { review_id: "string", suggested_origin: "string" },
   },
   [TX_TYPES.COMMITTEE_ROTATION]: {
     // Chain-of-trust rotation event. Deeper validation (rotation_number
@@ -592,7 +598,8 @@ function validateBusinessRules(tx, dag = null) {
     case TX_TYPES.PRESCAN_REVIEW_TRIGGERED:
     case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
     case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
-    case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+    case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+    case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
       // Format checks for ids present on each. Existence + state-machine
       // gating happens in the per-tx schema module's verifyTx.
       if (d.ctid && !/^tip:\/\/c\/(OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}$/.test(d.ctid)) {
@@ -796,7 +803,8 @@ function validateState(tx, dag) {
 
     case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
     case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
-    case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+    case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+    case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
       // Review existence + reviewer-assignment + state checks live in
       // schemas/prescan-review-*.resolveReview. This layer only does
       // identity-existence sanity.

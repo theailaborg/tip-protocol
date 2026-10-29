@@ -116,8 +116,10 @@ function getReviewerNoShowCount(dag, reviewerTipId) {
   let noShows = 0;
   for (const review of assignments) {
     if (counted >= REVIEWER.NOSHOW_SAMPLE_SIZE) break;
+    // A desk claim can land before the assignee had any chance to act: neutral.
     if (review.state === PRESCAN_REVIEW_STATES.TRIGGERED
-      || review.state === PRESCAN_REVIEW_STATES.CONFIRMED) continue;
+      || review.state === PRESCAN_REVIEW_STATES.CONFIRMED
+      || review.state === PRESCAN_REVIEW_STATES.CLAIMED_OVER) continue;
     counted++;
     if (review.state === PRESCAN_REVIEW_STATES.RECUSED
       && review.decision_note === RECUSAL_REASONS.SLA_EXPIRED) noShows++;

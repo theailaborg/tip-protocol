@@ -40,7 +40,7 @@ const path = require("path");
 const fs = require("fs");
 const { shake256, shake256Multi, generateSLHDSAKeypair, mldsaSign, mldsaVerify, computeTxId, canonicalJson, canonicalTx } = require("../../shared/crypto");
 const { nowMs, fromIso } = require("../../shared/time");
-const { TX_TYPES, PROTOCOL, ORIGIN } = require("../../shared/constants");
+const { TX_TYPES, PROTOCOL, ORIGIN, TIP_ID_TYPES } = require("../../shared/constants");
 const { log } = require("./logger");
 
 // ─── Genesis Block Constants ──────────────────────────────────────────────────
@@ -281,6 +281,18 @@ function getGenesisRing() {
   return ids;
 }
 
+// The one organization in the founding roster (the AI Lab on mainnet); null
+// when the genesis carries none or several, so the desk is simply off.
+let _genesisOrg;
+function getGenesisOrg() {
+  if (_genesisOrg === undefined) {
+    const orgs = (GENESIS_PAYLOAD.genesis_ring_keys || [])
+      .filter(k => k && k.tip_id_type === TIP_ID_TYPES.ORGANIZATION && typeof k.tip_id === "string");
+    _genesisOrg = orgs.length === 1 ? orgs[0].tip_id : null;
+  }
+  return _genesisOrg;
+}
+
 function verifyGenesisSignature() {
   const valid = mldsaVerify(
     canonicalTx(GENESIS_TX),
@@ -346,6 +358,7 @@ module.exports = {
   getGenesisCommittee,
   foundingNodeKey,
   getGenesisRing,
+  getGenesisOrg,
   computeGenesisHash,
   verifyGenesisSignature,
   verifyGenesisVPSignature,

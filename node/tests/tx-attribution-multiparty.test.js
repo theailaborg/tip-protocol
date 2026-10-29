@@ -148,6 +148,7 @@ describe("subjectTipIds — completeness guard (every tx_type classified)", () =
     [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: ["reviewer_tip_id", "creator_tip_id"],
     [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: ["reviewer_tip_id", "creator_tip_id"],
     [TX_TYPES.PRESCAN_REVIEW_RECUSED]: ["reviewer_tip_id", "creator_tip_id"],
+    [TX_TYPES.PRESCAN_REVIEW_CLAIMED]: ["reviewer_tip_id", "previous_reviewer_tip_id", "creator_tip_id"],
     // Multi-party — disputes & appeals (#40)
     [TX_TYPES.CONTENT_DISPUTED]: ["disputer_tip_id", "author_tip_id"],
     [TX_TYPES.ADJUDICATION_RESULT]: ["author_tip_id", "disputer_tip_id"],
@@ -172,7 +173,7 @@ describe("subjectTipIds — completeness guard (every tx_type classified)", () =
   const ALL_FIELDS = [
     "tip_id", "signer_tip_id", "author_tip_id", "disputer_tip_id", "appellant_tip_id",
     "verifier_tip_id", "juror_tip_id", "reviewer_tip_id", "assigned_reviewer_tip_id", "creator_tip_id",
-    "org_tip_id", "member_tip_id",
+    "org_tip_id", "member_tip_id", "previous_reviewer_tip_id",
   ];
 
   test("every TX_TYPES value is explicitly classified (no silent default)", () => {

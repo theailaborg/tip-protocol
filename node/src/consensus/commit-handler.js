@@ -20,7 +20,7 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS, KEY_RETIREMENT_GRACE_MS, KEY_RETIREMENT_ACTIVATION_MS } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS, KEY_RETIREMENT_GRACE_MS, KEY_RETIREMENT_ACTIVATION_MS, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -34,6 +34,8 @@ const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggere
 const prescanReviewDismissedSchema = require("../schemas/prescan-review-dismissed");
 const prescanReviewConfirmedSchema = require("../schemas/prescan-review-confirmed");
 const prescanReviewRecusedSchema = require("../schemas/prescan-review-recused");
+const prescanReviewClaimedSchema = require("../schemas/prescan-review-claimed");
+const { _deriveClaimReviewId } = require("./prescan-review-trigger");
 const prescanCompletedSchema = require("../schemas/prescan-completed");
 const registerDomainSchema = require("../schemas/register-domain");
 const prescanReviewAcceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
@@ -146,6 +148,8 @@ const CONTENT_STATUS_MUTATORS = Object.freeze([
   TX_TYPES.CONTENT_DISPUTED, TX_TYPES.CONTENT_VERIFIED,
   TX_TYPES.CONTENT_RETRACTED, TX_TYPES.UPDATE_ORIGIN,
   TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
+  // Only its ctid form (a desk pickup) carries data.ctid and flips the status.
+  TX_TYPES.PRESCAN_REVIEW_CLAIMED,
 ]);
 
 /**
@@ -195,6 +199,7 @@ function _actorTipId(tx) {
     case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
     case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
     case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+    case TX_TYPES.PRESCAN_REVIEW_CLAIMED:
       return d.reviewer_tip_id ?? null;
     default:
       return null;
@@ -855,19 +860,38 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
 
       case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
       case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
-      case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+      case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+      case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
         // Cross-type: each review_id gets exactly ONE terminal decision
-        // per batch. Real collision: reviewer decision racing the
-        // scheduler's SLA auto-recuse at the 48h boundary.
+        // per batch. Real collisions: reviewer decision racing the
+        // scheduler's SLA auto-recuse at the 48h boundary, or a desk claim.
+        if (tx.tx_type === TX_TYPES.PRESCAN_REVIEW_CLAIMED && !d.review_id) {
+          // Pickup of a waiting post: one status change per ctid per batch
+          // (races the automatic trigger and any other status mutator).
+          if (!d.ctid) return { valid: true };
+          const sibling = validated.find(t =>
+            CONTENT_STATUS_MUTATORS.includes(t.tx_type) && t.data?.ctid === d.ctid);
+          if (sibling) return { valid: false, error: `content-status conflict in batch: ${sibling.tx_type} already accepted for ${d.ctid}` };
+          return { valid: true };
+        }
         if (!d.review_id) return { valid: true };
         const TERMINAL_TYPES = [
           TX_TYPES.PRESCAN_REVIEW_DISMISSED,
           TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
           TX_TYPES.PRESCAN_REVIEW_RECUSED,
+          TX_TYPES.PRESCAN_REVIEW_CLAIMED,
         ];
         const inBatch = validated.find(t =>
           TERMINAL_TYPES.includes(t.tx_type) && t.data?.review_id === d.review_id);
         if (inBatch) return { valid: false, error: `duplicate prescan-review terminal decision in batch for ${d.review_id}` };
+        // The no-show auto-confirm opens a new review on the content and
+        // flips its status, so it takes the same content-status conflict
+        // guard as a trigger.
+        if (tx.tx_type === TX_TYPES.PRESCAN_REVIEW_CONFIRMED && d.auto && d.ctid) {
+          const sibling = validated.find(t =>
+            CONTENT_STATUS_MUTATORS.includes(t.tx_type) && t.data?.ctid === d.ctid);
+          if (sibling) return { valid: false, error: `content-status conflict in batch: ${sibling.tx_type} already accepted for ${d.ctid}` };
+        }
         return { valid: true };
       }
 
@@ -1250,11 +1274,21 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
       case TX_TYPES.PRESCAN_REVIEW_CONFIRMED: {
+        if (d.auto && !_reviewCapActive(certTimestamp)) {
+          return { valid: false, error: `auto review confirm for ${d.ctid} before the no-show cap activation` };
+        }
         const r = prescanReviewConfirmedSchema.verifyTx(tx, dag);
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
       case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
         const r = prescanReviewRecusedSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+      case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
+        if (!_reviewCapActive(certTimestamp)) {
+          return { valid: false, error: `review claim for ${d.review_id} before the review desk activation` };
+        }
+        const r = prescanReviewClaimedSchema.verifyTx(tx, dag, { nowMs: certTimestamp });
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
@@ -1334,6 +1368,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
 
   function _keyRetirementActive(certTimestamp) {
     const gate = config && Number.isFinite(config.keyRetirementActivationMs) ? config.keyRetirementActivationMs : KEY_RETIREMENT_ACTIVATION_MS;
+    return certTimestamp > 0 && certTimestamp >= gate;
+  }
+
+  function _reviewCapActive(certTimestamp) {
+    const gate = config && Number.isFinite(config.prescanReviewCapActivationMs) ? config.prescanReviewCapActivationMs : PRESCAN_REVIEW_CAP.ACTIVATION_MS;
     return certTimestamp > 0 && certTimestamp >= gate;
   }
 
@@ -1514,6 +1553,47 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         break;
       }
 
+      case TX_TYPES.PRESCAN_REVIEW_CLAIMED: {
+        // A desk member took the case: open the claimer's slot, its SLA clock
+        // starting now (the auto-recuse keys off triggered_at_ms). A takeover
+        // also closes the open slot without a no-show; a pickup flips the
+        // waiting post to PENDING_REVIEW as a trigger would.
+        if (!d.review_id) {
+          const content = dag.getContent(d.ctid);
+          if (content) {
+            dag.savePrescanReview({
+              review_id: _deriveClaimReviewId(d.ctid, round),
+              ctid: d.ctid,
+              creator_tip_id: content.author_tip_id,
+              assigned_reviewer: d.reviewer_tip_id,
+              triggered_at_round: round,
+              triggered_at_ms: _committedCertTimestamp || null,
+              state: PRESCAN_REVIEW_STATES.TRIGGERED,
+            });
+            dag.updateContentStatus(d.ctid, CONTENT_STATUS.PENDING_REVIEW);
+          }
+          break;
+        }
+        const review = dag.getPrescanReview(d.review_id);
+        if (review) {
+          dag.savePrescanReview({
+            ...review,
+            state: PRESCAN_REVIEW_STATES.CLAIMED_OVER,
+            decided_at_round: round,
+          });
+          dag.savePrescanReview({
+            review_id: _deriveClaimReviewId(review.ctid, round),
+            ctid: review.ctid,
+            creator_tip_id: review.creator_tip_id,
+            assigned_reviewer: d.reviewer_tip_id,
+            triggered_at_round: round,
+            triggered_at_ms: _committedCertTimestamp || null,
+            state: PRESCAN_REVIEW_STATES.TRIGGERED,
+          });
+        }
+        break;
+      }
+
       case TX_TYPES.PRESCAN_REVIEW_CONFIRMED: {
         // Reviewer said "AI's flag was right". Transition to state=confirmed
         // + record suggested_origin + start the creator's 24h decision
@@ -1521,6 +1601,30 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // trigger can compute the window deterministically across nodes.
         // content.status stays PENDING_REVIEW — the creator is now deciding
         // accept-private (Option 1) vs auto-escalation at h=R+24 (Option 2).
+        if (d.auto) {
+          // No-show cap: the node opens the creator's window itself, in a
+          // fresh review slot with no reviewer, and the content goes back
+          // to PENDING_REVIEW so verification stays blocked meanwhile.
+          dag.savePrescanReview({
+            review_id: d.review_id,
+            ctid: d.ctid,
+            creator_tip_id: d.creator_tip_id,
+            assigned_reviewer: null,
+            triggered_at_round: d.triggered_at_round ?? round,
+            triggered_at_ms: _committedCertTimestamp || null,
+            state: PRESCAN_REVIEW_STATES.CONFIRMED,
+            decided_at_round: round,
+            confirmed_at_round: round,
+            confirmed_at_ms: _committedCertTimestamp || null,
+            decision_note: d.decision_note || PRESCAN_REVIEW_CAP.AUTO_DECISION_NOTE,
+            suggested_origin: d.suggested_origin,
+          });
+          const content = dag.getContent(d.ctid);
+          if (content && content.status === CONTENT_STATUS.REGISTERED) {
+            dag.updateContentStatus(d.ctid, CONTENT_STATUS.PENDING_REVIEW);
+          }
+          break;
+        }
         const review = dag.getPrescanReview(d.review_id);
         if (review) {
           dag.savePrescanReview({

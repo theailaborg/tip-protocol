@@ -5,6 +5,9 @@
  *
  *   dismiss(reviewId, body)          → PRESCAN_REVIEW_DISMISSED
  *   confirm(reviewId, body)          → PRESCAN_REVIEW_CONFIRMED
+ *   claim(reviewId, body)            → PRESCAN_REVIEW_CLAIMED (desk takeover,
+ *                                      or pickup of a waiting post by ctid)
+ *   listOpenReviews(query)           → open assignments for the review desk
  *   acceptCorrection(reviewId, body) → UPDATE_ORIGIN (commit-handler
  *                                      auto-flips the review row to
  *                                      CLOSED_ACCEPTED_PRIVATE)
@@ -22,14 +25,15 @@
 
 "use strict";
 
-const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
 const { nowMs, nowPlusMs } = require("../../../shared/time");
-const { REVIEWER, JURY, DISPUTE } = require("../../../shared/protocol-constants");
+const { REVIEWER, JURY, DISPUTE, CONTENT_GRACE } = require("../../../shared/protocol-constants");
 const { selectJury } = require("../jury");
 const { validateTransaction } = require("../validators/tx-validator");
 const dismissedSchema = require("../schemas/prescan-review-dismissed");
 const confirmedSchema = require("../schemas/prescan-review-confirmed");
 const recusedSchema = require("../schemas/prescan-review-recused");
+const claimedSchema = require("../schemas/prescan-review-claimed");
 const acceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
 const disputeSchema = require("../schemas/prescan-review-dispute");
 const { schemaError } = require("../schemas/_common");
@@ -47,6 +51,7 @@ const OUTCOME_LABELS = Object.freeze({
   [PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT]: "SELF_CORRECTED",
   [PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE]: "ESCALATED",
   [PRESCAN_REVIEW_STATES.RECUSED]: "RECUSED",
+  [PRESCAN_REVIEW_STATES.CLAIMED_OVER]: "CLAIMED_OVER",
 });
 
 // Score-history → review attribution. Two paths:
@@ -205,6 +210,136 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     return { review_id: reviewId, tx_id: tx.tx_id, confirmation: "proposed" };
   }
 
+  function _deskActive(atMs) {
+    const gate = Number.isFinite(config?.prescanReviewCapActivationMs)
+      ? config.prescanReviewCapActivationMs : PRESCAN_REVIEW_CAP.ACTIVATION_MS;
+    return atMs >= gate;
+  }
+
+  // reviewId set: take over that open review. reviewId null: body.ctid names a
+  // waiting post to pick up.
+  function claim(reviewId, body) {
+    const timestamp = nowMs();
+    if (!_deskActive(timestamp)) {
+      throw schemaError(403, "The review desk is not active yet", "review_desk_inactive");
+    }
+    const safeBody = { ...(body || {}) };
+    if (reviewId) { safeBody.review_id = reviewId; delete safeBody.ctid; } else { delete safeBody.review_id; }
+    const target = claimedSchema.validateRequest(safeBody, { dag, nowMs: timestamp });
+
+    const claimer = dag.getIdentity(safeBody.reviewer_tip_id);
+    const payload = claimedSchema.buildSigningPayload(safeBody);
+    if (!claimedSchema.verifySignature(payload, safeBody.signature, claimer.public_key)) {
+      throw schemaError(403, "Reviewer signature verification failed", "signature_invalid");
+    }
+
+    let data;
+    if (target === "review") {
+      const review = dag.getPrescanReview(reviewId);
+      data = {
+        review_id: reviewId,
+        reviewer_tip_id: safeBody.reviewer_tip_id,
+        creator_tip_id: review.creator_tip_id,
+        previous_reviewer_tip_id: review.assigned_reviewer,
+      };
+    } else {
+      data = {
+        ctid: safeBody.ctid,
+        reviewer_tip_id: safeBody.reviewer_tip_id,
+        creator_tip_id: dag.getContent(safeBody.ctid).author_tip_id,
+      };
+    }
+    const tx = withTxId({ tx_type: TX_TYPES.PRESCAN_REVIEW_CLAIMED, timestamp, data, signature: safeBody.signature }, dag);
+    const validation = validateTransaction(tx, dag, {});
+    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
+
+    submitTx(tx);
+    log.info(`Review claimed: ${reviewId || safeBody.ctid} by ${safeBody.reviewer_tip_id}`);
+    return { review_id: reviewId || null, ctid: data.ctid || null, tx_id: tx.tx_id, confirmation: "proposed" };
+  }
+
+  // Desk view: open assignments, flagged posts waiting with no reviewer, and
+  // flagged posts still inside the creator window (read-only). With
+  // reviewer_tip_id, each row says whether that person may claim it
+  // (same checks as the claim itself).
+  function listOpenReviews(query = {}) {
+    const now = nowMs();
+    const who = typeof query.reviewer_tip_id === "string" ? query.reviewer_tip_id : null;
+    let deskError = null;
+    if (who) {
+      try { claimedSchema.resolveClaimer(who, dag); } catch (err) { deskError = err.code || "not_desk_member"; }
+    }
+    const reviews = dag.listTriggeredPrescanReviews().map(r => {
+      const content = dag.getContent(r.ctid);
+      const row = {
+        review_id: r.review_id,
+        ctid: r.ctid,
+        prescan_tier: content ? content.prescan_tier : null,
+        assigned_reviewer: r.assigned_reviewer,
+        triggered_at_ms: r.triggered_at_ms,
+        idle_ms: Number.isFinite(r.triggered_at_ms) ? Math.max(0, now - r.triggered_at_ms) : null,
+      };
+      if (who) {
+        let reason = deskError;
+        if (!reason) {
+          try { claimedSchema.resolveReview(r.review_id, who, dag); } catch (err) { reason = err.code || "not_claimable"; }
+        }
+        row.claimable = !reason;
+        row.not_claimable_reason = reason;
+      }
+      return row;
+    });
+    const waiting = dag.getContentsNeedingReview(now).map(c => {
+      const since = Number.isFinite(c.prescan_completed_at) ? c.prescan_completed_at + CONTENT_GRACE.FLAGGED_MS : null;
+      const row = {
+        review_id: null,
+        ctid: c.ctid,
+        prescan_tier: c.prescan_tier,
+        assigned_reviewer: null,
+        waiting_since_ms: since,
+        idle_ms: since != null ? Math.max(0, now - since) : null,
+      };
+      if (who) {
+        let reason = deskError;
+        if (!reason) {
+          try { claimedSchema.resolvePickup(c.ctid, who, dag, now); } catch (err) { reason = err.code || "not_claimable"; }
+        }
+        row.claimable = !reason;
+        row.not_claimable_reason = reason;
+      }
+      return row;
+    });
+    // Due by the end of a window starting now but not yet: the trigger's own
+    // predicate decides both lists, so a post moves from one to the other.
+    const dueNow = new Set(waiting.map(r => r.ctid));
+    const upcoming = dag.getContentsNeedingReview(now + CONTENT_GRACE.FLAGGED_MS)
+      .filter(c => !dueNow.has(c.ctid))
+      .map(c => {
+        const opensAt = c.prescan_completed_at + CONTENT_GRACE.FLAGGED_MS;
+        const row = {
+          review_id: null,
+          ctid: c.ctid,
+          prescan_tier: c.prescan_tier,
+          assigned_reviewer: null,
+          claimable_at_ms: opensAt,
+          opens_in_ms: Math.max(0, opensAt - now),
+        };
+        if (who) {
+          row.claimable = false;
+          row.not_claimable_reason = deskError || (claimedSchema.isOwnContent(c, who) ? "own_content" : "creator_window");
+        }
+        return row;
+      })
+      .sort((a, b) => a.claimable_at_ms - b.claimable_at_ms);
+    return {
+      desk_active: _deskActive(now),
+      count: reviews.length + waiting.length,
+      reviews,
+      waiting_for_reviewer: waiting,
+      upcoming,
+    };
+  }
+
   function acceptCorrection(reviewId, body) {
     const { review, content, new_origin_code } =
       acceptCorrectionSchema.validateRequest(reviewId, body, { dag });
@@ -240,8 +375,9 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
 
     // Reviewer's "case closed without dispute" bonus. The creator
     // accepting the CONFIRM is the reviewer's call being validated —
-    // settles immediately, no Stage-2 path needed.
-    const reviewerScoreTx = scoring.buildScoreUpdateTx({
+    // settles immediately, no Stage-2 path needed. A no-show auto-confirm
+    // has no reviewer, so nobody is paid.
+    const reviewerScoreTx = review.assigned_reviewer ? scoring.buildScoreUpdateTx({
       tipId: review.assigned_reviewer,
       delta: REVIEWER.CORRECT_BONUS,
       reason: `review_accepted_private:${reviewId}`,
@@ -249,10 +385,10 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       relatedTxId: updateTx.tx_id,
       timestamp,
       config,
-    });
+    }) : null;
 
-    submitBatch([updateTx, creatorScoreTx, reviewerScoreTx]);
-    log.info(`Accept-correction proposed: review=${reviewId} ctid=${review.ctid} ${content.origin_code} → ${new_origin_code} (creator=${REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA}, reviewer=+${REVIEWER.CORRECT_BONUS})`);
+    submitBatch(reviewerScoreTx ? [updateTx, creatorScoreTx, reviewerScoreTx] : [updateTx, creatorScoreTx]);
+    log.info(`Accept-correction proposed: review=${reviewId} ctid=${review.ctid} ${content.origin_code} → ${new_origin_code} (creator=${REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA}, reviewer=${reviewerScoreTx ? `+${REVIEWER.CORRECT_BONUS}` : "none"})`);
 
     return {
       review_id: reviewId,
@@ -260,10 +396,10 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       old_origin_code: content.origin_code,
       new_origin_code,
       score_delta: REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA,
-      reviewer_bonus: REVIEWER.CORRECT_BONUS,
+      reviewer_bonus: reviewerScoreTx ? REVIEWER.CORRECT_BONUS : 0,
       tx_id: updateTx.tx_id,
       score_tx_id: creatorScoreTx.tx_id,
-      reviewer_score_tx_id: reviewerScoreTx.tx_id,
+      reviewer_score_tx_id: reviewerScoreTx ? reviewerScoreTx.tx_id : null,
       confirmation: "proposed",
     };
   }
@@ -506,7 +642,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     return { pool: rows, count: rows.length };
   }
 
-  return { getReview, dismiss, confirm, recuse, acceptCorrection, dispute, listReviewerPool, listReviewsByReviewer };
+  return { getReview, dismiss, confirm, recuse, claim, listOpenReviews, acceptCorrection, dispute, listReviewerPool, listReviewsByReviewer };
 }
 
 module.exports = { createReviewService };

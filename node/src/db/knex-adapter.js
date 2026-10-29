@@ -1965,6 +1965,7 @@ class KnexAdapter {
   getContentsStuckInPrescan(failOpenCutoffMs) { return this.mirror.getContentsStuckInPrescan(failOpenCutoffMs); }
   getReviewsNeedingAutoEscalation(nowMs) { return this.mirror.getReviewsNeedingAutoEscalation(nowMs); }
   getReviewsNeedingAutoRecuse(nowMs) { return this.mirror.getReviewsNeedingAutoRecuse(nowMs); }
+  listTriggeredPrescanReviews() { return this.mirror.listTriggeredPrescanReviews(); }
 
   // ── Rotation participation ─────────────────────────────────────────────────
 
