@@ -25,6 +25,7 @@ const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { noteTakeovers } = require("../services/url-takeovers");
+const { noteRegistration } = require("../services/registered-again");
 const contentRegisterSchema = require("../schemas/content-register");
 const registerIdentitySchema = require("../schemas/register-identity");
 const bindDomainSchema = require("../schemas/bind-domain");
@@ -1689,6 +1690,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             media_canonical_hash: typeof d.media_canonical_hash === "string" ? d.media_canonical_hash : null,
           });
           _applyUrlTakeovers(tx, _committedCertTimestamp);
+          // Read cache for "registered again" Inbox items; not consensus state.
+          noteRegistration(dag, d);
         }
         break;
 

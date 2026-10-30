@@ -31,6 +31,12 @@ function createRouter({ contentService }) {
     res.json(contentService.list(req.query));
   }));
 
+  // Exact matches by normalized content hash, for the before-signing
+  // "already registered" check. Separate path so /content/:ctid is untouched.
+  router.get("/content-matches", asyncHandler((req, res) => {
+    res.json(contentService.matchesByHash(String(req.query.hash || "")));
+  }));
+
   router.get("/content/:ctid", asyncHandler(async (req, res) => {
     res.json(await contentService.resolve(req.params.ctid, _fingerprintOpts(req.query)));
   }));

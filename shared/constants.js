@@ -1109,6 +1109,12 @@ const WEBSITE_PROTECTION_ACTIVATION_MS = 1793491200000; // 2026-11-01 00:00:00 U
 // its CTID but loses the address. Same consensus discipline as above.
 const URL_TAKEOVER_ACTIVATION_MS = 1794700800000; // 2026-11-15 00:00:00 UTC
 
+// Registered again. Copies of someone's content (same normalized
+// content_hash, by an unconnected TIP-ID) registered from this instant tell
+// the first author in their Inbox. Read side only, not consensus: nodes on
+// either side of it never disagree about state, only about an Inbox item.
+const REGISTERED_AGAIN_ACTIVATION_MS = 1794240000000; // 2026-11-09 16:00:00 UTC
+
 // Domains where many people publish under one name. A binding on one of these
 // (or its www.) never protects pages: one account must not lock everyone
 // else's posts on the platform. A subdomain someone controls (alice.github.io)
@@ -1247,6 +1253,7 @@ module.exports = {
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
   WEBSITE_PROTECTION_ACTIVATION_MS,
   URL_TAKEOVER_ACTIVATION_MS,
+  REGISTERED_AGAIN_ACTIVATION_MS,
   SHARED_HOST_DOMAINS,
   PRESCAN_REVIEW_CAP,
   PRESCAN_REVIEW_DESK,
