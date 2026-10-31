@@ -97,6 +97,13 @@ function activeMembers(dag, orgTipId) {
   return (dag.getOrgMembersByOrg(orgTipId) || []).filter(r => r.status === ORG_MEMBER_STATUS.ACTIVE);
 }
 
+// On the team at atMs: added on or before it and not removed by then. A cancelled
+// invite was never added, so it has no accepted_at.
+function membersAt(dag, orgTipId, atMs) {
+  return (dag.getOrgMembersByOrg(orgTipId) || []).filter(r =>
+    r.accepted_at != null && r.accepted_at <= atMs && (r.removed_at == null || r.removed_at > atMs));
+}
+
 function activeMembership(dag, orgTipId, memberTipId) {
   return activeMembers(dag, orgTipId).find(r => r.member_tip_id === memberTipId) || null;
 }
@@ -186,6 +193,7 @@ module.exports = {
   isInviteExpired,
   isOpenInvite,
   activeMembers,
+  membersAt,
   activeMembership,
   openInvites,
   openInviteFor,

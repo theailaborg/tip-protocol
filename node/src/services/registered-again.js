@@ -15,7 +15,8 @@
 // Who is "first": the earliest live record (registered_at, then CTID).
 // Left out on purpose:
 //   - the same TIP-ID (signer or byline author) on both records,
-//   - an organization and its active team members,
+//   - an organization and the people on its team when the later record
+//     was registered (leaving the team later does not make it a copy),
 //   - two records that share any byline author,
 //   - replies and comments (parent_url): "Great post!" twice under one post
 //     is not a copy anyone needs to hear about.
@@ -119,15 +120,16 @@ function _byFirst(a, b) {
 }
 
 function createRegisteredAgain({ dag }) {
-  // Two records whose people are connected never count as a copy.
-  function _related(a, b) {
+  // Two records whose people are connected never count as a copy; team
+  // membership is judged at atMs, when the later record was registered.
+  function _related(a, b, atMs) {
     const ta = _tipsOf(a), tb = _tipsOf(b);
     for (const t of ta) if (tb.has(t)) return true;
     for (const [orgs, others] of [[ta, tb], [tb, ta]]) {
       for (const o of orgs) {
         const id = typeof dag.getIdentity === "function" ? dag.getIdentity(o) : null;
         if (!id || id.tip_id_type !== TIP_ID_TYPES.ORGANIZATION) continue;
-        const members = new Set(roster.activeMembers(dag, o).map(m => m.member_tip_id));
+        const members = new Set(roster.membersAt(dag, o, atMs).map(m => m.member_tip_id));
         for (const t of others) if (members.has(t)) return true;
       }
     }
@@ -142,7 +144,7 @@ function createRegisteredAgain({ dag }) {
   function _copiesOf(first, rows) {
     if (first.parent_url) return [];
     return rows.filter(r => r.ctid !== first.ctid && !r.parent_url
-      && r.registered_at >= ACTIVATION_MS && !_related(first, r));
+      && r.registered_at >= ACTIVATION_MS && !_related(first, r, r.registered_at));
   }
 
   function _substantial(first, chars) {

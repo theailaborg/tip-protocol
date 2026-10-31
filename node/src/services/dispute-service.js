@@ -1331,11 +1331,11 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         ctid: g.first.ctid,
         dispute_id: null,
         deadline: null,
-        // The compare page shows one pair; the record page lists every copy with its own compare link.
-        action: n === 1 ? {
+        // Opens on the newest copy; the compare page lists every copy.
+        action: {
           kind: "compare_records", label: "Compare records",
           href: `/compare?first=${encodeURIComponent(g.first.ctid)}&copy=${encodeURIComponent(copies[0].ctid)}`,
-        } : { kind: "view_content", label: "See all copies", href: `/content/${encodeURIComponent(g.first.ctid)}` },
+        },
         metadata: {
           first_ctid: g.first.ctid, first_registered_at: g.first.registered_at, match_type: "exact",
           count: n, latest_at: g.latest, copies: copies.slice(0, 5),

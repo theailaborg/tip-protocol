@@ -6,8 +6,8 @@
  *
  *   1. Inbox: one item per record, high for a fresh exact copy of
  *      substantial content, normal for short text; the copier gets nothing.
- *   2. Never a copy: same TIP-ID, an org and its active members, a shared
- *      byline author, replies.
+ *   2. Never a copy: same TIP-ID, an org and its team members (as of the
+ *      later record), a shared byline author, replies.
  *   3. Retraction takes effect at once; three copies make one item.
  *   4. The index: built from history, kept current by the commit handler,
  *      rebuilt after a reset.
@@ -177,6 +177,29 @@ describe("never a copy", () => {
     expect(fx.inbox(MEMBER)).toEqual([]);
   });
 
+  test("team membership is judged when the later record was registered", () => {
+    const fx = setup();
+    const t0 = nowMs();
+    fx.dag.saveOrgMember({ invite_tx_id: "inv", org_tip_id: ORG, member_tip_id: MEMBER, role: "author", invited_at: t0 - 30000, accepted_at: t0 - 20000, status: ORG_MEMBER_STATUS.ACTIVE });
+    expect(fx.commit([reg(fx, { signer: MEMBER, ts: t0 - 15000 })]).committed).toBe(1);
+    expect(fx.commit([reg(fx, { signer: ORG, ts: t0 - 12000 })]).committed).toBe(1);
+    fx.dag.saveOrgMember({ ...fx.dag.getOrgMember("inv"), status: ORG_MEMBER_STATUS.REMOVED, removed_at: t0 - 10000 });
+    expect(fx.inbox(MEMBER)).toEqual([]);   // on the team when the org registered it
+
+    const after = reg(fx, { signer: ORG, origin: "AA", ts: t0 - 8000 });
+    expect(fx.commit([after]).committed).toBe(1);
+    const [it] = fx.inbox(MEMBER);
+    expect(it.metadata.count).toBe(1);
+    expect(it.metadata.copies[0].ctid).toBe(after.data.ctid);   // registered after the removal
+
+    const text = "A second story about the harbour, told from the lighthouse keeper's point of view this time.";
+    expect(fx.commit([reg(fx, { signer: CARL, text, ts: t0 - 6000 })]).committed).toBe(1);
+    const late = reg(fx, { signer: ORG, text, ts: t0 - 4000 });
+    expect(fx.commit([late]).committed).toBe(1);
+    fx.dag.saveOrgMember({ invite_tx_id: "inv2", org_tip_id: ORG, member_tip_id: CARL, role: "author", invited_at: t0 - 3000, accepted_at: t0 - 2000, status: ORG_MEMBER_STATUS.ACTIVE });
+    expect(fx.inbox(CARL).map(i => i.metadata.copies[0].ctid)).toEqual([late.data.ctid]);   // joining later does not excuse it
+  });
+
   test("a record that shares a byline author with the first one", () => {
     const fx = setup();
     const { copy } = both(fx);
@@ -255,7 +278,8 @@ describe("retraction and many copies", () => {
     expect(items[0].title).toBe("Your content was registered again by 2 others");
     expect(items[0].summary).toMatch(/^Carl Third and 1 other registered content that matches your record /);
     expect(items[0].metadata.copies.map(x => x.author_tip_id)).toEqual([CARL, BEN]);
-    expect(items[0].action).toEqual({ kind: "view_content", label: "See all copies", href: `/content/${encodeURIComponent(a.data.ctid)}` });
+    expect(items[0].action).toEqual({ kind: "compare_records", label: "Compare records",
+      href: `/compare?first=${encodeURIComponent(a.data.ctid)}&copy=${encodeURIComponent(c.data.ctid)}` });
     expect(fx.inbox(BEN)).toEqual([]);   // only the first author hears
   });
 
@@ -264,13 +288,15 @@ describe("retraction and many copies", () => {
     const a = reg(fx, { signer: ANA, ts: nowMs() - 9000 });
     expect(fx.commit([a]).committed).toBe(1);
     expect(fx.commit([reg(fx, { signer: BEN, origin: "AG", ts: nowMs() - 6000 })]).committed).toBe(1);
-    expect(fx.commit([reg(fx, { signer: BEN, origin: "OH", ts: nowMs() - 3000 })]).committed).toBe(1);
+    const newest = reg(fx, { signer: BEN, origin: "OH", ts: nowMs() - 3000 });
+    expect(fx.commit([newest]).committed).toBe(1);
     let [it] = fx.inbox(ANA);
     expect(it.title).toBe("Your content was registered again by someone else");
     expect(it.summary).toMatch(/^Ben Copy registered 2 records that match your record .+\. Your record came first and keeps its original date\.$/);
     expect(it.metadata).toMatchObject({ count: 2 });
     expect(it.metadata.copies.map(x => x.origin_code)).toEqual(["OH", "AG"]);
-    expect(it.action).toEqual({ kind: "view_content", label: "See all copies", href: `/content/${encodeURIComponent(a.data.ctid)}` });
+    expect(it.action).toEqual({ kind: "compare_records", label: "Compare records",
+      href: `/compare?first=${encodeURIComponent(a.data.ctid)}&copy=${encodeURIComponent(newest.data.ctid)}` });
 
     expect(fx.commit([reg(fx, { signer: CARL })]).committed).toBe(1);
     [it] = fx.inbox(ANA);
