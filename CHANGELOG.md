@@ -31,6 +31,27 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.8.3: registered again, the first author hears about exact copies**
+- When someone unconnected registers the same content again (same normalized
+  `content_hash`: the text after TIP normalization plus byte-identical files
+  in the same order), the first author gets one Inbox item per record,
+  `content_registered_again`, high priority for a fresh copy of substantial
+  content and normal for short text. Its button opens the compare page on the
+  newest copy.
+- Record pages carry `registered_again` (on the first record, every later
+  copy) and `registered_first` (on a copy, the earlier record).
+  `GET /v1/content-matches?hash=` lists the live records with a hash, for the
+  "Already registered" question clients ask before signing.
+- Never a copy: the same TIP-ID, an organization and the people on its team
+  when the later record was registered (leaving later changes nothing), a
+  shared byline author, replies, and text that normalizes to nothing (only
+  emoji or punctuation) with no files.
+- Read side only, not consensus: nodes on either side of the release never
+  disagree about state. Copies registered from
+  `REGISTERED_AGAIN_ACTIVATION_MS` (2026-10-31 12:00 UTC) count, so a node
+  that upgrades later still reports copies made since then.
+  `TIP_REGISTERED_AGAIN_ACTIVATION_MS` overrides it outside production.
+
 **Node 2.8.2: review desk, a named reviewer can take over an open review**
 - Roster members of the genesis organization (the AI Lab on mainnet) holding
   the `reviewer` role form the review desk. A desk member takes over any open
