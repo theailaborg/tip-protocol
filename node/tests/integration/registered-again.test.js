@@ -245,16 +245,37 @@ describe("retraction and many copies", () => {
 
   test("two later copies by two people make one item, newest first", () => {
     const fx = setup();
-    expect(fx.commit([reg(fx, { signer: ANA, ts: nowMs() - 9000 })]).committed).toBe(1);
+    const a = reg(fx, { signer: ANA, ts: nowMs() - 9000 });
+    expect(fx.commit([a]).committed).toBe(1);
     expect(fx.commit([reg(fx, { signer: BEN, ts: nowMs() - 5000 })]).committed).toBe(1);
     const c = reg(fx, { signer: CARL });
     expect(fx.commit([c]).committed).toBe(1);
     const items = fx.inbox(ANA);
     expect(items).toHaveLength(1);
     expect(items[0].title).toBe("Your content was registered again by 2 others");
-    expect(items[0].summary).toMatch(/^Carl Third and 1 other registered content/);
+    expect(items[0].summary).toMatch(/^Carl Third and 1 other registered content that matches your record /);
     expect(items[0].metadata.copies.map(x => x.author_tip_id)).toEqual([CARL, BEN]);
+    expect(items[0].action).toEqual({ kind: "view_content", label: "See all copies", href: `/content/${encodeURIComponent(a.data.ctid)}` });
     expect(fx.inbox(BEN)).toEqual([]);   // only the first author hears
+  });
+
+  test("one person registering it twice counts as one person, not two", () => {
+    const fx = setup();
+    const a = reg(fx, { signer: ANA, ts: nowMs() - 9000 });
+    expect(fx.commit([a]).committed).toBe(1);
+    expect(fx.commit([reg(fx, { signer: BEN, origin: "AG", ts: nowMs() - 6000 })]).committed).toBe(1);
+    expect(fx.commit([reg(fx, { signer: BEN, origin: "OH", ts: nowMs() - 3000 })]).committed).toBe(1);
+    let [it] = fx.inbox(ANA);
+    expect(it.title).toBe("Your content was registered again by someone else");
+    expect(it.summary).toMatch(/^Ben Copy registered 2 records that match your record .+\. Your record came first and keeps its original date\.$/);
+    expect(it.metadata).toMatchObject({ count: 2 });
+    expect(it.metadata.copies.map(x => x.origin_code)).toEqual(["OH", "AG"]);
+    expect(it.action).toEqual({ kind: "view_content", label: "See all copies", href: `/content/${encodeURIComponent(a.data.ctid)}` });
+
+    expect(fx.commit([reg(fx, { signer: CARL })]).committed).toBe(1);
+    [it] = fx.inbox(ANA);
+    expect(it.title).toBe("Your content was registered again by 2 others");
+    expect(it.summary).toMatch(/^Carl Third and 1 other registered 3 records that match your record /);
   });
 });
 

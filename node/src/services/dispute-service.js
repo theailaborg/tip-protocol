@@ -1316,22 +1316,26 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       }));
       const lead = copies[0].author_name || "Someone";
       const n = copies.length;
+      // One person can hold several copies (same content under another origin code).
+      const people = new Set(copies.map(c => c.author_tip_id)).size;
+      const who = people === 1 ? lead : `${lead} and ${people - 1} other${people - 1 === 1 ? "" : "s"}`;
       items.push({
         id: `content_registered_again:${g.first.ctid}`,
         type: "content_registered_again",
         priority: g.alert ? "high" : "normal",
-        title: n === 1 ? "Your content was registered again by someone else"
-          : `Your content was registered again by ${n} others`,
-        summary: (n === 1 ? `${lead} registered` : `${lead} and ${n - 1} other${n - 1 === 1 ? "" : "s"} registered`)
-          + ` content that matches your record ${_ctidLabel(g.first.ctid)}. Your record came first and keeps its original date.`,
+        title: people === 1 ? "Your content was registered again by someone else"
+          : `Your content was registered again by ${people} others`,
+        summary: `${who} registered ${n === people ? "content that matches" : `${n} records that match`}`
+          + ` your record ${_ctidLabel(g.first.ctid)}. Your record came first and keeps its original date.`,
         role: "author",
         ctid: g.first.ctid,
         dispute_id: null,
         deadline: null,
-        action: {
+        // The compare page shows one pair; the record page lists every copy with its own compare link.
+        action: n === 1 ? {
           kind: "compare_records", label: "Compare records",
           href: `/compare?first=${encodeURIComponent(g.first.ctid)}&copy=${encodeURIComponent(copies[0].ctid)}`,
-        },
+        } : { kind: "view_content", label: "See all copies", href: `/content/${encodeURIComponent(g.first.ctid)}` },
         metadata: {
           first_ctid: g.first.ctid, first_registered_at: g.first.registered_at, match_type: "exact",
           count: n, latest_at: g.latest, copies: copies.slice(0, 5),
