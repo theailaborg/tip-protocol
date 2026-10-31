@@ -1113,7 +1113,7 @@ const URL_TAKEOVER_ACTIVATION_MS = 1794700800000; // 2026-11-15 00:00:00 UTC
 // content_hash, by an unconnected TIP-ID) registered from this instant tell
 // the first author in their Inbox. Read side only, not consensus: nodes on
 // either side of it never disagree about state, only about an Inbox item.
-const REGISTERED_AGAIN_ACTIVATION_MS = 1794240000000; // 2026-11-09 16:00:00 UTC
+const REGISTERED_AGAIN_ACTIVATION_MS = 1793448000000; // 2026-10-31 12:00:00 UTC
 
 // Domains where many people publish under one name. A binding on one of these
 // (or its www.) never protects pages: one account must not lock everyone
