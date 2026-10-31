@@ -23,10 +23,22 @@
 // ships nobody's Inbox fills with history.
 
 const { TX_TYPES, CONTENT_STATUS, TIP_ID_TYPES, REGISTERED_AGAIN_ACTIVATION_MS } = require("../../../shared/constants");
+const { shake256 } = require("../../../shared/crypto");
+const { toIso } = require("../../../shared/time");
 const roster = require("../schemas/_org-members");
 
 const _override = process.env.NODE_ENV === "production" ? NaN : parseInt(process.env.TIP_REGISTERED_AGAIN_ACTIVATION_MS, 10);
 const ACTIVATION_MS = Number.isFinite(_override) ? _override : REGISTERED_AGAIN_ACTIVATION_MS;
+if (Number.isFinite(_override)) {
+  console.warn(`[registered-again] TIP_REGISTERED_AGAIN_ACTIVATION_MS override in effect: ${toIso(ACTIVATION_MS)}`);
+}
+
+// Text that normalizes to nothing (only emoji, punctuation or symbols) with no
+// media hashes to shake256(""), which every such post shares: never a copy.
+const EMPTY_TEXT_HASH = shake256("");
+function isNeverACopy(contentHash) {
+  return contentHash === EMPTY_TEXT_HASH;
+}
 
 // Text this short is ordinary ("gm", "Thank you so much!"); an exact match
 // alone says nothing, so it never raises an alert (it still shows in the
@@ -70,7 +82,7 @@ function _join(st, hash, tips, chars) {
 
 /** Called by the commit handler after a REGISTER_CONTENT row is saved. */
 function noteRegistration(dag, d) {
-  if (!d || !d.content_hash) return;
+  if (!d || !d.content_hash || isNeverACopy(d.content_hash)) return;
   const st = _state(dag);
   if (!st.built) return;   // the first read builds everything from history
   const rows = typeof dag.getContentByHash === "function" ? dag.getContentByHash(d.content_hash) : [];
@@ -86,7 +98,7 @@ function _build(dag) {
   const seen = new Map();   // hash -> { n, tips:Set, chars }
   for (const t of dag.getTxsByType(TX_TYPES.REGISTER_CONTENT) || []) {
     const d = t && t.data;
-    if (!d || !d.content_hash) continue;
+    if (!d || !d.content_hash || isNeverACopy(d.content_hash)) continue;
     let s = seen.get(d.content_hash);
     if (!s) { s = { n: 0, tips: new Set(), chars: null }; seen.set(d.content_hash, s); }
     s.n++;
@@ -167,7 +179,7 @@ function createRegisteredAgain({ dag }) {
    *  first). Both lists leave out connected people and replies. */
   function forRecord(rec) {
     const none = { earlier: null, later: [] };
-    if (!rec || !rec.content_hash || rec.parent_url) return none;
+    if (!rec || !rec.content_hash || rec.parent_url || isNeverACopy(rec.content_hash)) return none;
     const st = _build(dag);
     if (!st.groups.has(rec.content_hash)) return none;
     const rows = _group(rec.content_hash);
@@ -189,4 +201,4 @@ function resetRegisteredAgain(dag) {
   _byDag.delete(dag);
 }
 
-module.exports = { createRegisteredAgain, noteRegistration, resetRegisteredAgain, MIN_ALERT_CHARS };
+module.exports = { createRegisteredAgain, noteRegistration, resetRegisteredAgain, isNeverACopy, MIN_ALERT_CHARS };

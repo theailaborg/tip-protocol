@@ -1097,8 +1097,9 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     const d = tx.data || {};
     const list = _takeoversOf(tx, certTimestamp);
     if (!list.length) return;
-    // Read cache for record views and Inboxes; not consensus state.
-    noteTakeovers(dag, d, tx.timestamp);
+    // Read cache for record views and Inboxes; not consensus state, so it must
+    // never stop a commit.
+    try { noteTakeovers(dag, d, tx.timestamp); } catch (e) { log.warn(`url-takeovers cache: ${e.message}`); }
     for (const t of list) {
       const rec = t && t.ctid ? dag.getContent(t.ctid) : null;
       if (!rec || !Array.isArray(rec.registered_urls)) continue;
@@ -1690,8 +1691,9 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
             media_canonical_hash: typeof d.media_canonical_hash === "string" ? d.media_canonical_hash : null,
           });
           _applyUrlTakeovers(tx, _committedCertTimestamp);
-          // Read cache for "registered again" Inbox items; not consensus state.
-          noteRegistration(dag, d);
+          // Read cache for "registered again" Inbox items; not consensus state,
+          // so it must never stop a commit.
+          try { noteRegistration(dag, d); } catch (e) { log.warn(`registered-again cache: ${e.message}`); }
         }
         break;
 

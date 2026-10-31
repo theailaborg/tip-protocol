@@ -17,7 +17,7 @@ const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { createUrlTakeovers } = require("./url-takeovers");
-const { createRegisteredAgain } = require("./registered-again");
+const { createRegisteredAgain, isNeverACopy } = require("./registered-again");
 const { withTxId, buildPrescanDescriptor } = require("./helpers");
 const contentType = require("./content-type");
 // Imported via the module reference (not destructured) so tests can
@@ -715,6 +715,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) {
       throw schemaError(400, "hash must be a 64-character hex content_hash", "invalid_hash");
     }
+    if (isNeverACopy(hash)) return { content_hash: hash, total: 0, matches: [] };
     const rows = (dag.getContentByHash(hash) || [])
       .filter(r => r.status !== CONTENT_STATUS.RETRACTED && !r.parent_url)
       .sort((a, b) => (a.registered_at - b.registered_at) || String(a.ctid).localeCompare(String(b.ctid)));

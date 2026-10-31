@@ -92,8 +92,10 @@ function setup() {
 }
 
 // A signed REGISTER_CONTENT tx for `text` by `signer`, as a node would build it.
-function reg(fx, { signer, text = LONG, origin = "OH", ts = nowMs(), parentUrl, byline, title, chars }) {
-  const hash = shake256(tipNormalize(text));
+function reg(fx, { signer, text = LONG, origin = "OH", ts = nowMs(), parentUrl, byline, title, chars, media }) {
+  const mch = media ? contentSchema.mediaCanonicalHash(media) : null;
+  const textHash = shake256(tipNormalize(text));
+  const hash = mch ? shake256(mch + textHash) : textHash;
   const authors = [{ key_mode: "attribution", role: "byline", signed: false, tip_id: byline || signer,
     tip_id_type: fx.dag.getIdentity(byline || signer).tip_id_type }];
   const data = {
@@ -101,6 +103,7 @@ function reg(fx, { signer, text = LONG, origin = "OH", ts = nowMs(), parentUrl, 
     signer_tip_id: signer, registered_urls: [], attribution_mode: byline ? "attributed" : "self",
     extras: title ? { title } : {}, authors, cna_version: contentSchema.CURRENT_CNA_VERSION,
     ...(parentUrl ? { parent_url: parentUrl } : {}),
+    ...(media ? { media, media_canonical_hash: mch } : {}),
   };
   data.signature = contentSchema.sign(contentSchema.buildSigningPayload(data, hash), fx.keys[signer].privateKey);
   data.text_chars = chars !== undefined ? chars : tipNormalize(text).length;
@@ -187,6 +190,40 @@ describe("never a copy", () => {
     const fx = setup();
     const p = "https://x.com/someone/status/1";
     both(fx, { first: { parentUrl: p }, copy: { parentUrl: p } });
+    expect(fx.inbox(ANA)).toEqual([]);
+  });
+
+  test("posts whose text is only emoji or punctuation, with no media, all hash alike and are never copies", async () => {
+    const fx = setup();
+    const { first, copy } = both(fx, { first: { text: "🔥🔥🔥" }, copy: { text: "👍👏 !!!" } });
+    const empty = shake256(tipNormalize(""));
+    expect(fx.dag.getContent(first).content_hash).toBe(empty);
+    expect(fx.dag.getContent(copy).content_hash).toBe(empty);
+    expect(fx.inbox(ANA)).toEqual([]);
+    const copyRec = await fx.contentService.resolve(copy);
+    expect(copyRec.registered_first).toBeUndefined();
+    expect((await fx.contentService.resolve(first)).registered_again).toBeUndefined();
+    expect(fx.contentService.matchesByHash(empty)).toEqual({ content_hash: empty, total: 0, matches: [] });
+  });
+});
+
+describe("media posted again", () => {
+  for (const [kind, mime] of [["a document", "application/pdf"], ["an image", "image/png"]]) {
+    test(`${kind} posted again with no caption is still a copy`, () => {
+      const fx = setup();
+      const media = [{ media_id: shake256(`${kind} bytes`), mime }];
+      const { first, copy } = both(fx, { first: { text: "", media }, copy: { text: "", media } });
+      expect(fx.dag.getContent(first).content_hash).not.toBe(shake256(tipNormalize("")));
+      const items = fx.inbox(ANA);
+      expect(items).toHaveLength(1);
+      expect(items[0].metadata.copies[0].ctid).toBe(copy);
+    });
+  }
+
+  test("the same document with a different caption is not a copy", () => {
+    const fx = setup();
+    const media = [{ media_id: shake256("report bytes"), mime: "application/pdf" }];
+    both(fx, { first: { text: "Our annual report", media }, copy: { text: "Their annual report", media } });
     expect(fx.inbox(ANA)).toEqual([]);
   });
 });
