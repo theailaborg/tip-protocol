@@ -65,6 +65,7 @@ const {
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getGenesisPayload } = require("../genesis");
 const { resetTakeovers } = require("../services/url-takeovers");
+const { resetRegisteredAgain } = require("../services/registered-again");
 const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
 const { frame: _frame, streamFrames } = require("../network/framing");
 const { getLogger } = require("../logger");
@@ -1130,6 +1131,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // so cancelPendingCommit + resetBftTimeFloor fire before any AE tick can
       // re-detect a deferred commit or BFT-time violation.
       resetTakeovers(dag);
+      resetRegisteredAgain(dag);
       if (typeof onSnapshotInstalled === "function") {
         try {
           onSnapshotInstalled(peerCommittedRound);
@@ -1395,6 +1397,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       });
       log.notice(`Snapshot install: complete (${_snapTotalRows} rows, ${_snapMB} MB)`);
       resetTakeovers(dag);   // history was replaced without apply
+      resetRegisteredAgain(dag);
       _metrics.installs_completed = (_metrics.installs_completed || 0) + 1;
       _metrics.last_install_rows = _snapTotalRows;
       _metrics.last_install_bytes = _snapBytes;

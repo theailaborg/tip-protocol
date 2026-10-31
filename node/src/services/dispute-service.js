@@ -13,6 +13,7 @@ const { DISPUTE, JURY, APPEAL, AI_CLASSIFIER, CONTENT_GRACE, REVIEWER } = requir
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { createUrlTakeovers } = require("./url-takeovers");
+const { createRegisteredAgain } = require("./registered-again");
 const { selectJury, selectExperts } = require("../jury");
 const { withTxId, nodeSignedAuto, preScanContent } = require("./helpers");
 const { validate } = require("../middleware/validate");
@@ -68,6 +69,7 @@ const DISPUTE_ID_RE = new RegExp(`^[0-9a-f]{${DISPUTE_SHORT_ID_LEN},}$`, "i");
 
 function createDisputeService({ dag, scoring, config, submitTx, submitBatch, disputeDetailsService }) {
   const _urlTakeovers = createUrlTakeovers({ dag });
+  const _registeredAgain = createRegisteredAgain({ dag });
 
   // Persist the off-chain body when fileDispute is called with an
   // `evidence: { payload, signature }` block. Returns
@@ -1299,6 +1301,45 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         deadline: null,
         action: { kind: "view_content", label: "View your record", href: `/content/${encodeURIComponent(r.ctid)}` },
         metadata: { url: r.url, domain: r.domain, owner_tip_id: r.to_tip_id, owner_ctid: r.to_ctid, at: r.at },
+      });
+    }
+
+    // ── Someone else registered my content again (90 days) ─────────────
+    // One item per record of mine, however many copies. High (badge and
+    // plugin notice) for a fresh exact copy of substantial content;
+    // normal otherwise. Rules in services/registered-again.js.
+    for (const g of _registeredAgain.againFor(tipId, now)) {
+      const named = (t) => { const id = dag.getIdentity(t); return (id && id.creator_name) || null; };
+      const copies = g.copies.map(c => ({
+        ctid: c.ctid, author_tip_id: c.author_tip_id, author_name: named(c.author_tip_id),
+        origin_code: c.origin_code, registered_at: c.registered_at,
+      }));
+      const lead = copies[0].author_name || "Someone";
+      const n = copies.length;
+      // One person can hold several copies (same content under another origin code).
+      const people = new Set(copies.map(c => c.author_tip_id)).size;
+      const who = people === 1 ? lead : `${lead} and ${people - 1} other${people - 1 === 1 ? "" : "s"}`;
+      items.push({
+        id: `content_registered_again:${g.first.ctid}`,
+        type: "content_registered_again",
+        priority: g.alert ? "high" : "normal",
+        title: people === 1 ? "Your content was registered again by someone else"
+          : `Your content was registered again by ${people} others`,
+        summary: `${who} registered ${n === people ? "content that matches" : `${n} records that match`}`
+          + ` your record ${_ctidLabel(g.first.ctid)}. Your record came first and keeps its original date.`,
+        role: "author",
+        ctid: g.first.ctid,
+        dispute_id: null,
+        deadline: null,
+        // Opens on the newest copy; the compare page lists every copy.
+        action: {
+          kind: "compare_records", label: "Compare records",
+          href: `/compare?first=${encodeURIComponent(g.first.ctid)}&copy=${encodeURIComponent(copies[0].ctid)}`,
+        },
+        metadata: {
+          first_ctid: g.first.ctid, first_registered_at: g.first.registered_at, match_type: "exact",
+          count: n, latest_at: g.latest, copies: copies.slice(0, 5),
+        },
       });
     }
 

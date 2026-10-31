@@ -17,6 +17,7 @@ const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { createUrlTakeovers } = require("./url-takeovers");
+const { createRegisteredAgain, isNeverACopy } = require("./registered-again");
 const { withTxId, buildPrescanDescriptor } = require("./helpers");
 const contentType = require("./content-type");
 // Imported via the module reference (not destructured) so tests can
@@ -27,6 +28,7 @@ const { log } = require("../logger");
 
 function createContentService({ dag, scoring, config, submitTx, prescanJobs, mediaService, websitePages = null }) {
   const urlTakeovers = createUrlTakeovers({ dag });
+  const registeredAgain = createRegisteredAgain({ dag });
 
   // Pages of the signer's own protected website count against the site
   // owner's plan. One reservation per site; a refusal names the limit and
@@ -421,6 +423,11 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         // on the tx row for now while the post-registration warning UX
         // is being validated end-to-end.
         override: !!body.override,
+        // Length of the normalized text, counted by this node. Advisory and
+        // not signed, like override: it only decides whether an exact copy
+        // of short text ("gm") raises an alert for the first author (see
+        // services/registered-again.js). Never changes what commits.
+        text_chars: content ? tipNormalize(content).length : 0,
 
         // ── CNA-2.2 signed canonical fields (mirror canonicalPayload
         //    so commit-handler can replay buildSigningPayload(d, d.content_hash))
@@ -678,7 +685,41 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     let released = [];
     try { released = urlTakeovers.releasedBy(ctid); } catch (e) { log.warn?.(`released_urls for ${ctid}: ${e.message}`); }
     if (released.length) out.released_urls = released;
+    // Registered again (strip rule, advisory): the earlier record by someone
+    // else that this one matches exactly, or the later copies by others when
+    // this record came first.
+    try {
+      const again = registeredAgain.forRecord(rec);
+      if (again.earlier) out.registered_first = _againCard(again.earlier);
+      if (again.later.length) out.registered_again = again.later.slice(0, 20).map(_againCard);
+      if (again.later.length > 20) out.registered_again_total = again.later.length;
+    } catch (e) { log.warn?.(`registered_again for ${ctid}: ${e.message}`); }
     return out;
+  }
+
+  function _againCard(r) {
+    const id = dag.getIdentity(r.author_tip_id);
+    return {
+      ctid: r.ctid, author_tip_id: r.author_tip_id, signer_tip_id: r.signer_tip_id || r.author_tip_id,
+      author_name: (id && id.creator_name) || null,
+      origin_code: r.origin_code, registered_at: r.registered_at,
+    };
+  }
+
+  /** Live records with exactly this normalized content, oldest first, so a
+   *  client can warn before signing ("already registered by ... on ...").
+   *  Replies are left out (identical short replies under one post are
+   *  ordinary). One indexed lookup; the hash only comes from having the
+   *  content itself. */
+  function matchesByHash(hash) {
+    if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) {
+      throw schemaError(400, "hash must be a 64-character hex content_hash", "invalid_hash");
+    }
+    if (isNeverACopy(hash)) return { content_hash: hash, total: 0, matches: [] };
+    const rows = (dag.getContentByHash(hash) || [])
+      .filter(r => r.status !== CONTENT_STATUS.RETRACTED && !r.parent_url)
+      .sort((a, b) => (a.registered_at - b.registered_at) || String(a.ctid).localeCompare(String(b.ctid)));
+    return { content_hash: hash, total: rows.length, matches: rows.slice(0, 10).map(_againCard) };
   }
 
   // Who signed the record: the identity that can retract it and carries its
@@ -1143,7 +1184,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return { ctid, count: similar.length, similar };
   }
 
-  return { register, resolve, resolveForOg, list, verify, updateOrigin, updateRegisteredUrls, retract, getPrescanStatus, findSimilar };
+  return { register, resolve, resolveForOg, list, verify, updateOrigin, updateRegisteredUrls, retract, getPrescanStatus, findSimilar, matchesByHash };
 }
 
 module.exports = { createContentService };
