@@ -47,3 +47,15 @@ test("GET /v1/content/:ctid still dispatches to resolve(), not resolveForOg()", 
   expect(res.status).toBe(200);
   expect(resolveCalled).toBe(true);
 });
+
+test("GET /v1/content/:ctid asks resolve() for similar cards only with include=similar", async () => {
+  const seen = [];
+  const app = _app({ resolve: async (c, opts) => { seen.push(opts); return { ok: true }; } });
+  const url = `/v1/content/${encodeURIComponent(CTID)}`;
+  await request(app).get(url);
+  await request(app).get(`${url}?include=similar`);
+  await request(app).get(`${url}?include=fingerprints.text,image`);
+  expect(seen[0]).toEqual({ includeSimilar: false });
+  expect(seen[1]).toEqual({ includeSimilar: true });
+  expect(seen[2]).toMatchObject({ includeSimilar: false, includeFingerprints: true, modalities: ["text", "image"] });
+});

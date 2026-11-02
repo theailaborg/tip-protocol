@@ -630,15 +630,16 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const originalOriginCode = ctidOriginMatch ? ctidOriginMatch[1] : null;
     const originChanged = !!originalOriginCode && originalOriginCode !== rec.origin_code;
 
-    // Perceptually-similar content (advisory, off-DAG): top-5 near-duplicate
-    // cards, so a content detail page can render "similar content" in the same
-    // call. Also available standalone via GET /content/:ctid/similar. Advisory:
-    // never let an index hiccup break the content detail response.
-    let similar = [];
-    try {
-      similar = (await findSimilarCtids(dag, ctid, { limit: 5 })).map(_similarCard).filter(Boolean);
-    } catch (err) {
-      log.warn(`similar-content lookup failed for ${ctid}: ${err.message || err}`);
+    // Similar-content cards only on request: the extension fetches a record for
+    // every post it verifies and never shows them. Advisory, never breaks the record.
+    let similar = null;
+    if (opts.includeSimilar) {
+      try {
+        similar = (await findSimilarCtids(dag, ctid, { limit: 5 })).map(_similarCard).filter(Boolean);
+      } catch (err) {
+        similar = [];
+        log.warn(`similar-content lookup failed for ${ctid}: ${err.message || err}`);
+      }
     }
 
     const out = {
@@ -676,8 +677,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       }),
       prescan_note: PRESCAN_NOTES[rec.prescan_tier] || null,
       consensus: { available: false, status: "not_requested" },
-      similar,
     };
+    if (similar) out.similar = similar;
     if (opts.includeFingerprints) out.fingerprints = await _projectFingerprints(ctid, opts);
     // Addresses this record gave up to a protected site's owner (strip rule:
     // the key is present only when there is one).
