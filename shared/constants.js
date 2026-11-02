@@ -357,7 +357,7 @@ const ATTRIBUTION_MODE_VALUES = Object.freeze(Object.values(ATTRIBUTION_MODES));
 // formatting, so client and server must hash the exact same bytes. See the
 // envelope shape below and NODE_FINGERPRINT_CONTRACT.md. These are the modality
 // kinds the index recognises and the per-content component cap.
-const PERCEPTUAL_FINGERPRINT_KINDS = Object.freeze(["text", "image", "video", "audio"]);
+const PERCEPTUAL_FINGERPRINT_KINDS = Object.freeze(["text", "image", "video", "audio", "document"]);
 const PERCEPTUAL_FINGERPRINT_KIND_VALUES = Object.freeze(new Set(PERCEPTUAL_FINGERPRINT_KINDS));
 const PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS = 256;
 // The client packs the per-component fingerprints into a versioned envelope
@@ -365,6 +365,39 @@ const PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS = 256;
 // is the (gzip+base64 or identity) serialised items[] the commit is taken over.
 const PERCEPTUAL_FINGERPRINTS_PROFILE = "cf-fingerprints-1";
 const PERCEPTUAL_FINGERPRINTS_ENCODINGS = Object.freeze(new Set(["gzip+base64", "identity"]));
+
+// Bounds a cf-doc-1 document item must meet: the library's own limits for that
+// profile (a test pins them to the vendored library), plus a cap on the item.
+const DOCUMENT_FINGERPRINT = Object.freeze({
+  PROFILE: "cf-doc-1",
+  MAX_ITEM_BYTES: 1.5 * 1024 * 1024,
+  MAX_UNITS: 2000,
+  MAX_CHARS: 8000000,
+  MAX_CHUNKS: 8000,
+  MAX_PICTURES: 200,
+  PASSAGE_K: 50,
+  PASSAGE_W: 200,
+  PASSAGE_HASH_BYTES: 6,
+  CHUNK_HASH_BYTES: 8,
+  UNIT_HASH_BYTES: 8,
+  TEXT_PROFILE: "cf-text-3",
+  FORMATS: Object.freeze(["pdf", "doc", "docx", "pptx", "xlsx", "odt", "odp", "ods", "epub", "rtf"]),
+  UNITS: Object.freeze(["page", "slide", "sheet", "item"]),
+  TEXTLESS_REASONS: Object.freeze(["no-text", "rejected", "scrambled", "ocr-layer"]),
+});
+
+// Document near-duplicate lookup. Passage keys held by more than MAX_KEY_OWNERS
+// owners are skipped when finding candidates (speed only: they weigh almost
+// nothing); at most MAX_CANDIDATES documents are compared per lookup, and the
+// IMAGE_HITS nearest picture or page matches are looked at.
+// READ_CHUNK_ROWS keys per query stays under SQLite's 32,766 and Postgres's 65,535 bind limits.
+const DOCUMENT_MATCH = Object.freeze({
+  MAX_KEY_OWNERS: 500,
+  MAX_CANDIDATES: 25,
+  IMAGE_PROBES: 32,
+  IMAGE_HITS: 64,
+  READ_CHUNK_ROWS: 8000,
+});
 
 // Locked .tip.json key file export: the VP app's "tip-key-export-v2" download.
 // Byte layout and KDF parameters must stay identical on both sides or a file
@@ -1328,6 +1361,8 @@ module.exports = {
   PERCEPTUAL_FINGERPRINT_KINDS,
   PERCEPTUAL_FINGERPRINT_KIND_VALUES,
   PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
+  DOCUMENT_FINGERPRINT,
+  DOCUMENT_MATCH,
   PERCEPTUAL_FINGERPRINTS_PROFILE,
   PERCEPTUAL_FINGERPRINTS_ENCODINGS,
   KEY_FILE_EXPORT,

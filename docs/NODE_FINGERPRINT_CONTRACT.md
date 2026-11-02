@@ -112,9 +112,9 @@ Each item:
 
 ```jsonc
 {
-  "kind": "image" | "audio" | "video" | "text",
-  "role": "primary" | "carousel" | "extra" | "audio" | "video"   // media
-        | "caption" | "thread" | "thread_post",                  // text
+  "kind": "image" | "audio" | "video" | "text" | "document",
+  "role": "primary" | "carousel" | "extra" | "audio" | "video" | "document"   // media
+        | "caption" | "thread" | "thread_post",                             // text
   "index": 0,                  // present for role "carousel" / "extra" / "thread_post"
   "exact": "<64-hex>",         // the item's SHAKE-256 (file bytes); absent for text roles
   "perceptual": { /* verbatim library object, dispatch on .profile */ }
@@ -155,6 +155,40 @@ Tie `thread`/`thread_post` items to the registration via the ctid (threadId = ct
 { "profile":"cf-video-1", "kind":"video",
   "features":[ {"frame":0,"timestamp":0,"pdq":"<64-hex>","quality":83}, /* one per sampled second */ ] }
 ```
+
+**Documents (`kind: "document"`, profile `cf-doc-1`).** One item per attached document
+(PDF, DOC, DOCX, PPTX, XLSX, ODT, ODP, ODS, EPUB, RTF), in the position of its media slot,
+`perceptual` being the verbatim `fingerprintDocument` output. The node refuses the
+registration (`fingerprint_document_invalid`, `fingerprint_document_profile_unsupported`,
+`fingerprint_document_too_large`) unless the item meets the profile's bounds:
+
+| Field | Bound |
+|---|---|
+| `format` | one of the formats above |
+| `text_hash` | 64 lowercase hex |
+| `text` | null, or a `cf-text-3` fingerprint (128-value MinHash, or the micro-tier `exact`) |
+| `unit` | `page`, `slide`, `sheet`, `item`, or null (DOCX, ODT, RTF) |
+| `units_covered` | 0 to 2,000; `unit_count` at least that |
+| `chars_covered` | 0 to 8,000,000 |
+| `chunks` | at most 8,000 `{ h: 16 hex, n, at }`, `at` a covered unit (null without units) |
+| `passages` | `{ k: 50, w: 200, count, h }`, `h` the base64 of `count` 6-byte hashes; `at` lists `[unit, first sample]` with units, absent without |
+| `unit_hashes` | base64 of 8 bytes per covered unit, or null without units |
+| `images` | at most 200 `{ at, pdq: 64 hex, quality: 0 to 100 }` |
+| `textless_pages` | PDF only, at most one per covered unit `{ at, reason, pdq, quality }` (`pdq` and `quality` both null when the page could not be drawn) |
+| `ocr`, `meaning` | null |
+| whole item | at most 1.5 MB as JSON |
+
+A document fingerprint is public like every other fingerprint (`include=fingerprints.document`).
+A registrant who keeps a document private sends no document item; the record then has its
+exact hash only.
+
+The node indexes, per document: the whole-text hash (same wording in any format; skipped
+when the document has no text, since that hash is the same for every scan), each passage
+key with its unit and the record's owner, the `text` MinHash in the shared text bands (so a
+post and a document with the same text find each other), and the PDQ of every picture and
+drawn page as an image (so a scan or a picture also matches the same image posted alone).
+`chunks` and `unit_hashes` are stored for comparison only. Matches are measured with the
+library's `compareDocument`; see `GET /v1/content/:ctid/similar` in API.md.
 
 **Reject tier (library v2).** The client already drops these, so a well-formed request
 won't contain them, but for robustness the node should ignore any item whose
@@ -273,6 +307,8 @@ Measured on-wire sizes (gzip + base64, what lands in the JSON body):
 | Audio 60-min | ~6.2 MB |
 | Audio 120-min (cap) | ~12 MB worst case (~7 MB typical) |
 | Worst realistic post (5-min audio + 10-min video + 20 photos) | ~522 KB |
+| Document, 25 pages (`cf-doc-1`, raw JSON) | ~9 KB |
+| Document, 1,000 pages (`cf-doc-1`, raw JSON) | ~280 KB (cap 1.5 MB) |
 
 **Limits in effect:**
 - **Node:** register-body limit is **25 MB**.

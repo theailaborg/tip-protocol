@@ -13,7 +13,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { MEDIA_LIMITS, MEDIA_QUOTA_CLIENT, PRESCAN_FAIL_OPEN_AFTER_MS, TEXT_LSH } = require("../../shared/constants");
+const { MEDIA_LIMITS, MEDIA_QUOTA_CLIENT, PRESCAN_FAIL_OPEN_AFTER_MS, TEXT_LSH, DOCUMENT_MATCH } = require("../../shared/constants");
 const { CONTENT_LIMITS } = require("../../shared/protocol-constants");
 
 // Fail closed: dev-gated paths check NODE_ENV !== "production", so an unset
@@ -216,6 +216,8 @@ function loadConfig() {
     // timed beside it (measurement only). Validated at boot.
     textLshScheme: process.env.TIP_TEXT_LSH_SCHEME || TEXT_LSH.DEFAULT_SCHEME,
     textLshShadow: process.env.TIP_TEXT_LSH_SHADOW || "",
+    // Passage keys held by more owners than this are skipped when finding similar documents.
+    docPassageMaxOwners: parseInt(process.env.TIP_DOC_PASSAGE_MAX_OWNERS || "", 10) || DOCUMENT_MATCH.MAX_KEY_OWNERS,
 
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),

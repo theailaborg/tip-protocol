@@ -215,6 +215,34 @@ Resolve a content provenance record.
 
 `media[]` carries public storage facts (type, size, whether the bytes are still stored) and the per-file AI score from the verdict. The bytes themselves are not here, fetch them via the role-gated media endpoint below. `ai_probability` is `null` until prescan completes.
 
+Optional `include`:
+- `include=similar` adds `similar[]`, the same cards as `GET /v1/content/:ctid/similar` (top 5). Without it no lookup runs.
+- `include=fingerprints` adds `fingerprints[]`, the stored perceptual fingerprints `{ component_idx, modality, profile, quality, fingerprint }`; `include=fingerprints.document` (or `.text`, `.image`, `.video`, `.audio`, comma-separated) keeps only those kinds. A document's `fingerprint` is the whole `cf-doc-1` item, every page signature included. `video_every=N` keeps every Nth video frame.
+
+#### `GET /v1/content/:ctid/similar`
+Near-duplicates of this record among the content this node has indexed, as cards sorted by `similarity.score` (0 to 1, comparable across kinds; a rank, not a verdict). `?limit` (default 5, max 20).
+
+```json
+{
+  "ctid": "tip://c/OH-7f2a91bc3d5e4a-a3f8",
+  "count": 1,
+  "similar": [{
+    "ctid": "tip://c/OH-5c19e0aa7b2d33-91c0",
+    "origin_code": "OH", "author_tip_id": "tip://id/US-...", "author_name": "...", "title": "...",
+    "status": "registered", "registered_at": 1793448000000, "media": [],
+    "similarity": {
+      "modality": "document", "score": 0.94, "component_idx": 0,
+      "shared_text": { "a_in_b": 0.27, "b_in_a": 0.45, "chars": 5043, "score": 5043, "at_a": [[2, 3]], "at_b": [[1, 2]], "worth_listing": true },
+      "same_wording": false, "cross_format": false, "text_similarity": 0.31,
+      "images": { "a": 0, "b": 0, "shared": 0 }, "textless_pages": { "a": 0, "b": 0, "shared": 0 },
+      "units": { "a": 5, "b": 3, "shared": 0, "reordered": false }
+    }
+  }]
+}
+```
+
+`similarity` carries the kind's own figures: `similarity` (text, MinHash), `distance` (image, PDQ bits of 256), `target_match_pct` and `query_match_pct` (video), `landmark_matches` and `score_ratio` (audio). For documents it is the library's `compareDocument` result: `shared_text` says how much of each document's text is in the other (`a_in_b`, `b_in_a`), about how many characters, and on which pages (`at_a`, `at_b`); `shared_text.score` is those characters with each passage weighted by 1 / (1 + the number of other owners whose records hold it), so text many people hold (a licence, a disclaimer) ranks last. A document is listed when `shared_text.worth_listing` holds (at least 300 characters shared, or the same wording) or it shares a scanned page image (the same scan or the same form). Its `score` is the larger of `shared_text.score / (shared_text.score + 300)` and the share of scanned pages that match. The text MinHash never lists or ranks one document against another: two large unrelated texts in one language can pass 0.30. A document also lists posts with the same text and images posted alone that match one of its pictures or pages.
+
 #### `GET /v1/content`
 List content, newest first. Cursor-paginated, public.
 

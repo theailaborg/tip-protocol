@@ -11,6 +11,7 @@
 // coverage arrives with off-DAG perceptual_fingerprint replication (GH issue).
 
 const { matchText, matchImage, matchVideo, matchAudio, IMAGE_DISTANCE } = require("./matcher");
+const { matchDocument } = require("./document-index");
 
 // Map each modality's native metric onto a common 0-1 "more similar = higher"
 // scale so candidates from different modalities can be ranked together.
@@ -22,6 +23,7 @@ function _normScore(modality, hit) {
   if (modality === "image") return 1 - Math.min(hit.distance, IMAGE_DISTANCE) / (IMAGE_DISTANCE + 1); // Hamming -> (0,1]
   if (modality === "video") return hit.targetMatchPct / 100;                        // % -> 0-1
   if (modality === "audio") return Math.min(1, hit.scoreRatio);                     // ratio (already 0-1)
+  if (modality === "document") return hit.score;                                    // documentScore (already 0-1)
   return 0;
 }
 
@@ -34,15 +36,34 @@ function _rawMetric(modality, hit) {
   // NB: key is `landmark_matches`, NOT `score` — a `score` key here would clobber
   // the card's normalised 0-1 `score` when the metric is spread into it.
   if (modality === "audio") return { landmark_matches: hit.score, score_ratio: hit.scoreRatio };
+  if (modality === "document") {
+    const c = hit.compare;
+    return {
+      shared_text: c.shared_text,
+      same_wording: c.same_wording,
+      cross_format: c.cross_format,
+      text_similarity: c.text_similarity,
+      images: c.images,
+      textless_pages: c.textless_pages,
+      units: c.units && { a: c.units.a, b: c.units.b, shared: c.units.shared, reordered: c.units.reordered },
+    };
+  }
   return {};
 }
 
-async function _matchFor(dag, modality, fp, ctid) {
+// A hit carries its own `modality` when it differs from the query's: a document
+// also finds posts by its text and images posted alone by its pictures.
+async function _matchFor(dag, modality, fp, ctid, owner) {
   const opts = { excludeCtid: ctid };
   if (modality === "text") return matchText(dag, fp, opts);
   if (modality === "image") return matchImage(dag, fp, opts);
   if (modality === "video") return matchVideo(dag, fp, opts);
   if (modality === "audio") return matchAudio(dag, fp, opts);
+  if (modality === "document") {
+    const docs = await matchDocument(dag, fp, { excludeCtid: ctid, owner });
+    const texts = fp.text ? await matchText(dag, fp.text, { ...opts, documents: false }) : [];
+    return [...docs, ...texts.map((h) => ({ ...h, modality: "text" }))];
+  }
   return [];
 }
 
@@ -52,6 +73,8 @@ async function findSimilarCtids(dag, ctid, opts = {}) {
   if (typeof dag.getPerceptualFingerprint !== "function") return [];
   const limit = opts.limit != null ? opts.limit : 5;
   const best = new Map(); // candidate ctid -> { score, modality, component_idx, metric }
+  const rec = dag.getContent(ctid);
+  const owner = rec ? rec.author_tip_id : null;
 
   // Walk the source content's components (contiguous from 0) and query each.
   for (let i = 0; ; i++) {
@@ -63,12 +86,13 @@ async function findSimilarCtids(dag, ctid, opts = {}) {
     } catch {
       continue;
     }
-    const hits = await _matchFor(dag, row.modality, fp, ctid);
+    const hits = await _matchFor(dag, row.modality, fp, ctid, owner);
     for (const hit of hits) {
-      const score = _normScore(row.modality, hit);
+      const modality = hit.modality || row.modality;
+      const score = _normScore(modality, hit);
       const prev = best.get(hit.ctid);
       if (!prev || score > prev.score) {
-        best.set(hit.ctid, { score, modality: row.modality, component_idx: i, metric: _rawMetric(row.modality, hit) });
+        best.set(hit.ctid, { score, modality, component_idx: i, metric: _rawMetric(modality, hit) });
       }
     }
   }
@@ -95,12 +119,13 @@ async function matchFingerprintItems(dag, items, opts = {}) {
   for (let i = 0; i < items.length; i++) {
     const fp = items[i] && items[i].perceptual;
     if (!fp || typeof fp.kind !== "string") continue;
-    const hits = await _matchFor(dag, fp.kind, fp, opts.excludeCtid || null);
+    const hits = await _matchFor(dag, fp.kind, fp, opts.excludeCtid || null, opts.owner || null);
     for (const hit of hits) {
-      const score = _normScore(fp.kind, hit);
+      const modality = hit.modality || fp.kind;
+      const score = _normScore(modality, hit);
       const prev = best.get(hit.ctid);
       if (!prev || score > prev.score) {
-        best.set(hit.ctid, { score, modality: fp.kind, component_idx: i, metric: _rawMetric(fp.kind, hit) });
+        best.set(hit.ctid, { score, modality, component_idx: i, metric: _rawMetric(modality, hit) });
       }
     }
   }

@@ -295,6 +295,38 @@ describe("content register — similar content (findSimilar + resolve.similar)",
     expect(spy).not.toHaveBeenCalled();
   });
 
+  test("documents: a converted copy by someone else is flagged on register, listed by findSimilar, and its item is served whole", async () => {
+    const docEnv = (name) => _packFingerprints([{ kind: "document", role: "document", exact: "c".repeat(64), perceptual: require(`../fixtures/documents/${name}.json`) }]);
+    const fx = _setup();
+    const a = generateMLDSAKeypair();
+    const b = generateMLDSAKeypair();
+    const tipA = `tip://id/US-${shake256("doc-author").slice(0, 16)}`;
+    const tipB = `tip://id/US-${shake256("doc-copier").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipA, a);
+    _seedIdentity(fx.dag, tipB, b);
+
+    await fx.contentService.register(_buildRegisterBody({ tipId: tipA, privKey: a.privateKey, content: "annual report", registered_urls: ["https://a.example/report/"], fingerprints: docEnv("original") }));
+    await _flush();
+    _commit(fx, fx.submitted.filter(t => t.tx_type === "REGISTER_CONTENT")[0]);
+    const out = await fx.contentService.register(_buildRegisterBody({ tipId: tipB, privKey: b.privateKey, content: "annual report, as RTF", registered_urls: ["https://b.example/report/"], fingerprints: docEnv("exported") }));
+    await _flush();
+    const reg = fx.submitted.filter(t => t.tx_type === "REGISTER_CONTENT");
+    _commit(fx, reg[1]);
+    const [ctidA, ctidB] = [reg[0].data.ctid, reg[1].data.ctid];
+
+    expect(out.near_duplicates).toEqual([expect.objectContaining({ ctid: ctidA, match_type: "perceptual" })]);
+    expect(out.near_duplicates[0].similarity).toMatchObject({ modality: "document", same_wording: true, cross_format: true });
+
+    const res = await fx.contentService.findSimilar(ctidB);
+    expect(res.similar.map(s => s.ctid)).toEqual([ctidA]);
+    expect(res.similar[0].author_tip_id).toBe(tipA);
+    expect(res.similar[0].similarity.shared_text).toMatchObject({ a_in_b: 1, b_in_a: 1 });
+
+    const detail = await fx.contentService.resolve(ctidA, { includeFingerprints: true, modalities: ["document"] });
+    expect(detail.fingerprints).toEqual([expect.objectContaining({ component_idx: 0, modality: "document", profile: "cf-doc-1" })]);
+    expect(detail.fingerprints[0].fingerprint).toEqual(require("../fixtures/documents/original.json"));
+  });
+
   test("findSimilar on unknown ctid → 404", async () => {
     const fx = _setup();
     await expect(fx.contentService.findSimilar("tip://c/OH-deadbeefdeadbe-0000"))

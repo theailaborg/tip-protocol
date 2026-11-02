@@ -35,7 +35,8 @@ let _shadowInFlight = 0;
 
 // Find indexed texts that are near-duplicates of queryFp (char-tier MinHash only;
 // micro-tier is exact-match, handled elsewhere). Returns [{ ctid, similarity }]
-// sorted high-to-low, above the threshold.
+// sorted high-to-low, above the threshold. `documents: false` leaves out
+// documents' own text (a document's text is matched to posts only).
 async function matchText(dag, queryFp, opts) {
   opts = opts || {};
   const threshold = opts.threshold != null ? opts.threshold : TEXT_FLAG_THRESHOLD;
@@ -48,7 +49,8 @@ async function matchText(dag, queryFp, opts) {
     textIndex.warnNotReady(dag, scheme);
     return [];
   }
-  const answer = await _matchTextIn(dag, queryFp, scheme, threshold, opts.excludeCtid);
+  const withDocuments = opts.documents !== false;
+  const answer = await _matchTextIn(dag, queryFp, scheme, threshold, opts.excludeCtid, withDocuments);
   textIndex.recordLookup(scheme, "answer", answer);
   const shadow = textIndex.shadowScheme();
   if (shadow && textIndex.isReady(dag, shadow) && _shadowInFlight < TEXT_LSH.SHADOW_MAX_IN_FLIGHT) {
@@ -56,7 +58,7 @@ async function matchText(dag, queryFp, opts) {
     // Under load only a sample is measured, so shadow work never queues up.
     _shadowInFlight++;
     setImmediate(() => {
-      _matchTextIn(dag, queryFp, shadow, threshold, opts.excludeCtid)
+      _matchTextIn(dag, queryFp, shadow, threshold, opts.excludeCtid, withDocuments)
         .then((r) => {
           textIndex.recordLookup(shadow, "shadow", r);
           textIndex.logShadow(opts.excludeCtid, scheme, answer, shadow, r);
@@ -68,25 +70,26 @@ async function matchText(dag, queryFp, opts) {
   return answer.matches;
 }
 
-// Every text component of a candidate is verified (a caption can follow an image)
-// and the best one counts.
-async function _matchTextIn(dag, queryFp, scheme, threshold, excludeCtid) {
+// Every text component of a candidate is verified (a caption can follow an image),
+// and a document's own text unless withDocuments is false; the best one counts.
+async function _matchTextIn(dag, queryFp, scheme, threshold, excludeCtid, withDocuments) {
   const t0 = performance.now();
   const bandHashes = lshBands(queryFp.minhash, { scheme });
   const found = await dag.findMinhashCandidates(textIndex.bandProfile(queryFp.profile, scheme), bandHashes);
   const ctids = excludeCtid ? found.filter((c) => c !== excludeCtid) : found;
-  const rows = ctids.length ? await dag.getTextFingerprintsByCtids(ctids) : [];
+  const texts = ctids.length ? await dag.getTextFingerprintsByCtids(ctids) : [];
+  const docs = withDocuments && ctids.length ? await dag.getDocumentTextsByCtids(ctids) : [];
   const best = new Map();
-  for (const row of rows) {
+  for (const raw of [...texts.map((r) => [r.ctid, r.fingerprint]), ...docs.map((d) => [d.ctid, d.text])]) {
     let candFp;
     try {
-      candFp = JSON.parse(row.fingerprint);
+      candFp = JSON.parse(raw[1]);
     } catch {
       continue;
     }
     if (!Array.isArray(candFp.minhash)) continue;
     const similarity = jaccardEstimate(queryFp.minhash, candFp.minhash);
-    if (similarity >= threshold && similarity > (best.get(row.ctid) || 0)) best.set(row.ctid, similarity);
+    if (similarity >= threshold && similarity > (best.get(raw[0]) || 0)) best.set(raw[0], similarity);
   }
   const matches = [...best].map(([ctid, similarity]) => ({ ctid, similarity }));
   matches.sort((a, b) => (b.similarity - a.similarity) || (a.ctid < b.ctid ? -1 : a.ctid > b.ctid ? 1 : 0));
@@ -158,11 +161,22 @@ async function _coverage(A, B, D) {
 
 // Evenly spaced subset: probing every Nth frame finds any candidate that
 // shares more than a sliver of content, at a bounded candidate-gen cost.
-function _evenSample(arr, n) {
+function evenSample(arr, n) {
   if (arr.length <= n) return arr;
+  if (n <= 1) return arr.slice(0, n);
   const out = [];
   for (let i = 0; i < n; i++) out.push(arr[Math.floor((i * (arr.length - 1)) / (n - 1))]);
   return out;
+}
+
+// One MIH candidate query for several PDQ hashes: the union of their keys per chunk.
+function mergedProbeKeys(pdqs) {
+  const merged = Array.from({ length: 16 }, () => new Set());
+  for (const pdq of pdqs) {
+    const keys = queryKeys(pdq);
+    for (let i = 0; i < 16; i++) for (const k of keys[i]) merged[i].add(k);
+  }
+  return merged.map((s) => [...s]);
 }
 
 // Find indexed videos that are near-duplicates of queryFp. Per query frame: MIH
@@ -183,13 +197,8 @@ async function matchVideo(dag, queryFp, opts) {
   // Candidate-gen probes a bounded, evenly spaced frame subset in ONE store
   // call (per-chunk key union across probes).
   const probeFrames = opts.probeFrames != null ? opts.probeFrames : VIDEO_MATCH_PROBE_FRAMES;
-  const probes = _evenSample(q, probeFrames);
-  const merged = Array.from({ length: 16 }, () => new Set());
-  for (const f of probes) {
-    const keys = queryKeys(f.pdq);
-    for (let i = 0; i < 16; i++) for (const k of keys[i]) merged[i].add(k);
-  }
-  const candidates = await dag.findPhashCandidates(queryFp.profile, "video", merged.map((s) => [...s]));
+  const probes = evenSample(q, probeFrames);
+  const candidates = await dag.findPhashCandidates(queryFp.profile, "video", mergedProbeKeys(probes.map((f) => f.pdq)));
 
   // A chunk hit is only a candidate (a random frame collides with a probe's
   // 16x17 keys ~0.4% of the time), so raw hit counts grow with video length.
@@ -225,13 +234,13 @@ async function matchVideo(dag, queryFp, opts) {
   // an unbiased estimate of the full-set percentage at a bounded cost, given
   // both sides are in frame order (features, and the store's ctid rows).
   const scoreFrames = opts.scoreFrames != null ? opts.scoreFrames : VIDEO_MATCH_SCORE_FRAMES;
-  const qs = _decodePdqSet(_evenSample(q, scoreFrames));
+  const qs = _decodePdqSet(evenSample(q, scoreFrames));
   const out = [];
   for (const ctid of ctids) {
     const rows = await dag.getPhashCodesByCtid(ctid);
     const t = rows.filter((r) => r.modality === "video" && (r.quality == null || r.quality >= F));
     if (!t.length) continue;
-    const ts = _decodePdqSet(_evenSample(t, scoreFrames));
+    const ts = _decodePdqSet(evenSample(t, scoreFrames));
     const queryMatchPct = ((await _coverage(qs, ts, D)) * 100) / qs.length;
     const targetMatchPct = ((await _coverage(ts, qs, D)) * 100) / ts.length;
     if (queryMatchPct >= Pq && targetMatchPct >= Pc) out.push({ ctid, queryMatchPct, targetMatchPct });
@@ -298,7 +307,7 @@ async function matchAudio(dag, queryFp, opts) {
 }
 
 module.exports = {
-  matchText, matchImage, matchVideo, matchAudio,
+  matchText, matchImage, matchVideo, matchAudio, evenSample, mergedProbeKeys,
   TEXT_FLAG_THRESHOLD, IMAGE_DISTANCE, IMAGE_MIN_QUALITY, VIDEO_DISTANCE, VIDEO_QUALITY, VIDEO_PC, VIDEO_PQ,
   AUDIO_MIN_SCORE, AUDIO_MIN_RATIO,
 };

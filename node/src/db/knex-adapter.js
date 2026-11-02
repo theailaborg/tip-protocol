@@ -23,7 +23,7 @@ const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx }
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
-const { SNAPSHOT_BULK_CHUNK_ROWS, BULK_INSERT_CHUNK_ROWS, UPLOAD_SESSION_STATE, TEXT_LSH } = require("../../../shared/constants");
+const { SNAPSHOT_BULK_CHUNK_ROWS, BULK_INSERT_CHUNK_ROWS, UPLOAD_SESSION_STATE, TEXT_LSH, DOCUMENT_MATCH } = require("../../../shared/constants");
 const { DB_WRITE_BACKPRESSURE_MS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/local-config");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
@@ -1113,6 +1113,18 @@ class KnexAdapter {
     }
     return out;
   }
+  // Text components, then each document's own text as modality "document", merged
+  // in keyset order: the first `limit` of the two sorted scans is the next page.
+  async getPerceptualModalities(ctids) {
+    const out = [];
+    for (let i = 0; i < ctids.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const rows = await this.knex("perceptual_fingerprint")
+        .whereIn("tip_ctid", ctids.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
+        .select("tip_ctid", "component_idx", "modality");
+      for (const r of rows) out.push({ ctid: r.tip_ctid, component_idx: r.component_idx, modality: r.modality });
+    }
+    return out;
+  }
   async listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
     const rows = await this.knex("perceptual_fingerprint")
       .where({ modality: "text" })
@@ -1121,6 +1133,63 @@ class KnexAdapter {
       .limit(limit)
       .select("tip_ctid", "component_idx", "modality", "profile", "fingerprint");
     return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
+  }
+  async listDocumentTextsAfter(afterCtid, afterIdx, limit) {
+    const rows = await this.knex("document_text").whereNotNull("text")
+      .whereRaw("(tip_ctid, component_idx) > (?, ?)", [afterCtid, afterIdx])
+      .orderBy([{ column: "tip_ctid" }, { column: "component_idx" }])
+      .limit(limit)
+      .select("tip_ctid", "component_idx", "profile", "text");
+    return rows.map((d) => ({ ctid: d.tip_ctid, component_idx: d.component_idx, modality: "document", profile: d.profile, fingerprint: d.text }));
+  }
+  saveDocumentText(row) {
+    const { ctid, ...rest } = row;
+    this._ff(() => this._k("document_text").insert({ tip_ctid: ctid, ...rest }).onConflict(["tip_ctid", "component_idx"]).ignore());
+  }
+  saveDocumentPassages(rows) {
+    if (!rows || !rows.length) return;
+    const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
+    this._ff(() => this._chunkedInsertIgnore("document_passage", mapped,
+      ["profile", "passage_key", "owner", "tip_ctid", "component_idx"]));
+  }
+  async findDocumentsByTextHash(profile, textHash) {
+    const rows = await this.knex("document_text").where({ profile, text_hash: textHash }).select("tip_ctid", "component_idx");
+    return rows.map((r) => ({ ctid: r.tip_ctid, component_idx: r.component_idx }));
+  }
+  async countDocumentPassageOwners(profile, keys, excludeOwner) {
+    const out = [];
+    for (let i = 0; i < keys.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const rows = await this.knex("document_passage").where({ profile })
+        .whereIn("passage_key", keys.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
+        .groupBy("passage_key")
+        .select("passage_key", this.knex.raw("COUNT(DISTINCT CASE WHEN owner <> ? THEN owner END) AS owners", [excludeOwner || ""]));
+      for (const r of rows) out.push({ passage_key: r.passage_key, owners: Number(r.owners) });
+    }
+    return out;
+  }
+  async findDocumentPassageCandidates(profile, keys) {
+    const shared = new Map();
+    for (let i = 0; i < keys.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const rows = await this.knex("document_passage").where({ profile })
+        .whereIn("passage_key", keys.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
+        .groupBy("tip_ctid", "component_idx").select("tip_ctid", "component_idx").count({ shared: "*" });
+      for (const r of rows) {
+        const key = `${r.tip_ctid}|${r.component_idx}`;
+        const c = shared.get(key);
+        if (c) c.shared += Number(r.shared); else shared.set(key, { ctid: r.tip_ctid, component_idx: r.component_idx, shared: Number(r.shared) });
+      }
+    }
+    return [...shared.values()];
+  }
+  async getDocumentTextsByCtids(ctids) {
+    const out = [];
+    for (let i = 0; i < ctids.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const rows = await this.knex("document_text").whereNotNull("text")
+        .whereIn("tip_ctid", ctids.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
+        .select("tip_ctid", "component_idx", "text");
+      for (const r of rows) out.push({ ctid: r.tip_ctid, component_idx: r.component_idx, text: r.text });
+    }
+    return out;
   }
   // One round trip for every band: a seek per band in sequence cost a Postgres
   // round trip each, inside record fetches and registrations.
@@ -1138,7 +1207,7 @@ class KnexAdapter {
       .andWhere(function () {
         for (let i = 0; i < 16; i++) this.orWhereIn(`c${i}`, queryKeys[i]);
       })
-      .distinct("tip_ctid", "profile", "modality", "frame", "ts", "quality", "pdq")
+      .distinct("tip_ctid", "component_idx", "profile", "modality", "frame", "ts", "quality", "pdq")
       .orderBy([{ column: "tip_ctid" }, { column: "frame" }, { column: "pdq" }]);
     return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
   }

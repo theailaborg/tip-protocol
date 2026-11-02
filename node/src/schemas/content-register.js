@@ -53,7 +53,7 @@ const {
   ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
   PERCEPTUAL_FINGERPRINT_KIND_VALUES, PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
-  PERCEPTUAL_FINGERPRINTS_PROFILE, PERCEPTUAL_FINGERPRINTS_ENCODINGS, TEXT_LSH,
+  PERCEPTUAL_FINGERPRINTS_PROFILE, PERCEPTUAL_FINGERPRINTS_ENCODINGS, TEXT_LSH, DOCUMENT_FINGERPRINT,
 } = require("../../../shared/constants");
 const { shake256 } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
@@ -720,7 +720,7 @@ function _validateFingerprintsEnvelope(fingerprints) {
       throw schemaError(400, `fingerprints item ${i} missing perceptual object`, "fingerprint_perceptual_invalid");
     }
     if (!PERCEPTUAL_FINGERPRINT_KIND_VALUES.has(p.kind)) {
-      throw schemaError(400, `fingerprints item ${i} kind must be one of text/image/video/audio`, "fingerprint_kind_invalid");
+      throw schemaError(400, `fingerprints item ${i} kind must be one of text/image/video/audio/document`, "fingerprint_kind_invalid");
     }
     // A reject item (the package couldn't fingerprint this component) is a
     // legitimate, non-indexable placeholder — accept it (ingest skips it). It
@@ -733,8 +733,111 @@ function _validateFingerprintsEnvelope(fingerprints) {
     if (p.kind === "text" && p.tier === "char" && !_isMinhash(p.minhash)) {
       throw schemaError(400, `fingerprints item ${i} text minhash must be ${TEXT_LSH.MINHASH_K} unsigned 32-bit integers`, "fingerprint_text_invalid");
     }
+    if (p.kind === "document") _validateDocumentItem(p, i);
   }
   return items;
+}
+
+const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+function _docInvalid(i, what) {
+  return schemaError(400, `fingerprints item ${i} (document): ${what}`, "fingerprint_document_invalid");
+}
+
+function _isCount(v, max) {
+  return Number.isSafeInteger(v) && v >= 0 && v <= max;
+}
+
+function _isHex(v, bytes) {
+  return typeof v === "string" && v.length === bytes * 2 && /^[0-9a-f]+$/.test(v);
+}
+
+function _base64Bytes(v) {
+  return typeof v === "string" && BASE64_RE.test(v) ? Buffer.byteLength(v, "base64") : -1;
+}
+
+// Shape and bounds of a cf-doc-1 item. Ingest derives index keys from these
+// fields, so an item out of shape is refused rather than partly indexed.
+function _validateDocumentItem(p, i) {
+  const D = DOCUMENT_FINGERPRINT;
+  if (p.profile !== D.PROFILE) {
+    throw schemaError(400, `fingerprints item ${i} document profile must be ${D.PROFILE}`, "fingerprint_document_profile_unsupported");
+  }
+  if (Buffer.byteLength(JSON.stringify(p)) > D.MAX_ITEM_BYTES) {
+    throw schemaError(400, `fingerprints item ${i} document fingerprint exceeds ${D.MAX_ITEM_BYTES} bytes`, "fingerprint_document_too_large");
+  }
+  if (!D.FORMATS.includes(p.format)) throw _docInvalid(i, "format is not a supported document format");
+  if (!_isHex(p.text_hash, 32)) throw _docInvalid(i, "text_hash must be 64 lowercase hex characters");
+  _validateDocumentText(p.text, i);
+  const hasUnits = p.unit !== null;
+  if (hasUnits && !D.UNITS.includes(p.unit)) throw _docInvalid(i, "unit must be page, slide, sheet, item or null");
+  if (!_isCount(p.units_covered, D.MAX_UNITS)) throw _docInvalid(i, `units_covered must be 0 to ${D.MAX_UNITS}`);
+  if (!Number.isSafeInteger(p.unit_count) || p.unit_count < p.units_covered) throw _docInvalid(i, "unit_count must be an integer of at least units_covered");
+  if (!_isCount(p.chars_covered, D.MAX_CHARS)) throw _docInvalid(i, `chars_covered must be 0 to ${D.MAX_CHARS}`);
+  if (typeof p.truncated !== "boolean" || typeof p.images_truncated !== "boolean") throw _docInvalid(i, "truncated and images_truncated must be booleans");
+  if (p.ocr != null || p.meaning != null) throw _docInvalid(i, "ocr and meaning must be null");
+  const isUnit = (v) => (hasUnits ? Number.isSafeInteger(v) && v >= 1 && v <= p.units_covered : v === null);
+
+  if (!Array.isArray(p.chunks) || p.chunks.length > D.MAX_CHUNKS) throw _docInvalid(i, `chunks must be an array of at most ${D.MAX_CHUNKS}`);
+  for (const c of p.chunks) {
+    if (!c || !_isHex(c.h, D.CHUNK_HASH_BYTES) || !Number.isSafeInteger(c.n) || c.n < 1 || c.n > D.MAX_CHARS || !isUnit(c.at)) {
+      throw _docInvalid(i, "each chunk must be { h, n, at } within bounds");
+    }
+  }
+
+  const ps = p.passages;
+  if (!ps || ps.k !== D.PASSAGE_K || ps.w !== D.PASSAGE_W || !Number.isSafeInteger(ps.count) || ps.count < 0
+    || _base64Bytes(ps.h) !== ps.count * D.PASSAGE_HASH_BYTES) {
+    throw _docInvalid(i, `passages must be { k: ${D.PASSAGE_K}, w: ${D.PASSAGE_W}, count, h } with count hashes in h`);
+  }
+  // Winnowing keeps at most one sample per k-character window of the covered text.
+  if (ps.count > Math.max(0, p.chars_covered - D.PASSAGE_K + 1)) throw _docInvalid(i, "passages.count is more than chars_covered allows");
+  if (hasUnits) {
+    if (!Array.isArray(ps.at) || ps.at.length > p.units_covered) throw _docInvalid(i, "passages.at must list the units");
+    let prev = -1;
+    for (const e of ps.at) {
+      if (!Array.isArray(e) || e.length !== 2 || !isUnit(e[0]) || !Number.isSafeInteger(e[1]) || e[1] <= prev || e[1] >= ps.count) {
+        throw _docInvalid(i, "passages.at entries must be [unit, first sample] in sample order");
+      }
+      prev = e[1];
+    }
+  } else if (ps.at !== undefined) {
+    throw _docInvalid(i, "passages.at must be absent without units");
+  }
+
+  const unitHashBytes = hasUnits ? _base64Bytes(p.unit_hashes) : null;
+  if (hasUnits ? unitHashBytes !== p.units_covered * D.UNIT_HASH_BYTES : p.unit_hashes !== null) {
+    throw _docInvalid(i, "unit_hashes must hold one hash per covered unit, or be null without units");
+  }
+
+  if (!Array.isArray(p.images) || p.images.length > D.MAX_PICTURES) throw _docInvalid(i, `images must be an array of at most ${D.MAX_PICTURES}`);
+  for (const im of p.images) {
+    if (!im || !_isHex(im.pdq, 32) || !_isCount(im.quality, 100) || !isUnit(im.at)) {
+      throw _docInvalid(i, "each image must be { at, pdq, quality } within bounds");
+    }
+  }
+  if (p.textless_pages !== undefined) {
+    if (!Array.isArray(p.textless_pages) || p.textless_pages.length > p.units_covered) {
+      throw _docInvalid(i, "textless_pages must be an array of at most units_covered pages");
+    }
+    for (const tp of p.textless_pages) {
+      const drawn = tp && _isHex(tp.pdq, 32) && _isCount(tp.quality, 100);
+      const undrawn = tp && tp.pdq === null && tp.quality === null;
+      if (!tp || !hasUnits || !isUnit(tp.at) || !D.TEXTLESS_REASONS.includes(tp.reason) || !(drawn || undrawn)) {
+        throw _docInvalid(i, "each textless page must be { at, reason, pdq, quality } within bounds");
+      }
+    }
+  }
+}
+
+// A document's own text fingerprint feeds the shared text bands, so it must be a
+// real cf-text-3 fingerprint: MinHash of K uint32 values, or the micro-tier exact hash.
+function _validateDocumentText(t, i) {
+  if (t === null) return;
+  const D = DOCUMENT_FINGERPRINT;
+  const ok = t && typeof t === "object" && t.kind === "text" && t.profile === D.TEXT_PROFILE && (
+    t.tier === "char" ? _isMinhash(t.minhash) : t.tier === "micro" && _isHex(t.exact, 32));
+  if (!ok) throw _docInvalid(i, `text must be null or a ${D.TEXT_PROFILE} fingerprint`);
 }
 
 function _isMinhash(m) {

@@ -42,6 +42,7 @@ const { initMediaRetention } = require("./init-media-retention");
 const { initChunkedUploadCleanup } = require("./init-chunked-upload-cleanup");
 const { initEndpointAnnounce } = require("./init-endpoint-announce");
 const { initTextIndex } = require("./init-text-index");
+const documentIndex = require("./perceptual/document-index");
 const { createMediaStorage } = require("./services/media-storage");
 const processErrors = require("./process-error-handler");
 
@@ -129,9 +130,10 @@ async function main() {
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");
 
-  // 2a. Text near-duplicate index: scheme check before any ingest; rebuilds start after step 5.
+  // 2a. Near-duplicate indexes: text scheme check before any ingest (rebuilds start after step 5), document lookup bound.
   let networkUp;
   const textIndexJob = initTextIndex({ dag, config, after: new Promise((resolve) => { networkUp = resolve; }) });
+  documentIndex.configure({ maxKeyOwners: config.docPassageMaxOwners });
 
   // 3. Build Express app — prescanJobs queue is node-local and bound to dag.
   const consensusRef = { current: null };
