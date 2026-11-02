@@ -390,11 +390,12 @@ const DOCUMENT_FINGERPRINT = Object.freeze({
 // Document near-duplicate lookup. Passage keys held by more than MAX_KEY_OWNERS
 // owners are skipped when finding candidates (speed only: they weigh almost
 // nothing); at most MAX_CANDIDATES documents are compared per lookup.
+// READ_CHUNK_ROWS keys per query stays under SQLite's 32,766 and Postgres's 65,535 bind limits.
 const DOCUMENT_MATCH = Object.freeze({
   MAX_KEY_OWNERS: 500,
   MAX_CANDIDATES: 25,
   IMAGE_PROBES: 32,
-  READ_CHUNK_ROWS: 500,
+  READ_CHUNK_ROWS: 8000,
 });
 
 // Locked .tip.json key file export: the VP app's "tip-key-export-v2" download.

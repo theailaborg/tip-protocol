@@ -33,7 +33,8 @@ const AUDIO_MIN_RATIO = 0.06;     // min fraction of the smaller fingerprint
 
 // Find indexed texts that are near-duplicates of queryFp (char-tier MinHash only;
 // micro-tier is exact-match, handled elsewhere). Returns [{ ctid, similarity }]
-// sorted high-to-low, above the threshold.
+// sorted high-to-low, above the threshold. `documents: false` leaves out
+// documents' own text (a document's text is matched to posts only).
 async function matchText(dag, queryFp, opts) {
   opts = opts || {};
   const threshold = opts.threshold != null ? opts.threshold : TEXT_FLAG_THRESHOLD;
@@ -46,13 +47,14 @@ async function matchText(dag, queryFp, opts) {
     textIndex.warnNotReady(dag, scheme);
     return [];
   }
-  const answer = await _matchTextIn(dag, queryFp, scheme, threshold, opts.excludeCtid);
+  const withDocuments = opts.documents !== false;
+  const answer = await _matchTextIn(dag, queryFp, scheme, threshold, opts.excludeCtid, withDocuments);
   textIndex.recordLookup(scheme, "answer", answer);
   const shadow = textIndex.shadowScheme();
   if (shadow && textIndex.isReady(dag, shadow)) {
     // Off the request path: the shadow scheme is timed and logged, never answered.
     setImmediate(() => {
-      _matchTextIn(dag, queryFp, shadow, threshold, opts.excludeCtid)
+      _matchTextIn(dag, queryFp, shadow, threshold, opts.excludeCtid, withDocuments)
         .then((r) => {
           textIndex.recordLookup(shadow, "shadow", r);
           textIndex.logShadow(opts.excludeCtid, scheme, answer, shadow, r);
@@ -63,14 +65,14 @@ async function matchText(dag, queryFp, opts) {
   return answer.matches;
 }
 
-async function _matchTextIn(dag, queryFp, scheme, threshold, excludeCtid) {
+async function _matchTextIn(dag, queryFp, scheme, threshold, excludeCtid, withDocuments) {
   const t0 = performance.now();
   const bandHashes = lshBands(queryFp.minhash, { scheme });
   const found = await dag.findMinhashCandidates(textIndex.bandProfile(queryFp.profile, scheme), bandHashes);
   const ctids = excludeCtid ? found.filter((c) => c !== excludeCtid) : found;
   // A candidate's text is its text component or a document's own text (both feed the bands).
   const texts = ctids.length ? await dag.getTextFingerprintsByCtids(ctids, 0) : [];
-  const docs = ctids.length ? await dag.getDocumentTextsByCtids(ctids) : [];
+  const docs = withDocuments && ctids.length ? await dag.getDocumentTextsByCtids(ctids) : [];
   const best = new Map();
   for (const raw of [...texts.map((r) => [r.ctid, r.fingerprint]), ...docs.map((d) => [d.ctid, d.text])]) {
     let candFp;

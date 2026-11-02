@@ -1144,25 +1144,30 @@ class KnexAdapter {
     const rows = await this.knex("document_text").where({ profile, text_hash: textHash }).select("tip_ctid", "component_idx");
     return rows.map((r) => ({ ctid: r.tip_ctid, component_idx: r.component_idx }));
   }
-  async countDocumentPassageOwners(profile, keys) {
+  async countDocumentPassageOwners(profile, keys, excludeOwner) {
     const out = [];
     for (let i = 0; i < keys.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
       const rows = await this.knex("document_passage").where({ profile })
         .whereIn("passage_key", keys.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
-        .groupBy("passage_key").select("passage_key").countDistinct({ owners: "owner" });
+        .groupBy("passage_key")
+        .select("passage_key", this.knex.raw("COUNT(DISTINCT CASE WHEN owner <> ? THEN owner END) AS owners", [excludeOwner || ""]));
       for (const r of rows) out.push({ passage_key: r.passage_key, owners: Number(r.owners) });
     }
     return out;
   }
-  async findDocumentPassages(profile, keys) {
-    const out = [];
+  async findDocumentPassageCandidates(profile, keys) {
+    const shared = new Map();
     for (let i = 0; i < keys.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
       const rows = await this.knex("document_passage").where({ profile })
         .whereIn("passage_key", keys.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
-        .select("passage_key", "owner", "tip_ctid", "component_idx");
-      for (const r of rows) out.push({ passage_key: r.passage_key, owner: r.owner, ctid: r.tip_ctid, component_idx: r.component_idx });
+        .groupBy("tip_ctid", "component_idx").select("tip_ctid", "component_idx").count({ shared: "*" });
+      for (const r of rows) {
+        const key = `${r.tip_ctid}|${r.component_idx}`;
+        const c = shared.get(key);
+        if (c) c.shared += Number(r.shared); else shared.set(key, { ctid: r.tip_ctid, component_idx: r.component_idx, shared: Number(r.shared) });
+      }
     }
-    return out;
+    return [...shared.values()];
   }
   async getDocumentTextsByCtids(ctids) {
     const out = [];

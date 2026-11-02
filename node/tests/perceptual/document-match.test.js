@@ -2,9 +2,10 @@
  * @file tests/perceptual/document-match.test.js
  * @description Similar documents (cf-doc-1) on every backend, with real library
  * fingerprints (tests/fixtures/documents): copies and converted copies are
- * listed first, a copied chapter next, documents sharing only common text last
- * and weighted by how many owners hold it, an unrelated document never; scans
- * match by page image; a document and a post find each other by text.
+ * listed first, a copied chapter next, documents sharing only common text after
+ * it and weighted by how many owners hold it, an unrelated document never; the
+ * text MinHash neither lists nor ranks a document; scans match by page image; a
+ * document and a post find each other by text.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -21,6 +22,7 @@ const { ingestFingerprint, buildIngestRows } = require("../../src/perceptual/ing
 const { findSimilarCtids } = require("../../src/perceptual/similar");
 const documentIndex = require("../../src/perceptual/document-index");
 const textIndex = require("../../src/perceptual/text-index");
+const { jaccardEstimate } = require("tip-content-fingerprint/src/text/compare");
 
 const fixture = (name) => require(`../fixtures/documents/${name}.json`);
 const ctid = (name) => `tip://c/OH-doc-${name}`;
@@ -86,7 +88,7 @@ describe.each(BACKENDS)("%s", (_name, make) => {
     return dag;
   }
 
-  test("copies first, then the copied chapter and the reworded copy, common text last, unrelated never", async () => {
+  test("copies first, then the copied chapter, then common text; a reworded copy by its little exact text; unrelated never", async () => {
     const dag = await corpus();
     const hits = await similar(dag, "original");
     const order = hits.map((h) => h.ctid);
@@ -95,8 +97,10 @@ describe.each(BACKENDS)("%s", (_name, make) => {
     expect(at("unrelated")).toBe(-1);
     for (const n of ["resaved", "exported", "chapter", "reworded", "licence_a", "licence_b", "licence_c"]) expect(at(n)).toBeGreaterThanOrEqual(0);
     expect(Math.max(at("resaved"), at("exported"))).toBeLessThan(at("chapter"));
-    expect(at("chapter")).toBeLessThan(at("reworded"));
-    expect(at("reworded")).toBeLessThan(Math.min(at("licence_a"), at("licence_b"), at("licence_c")));
+    expect(at("chapter")).toBeLessThan(Math.min(at("licence_a"), at("licence_b"), at("licence_c")));
+    // Its text MinHash is high, but it keeps under 500 characters of exact text.
+    expect(jaccardEstimate(fixture("original").text.minhash, fixture("reworded").text.minhash)).toBeGreaterThan(0.7);
+    expect(at("reworded")).toBeGreaterThan(Math.max(at("licence_a"), at("licence_b"), at("licence_c")));
 
     const m = byCtid(hits);
     const exported = m.get(ctid("exported"));
@@ -123,10 +127,11 @@ describe.each(BACKENDS)("%s", (_name, make) => {
   });
 
   test("passage keys held by more owners than the cap find no candidates", async () => {
-    documentIndex.configure({ maxKeyOwners: 2 });
+    documentIndex.configure({ maxKeyOwners: 3 });
     const order = (await similar(await corpus(), "original")).map((h) => h.ctid);
     expect(order).toContain(ctid("resaved"));   // same wording
-    expect(order).toContain(ctid("chapter"));   // its passages are held by two owners
+    expect(order).toContain(ctid("chapter"));   // besides the original's, three owners hold its passages
+    // and five hold the licence's
     for (const n of ["licence_a", "licence_b", "licence_c"]) expect(order).not.toContain(ctid(n));
   });
 
@@ -170,16 +175,24 @@ describe.each(BACKENDS)("%s", (_name, make) => {
     expect(fromDoc).toEqual([expect.objectContaining({ ctid: ctid("post"), modality: "text", score: 1 })]);
   });
 
+  test("the text MinHash alone lists no document: same text fingerprint, no shared passage", async () => {
+    const dag = await make();
+    await add(dag, "original", "tip://id/US-author");
+    await add(dag, "lookalike", "tip://id/US-x", { ...fixture("unrelated"), text: fixture("original").text });
+    expect(await similar(dag, "original")).toEqual([]);
+    expect(await similar(dag, "lookalike")).toEqual([]);
+  });
+
   test("a band rebuild covers documents' own text", async () => {
     const dag = await make();
     await add(dag, "original", "tip://id/US-author");
-    await add(dag, "reworded", "tip://id/US-w");
+    saveRecord(dag, ctid("post"), "tip://id/US-p");
+    await ingestFingerprint(dag, fixture("original").text, { ctid: ctid("post"), owner: "tip://id/US-p" });
     await dag.flush();
     await textIndex.rebuild(dag, "b42r3");
     expect(textIndex.status(dag, "b42r3")).toMatchObject({ state: "complete", texts: 2, bands: 84 });
     textIndex.configure({ scheme: "b42r3" });
-    const hits = await similar(dag, "original");
-    expect(hits.map((h) => h.ctid)).toEqual([ctid("reworded")]);
+    expect((await similar(dag, "post")).map((h) => h.ctid)).toEqual([ctid("original")]);
   });
 
   test("index rows for a document: text, one passage row per distinct key, page images", async () => {

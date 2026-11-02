@@ -2082,22 +2082,24 @@ class MemoryStore {
     }
     return out;
   }
-  countDocumentPassageOwners(profile, keys) {
+  countDocumentPassageOwners(profile, keys, excludeOwner) {
     const out = [];
     for (const k of keys) {
       const list = this._documentPassages.get(`${profile}|${k}`);
-      if (list) out.push({ passage_key: k, owners: new Set(list.map((r) => r.owner)).size });
+      if (list) out.push({ passage_key: k, owners: new Set(list.filter((r) => r.owner !== excludeOwner).map((r) => r.owner)).size });
     }
     return out;
   }
-  findDocumentPassages(profile, keys) {
-    const out = [];
+  findDocumentPassageCandidates(profile, keys) {
+    const shared = new Map();
     for (const k of keys) {
       for (const r of this._documentPassages.get(`${profile}|${k}`) || []) {
-        out.push({ passage_key: k, owner: r.owner, ctid: r.ctid, component_idx: r.component_idx });
+        const key = `${r.ctid}|${r.component_idx}`;
+        const c = shared.get(key);
+        if (c) c.shared++; else shared.set(key, { ctid: r.ctid, component_idx: r.component_idx, shared: 1 });
       }
     }
-    return out;
+    return [...shared.values()];
   }
   getDocumentTextsByCtids(ctids) {
     const want = new Set(ctids);
@@ -4613,23 +4615,29 @@ class SQLiteStore {
   findDocumentsByTextHash(profile, textHash) {
     return this._stmts.findDocumentsByTextHash.all(profile, textHash);
   }
-  _documentPassageChunks(keys, sql, profile) {
+  _documentPassageChunks(keys, sql, params) {
     const out = [];
     for (let i = 0; i < keys.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
       const chunk = keys.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS);
-      for (const r of this.db.prepare(sql(chunk.map(() => "?").join(","))).all(profile, ...chunk)) out.push(r);
+      for (const r of this.db.prepare(sql(chunk.map(() => "?").join(","))).all(...params, ...chunk)) out.push(r);
     }
     return out;
   }
-  countDocumentPassageOwners(profile, keys) {
+  countDocumentPassageOwners(profile, keys, excludeOwner) {
     return this._documentPassageChunks(keys, (marks) =>
-      `SELECT passage_key, COUNT(DISTINCT owner) AS owners FROM document_passage
-        WHERE profile = ? AND passage_key IN (${marks}) GROUP BY passage_key`, profile);
+      `SELECT passage_key, COUNT(DISTINCT CASE WHEN owner <> ? THEN owner END) AS owners FROM document_passage
+        WHERE profile = ? AND passage_key IN (${marks}) GROUP BY passage_key`, [excludeOwner || "", profile]);
   }
-  findDocumentPassages(profile, keys) {
-    return this._documentPassageChunks(keys, (marks) =>
-      `SELECT passage_key, owner, tip_ctid AS ctid, component_idx FROM document_passage
-        WHERE profile = ? AND passage_key IN (${marks})`, profile);
+  findDocumentPassageCandidates(profile, keys) {
+    const shared = new Map();
+    for (const r of this._documentPassageChunks(keys, (marks) =>
+      `SELECT tip_ctid AS ctid, component_idx, COUNT(*) AS shared FROM document_passage
+        WHERE profile = ? AND passage_key IN (${marks}) GROUP BY tip_ctid, component_idx`, [profile])) {
+      const key = `${r.ctid}|${r.component_idx}`;
+      const c = shared.get(key);
+      if (c) c.shared += r.shared; else shared.set(key, r);
+    }
+    return [...shared.values()];
   }
   getDocumentTextsByCtids(ctids) {
     const out = [];
@@ -5150,8 +5158,8 @@ function _buildDagHandle(store, config) {
     saveDocumentText: (row) => store.saveDocumentText(row),
     saveDocumentPassages: (rows) => store.saveDocumentPassages(rows),
     findDocumentsByTextHash: (profile, textHash) => store.findDocumentsByTextHash(profile, textHash),
-    countDocumentPassageOwners: (profile, keys) => store.countDocumentPassageOwners(profile, keys),
-    findDocumentPassages: (profile, keys) => store.findDocumentPassages(profile, keys),
+    countDocumentPassageOwners: (profile, keys, excludeOwner) => store.countDocumentPassageOwners(profile, keys, excludeOwner),
+    findDocumentPassageCandidates: (profile, keys) => store.findDocumentPassageCandidates(profile, keys),
     getDocumentTextsByCtids: (ctids) => store.getDocumentTextsByCtids(ctids),
     findMinhashCandidates: (profile, bandHashes) => store.findMinhashCandidates(profile, bandHashes),
     findPhashCandidates: (profile, modality, queryKeys) => store.findPhashCandidates(profile, modality, queryKeys),

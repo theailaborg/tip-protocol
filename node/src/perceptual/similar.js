@@ -61,7 +61,7 @@ async function _matchFor(dag, modality, fp, ctid, owner) {
   if (modality === "audio") return matchAudio(dag, fp, opts);
   if (modality === "document") {
     const docs = await matchDocument(dag, fp, { excludeCtid: ctid, owner });
-    const texts = fp.text ? await matchText(dag, fp.text, opts) : [];
+    const texts = fp.text ? await matchText(dag, fp.text, { ...opts, documents: false }) : [];
     return [...docs, ...texts.map((h) => ({ ...h, modality: "text" }))];
   }
   return [];

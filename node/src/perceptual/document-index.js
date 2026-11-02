@@ -1,28 +1,25 @@
 "use strict";
 
 // Similar documents (cf-doc-1). Candidates come from the same wording
-// (text_hash), shared passages, the document's text bands and its picture and
-// page images; each is then measured with the library's compareDocument, which
-// says how much text the two share and where. Advisory, never a copy verdict.
+// (text_hash), shared passages and the document's picture and page images; each
+// is then measured with the library's compareDocument, which says how much text
+// the two share and where. Advisory, never a copy verdict. The text MinHash is
+// not a document signal: two large unrelated texts in one language can pass 0.30.
 //
 // There is no list of common text (licences, disclaimers, templates):
 // compareDocument weights each shared passage by 1 / (1 + other owners holding
 // it), counted from the index, so text that many people hold sorts last.
 
 const { compareDocument } = require("tip-content-fingerprint/src/document/compare");
-const { passageKeys } = require("tip-content-fingerprint/src/document/passages");
+const { sampleKeys } = require("tip-content-fingerprint/src/document/passages");
 const { MIN_SHARED_CHARS } = require("tip-content-fingerprint/src/document/constants");
-const { lshBands } = require("tip-content-fingerprint/src/text/lsh");
-const { jaccardEstimate } = require("tip-content-fingerprint/src/text/compare");
 const { queryKeys } = require("tip-content-fingerprint/src/image/mih");
 const { hammingHex } = require("tip-content-fingerprint/src/image/hamming");
 const { PROFILE: IMAGE_PROFILE, DISTANCE_THRESHOLD, MIN_QUALITY } = require("tip-content-fingerprint/src/image");
-const textIndex = require("./text-index");
-const { TEXT_FLAG_THRESHOLD } = require("./matcher");
 const { DOCUMENT_FINGERPRINT, DOCUMENT_MATCH } = require("../../../shared/constants");
 
-// Candidates found by an independent signal are compared before those found
-// only through shared passages.
+// Candidates with the same wording or a shared image are compared before those
+// found only through shared passages.
 const TIER = Object.freeze({ SAME_WORDING: 0, CONFIRMED: 1, PASSAGES: 2 });
 
 let _maxKeyOwners = DOCUMENT_MATCH.MAX_KEY_OWNERS;
@@ -42,36 +39,27 @@ function _evenSample(arr, n) {
   return out;
 }
 
-// passage key -> owners other than `a` and `b`. Keys over the cap have no holder
-// rows, so their count comes from the total.
-function _otherOwners(holders, totals, a, b) {
-  return {
-    get(key) {
-      const set = holders.get(key);
-      if (set) return set.size - (set.has(a) ? 1 : 0) - (b !== a && set.has(b) ? 1 : 0);
-      const total = totals.get(key);
-      return total == null ? 0 : Math.max(0, total - (a === b ? 1 : 2));
-    },
-  };
+// compareDocument's `owners` for one pair: `others` counts owners besides the
+// query's, and the candidate's owner holds every key the two share.
+function _pairOwners(others, queryOwner, candidateOwner) {
+  const self = candidateOwner !== queryOwner ? 1 : 0;
+  return { get: (key) => Math.max(0, (others.get(key) || 0) - self) };
 }
 
 // One 0-1 figure to rank against other modalities: shared text (0.5 at one
-// paragraph of text no one else holds), the text MinHash at or over the flag
-// line, or the share of scanned pages that are the same image.
+// paragraph of text no one else holds), or the share of scanned pages that are
+// the same image.
 function documentScore(cmp) {
   const st = cmp.shared_text;
   const shared = st ? st.score / (st.score + MIN_SHARED_CHARS) : 0;
-  const text = cmp.text_similarity >= TEXT_FLAG_THRESHOLD ? cmp.text_similarity : 0;
   const tp = cmp.textless_pages;
   const pages = tp && tp.shared ? tp.shared / Math.max(tp.a, tp.b) : 0;
-  return Math.max(shared, text, pages);
+  return Math.max(shared, pages);
 }
 
 function _listable(cmp) {
   if (!cmp.textless_pages) return false; // not comparable: reject tier or another profile
-  return Boolean((cmp.shared_text && cmp.shared_text.worth_listing)
-    || cmp.text_similarity >= TEXT_FLAG_THRESHOLD
-    || cmp.textless_pages.shared > 0);
+  return Boolean((cmp.shared_text && cmp.shared_text.worth_listing) || cmp.textless_pages.shared > 0);
 }
 
 // Returns document hits [{ ctid, component_idx, modality: "document", score,
@@ -83,6 +71,7 @@ async function matchDocument(dag, queryFp, opts = {}) {
   }
   const profile = queryFp.profile;
   const exclude = opts.excludeCtid || null;
+  const owner = opts.owner || null;
   const candidates = new Map();
   const rows = new Map();
   const add = (ctid, componentIdx, tier, weight) => {
@@ -97,28 +86,13 @@ async function matchDocument(dag, queryFp, opts = {}) {
     for (const r of await dag.findDocumentsByTextHash(profile, queryFp.text_hash)) add(r.ctid, r.component_idx, TIER.SAME_WORDING, 0);
   }
 
-  const keys = [...new Set(passageKeys(queryFp.passages).map((k) => k.key))];
-  const totals = new Map();
-  for (const r of keys.length ? await dag.countDocumentPassageOwners(profile, keys) : []) totals.set(r.passage_key, r.owners);
-  const usable = keys.filter((k) => totals.has(k) && totals.get(k) <= _maxKeyOwners);
-  const holders = new Map();
-  for (const r of usable.length ? await dag.findDocumentPassages(profile, usable) : []) {
-    let set = holders.get(r.passage_key);
-    if (!set) holders.set(r.passage_key, (set = new Set()));
-    set.add(r.owner);
-    add(r.ctid, r.component_idx, TIER.PASSAGES, 1 / totals.get(r.passage_key));
-  }
-
-  const text = queryFp.text;
-  const scheme = textIndex.answerScheme();
-  if (text && text.tier === "char" && Array.isArray(text.minhash) && textIndex.isReady(dag, scheme)) {
-    const found = (await dag.findMinhashCandidates(textIndex.bandProfile(text.profile, scheme), lshBands(text.minhash, { scheme })))
-      .filter((c) => c !== exclude);
-    for (const d of found.length ? await dag.getDocumentTextsByCtids(found) : []) {
-      let fp;
-      try { fp = JSON.parse(d.text); } catch { continue; }
-      if (Array.isArray(fp.minhash) && jaccardEstimate(text.minhash, fp.minhash) >= TEXT_FLAG_THRESHOLD) add(d.ctid, d.component_idx, TIER.CONFIRMED, 0);
-    }
+  // Only keys someone holds come back; their counts leave out the query's owner.
+  const keys = queryFp.passages ? [...new Set(sampleKeys(queryFp.passages))] : [];
+  const others = new Map();
+  for (const r of keys.length ? await dag.countDocumentPassageOwners(profile, keys, owner) : []) others.set(r.passage_key, r.owners);
+  const usable = keys.filter((k) => others.has(k) && others.get(k) <= _maxKeyOwners);
+  for (const r of usable.length ? await dag.findDocumentPassageCandidates(profile, usable) : []) {
+    add(r.ctid, r.component_idx, TIER.PASSAGES, r.shared);
   }
 
   const imageHits = await _matchImages(dag, queryFp, exclude, rows, add);
@@ -135,7 +109,7 @@ async function matchDocument(dag, queryFp, opts = {}) {
     if (!row || row.modality !== "document") continue;
     let fp;
     try { fp = JSON.parse(row.fingerprint); } catch { continue; }
-    const cmp = compareDocument(queryFp, fp, { owners: _otherOwners(holders, totals, opts.owner || null, rec.author_tip_id) });
+    const cmp = compareDocument(queryFp, fp, { owners: _pairOwners(others, owner, rec.author_tip_id) });
     if (_listable(cmp)) hits.push({ ctid: c.ctid, component_idx: c.component_idx, modality: "document", score: documentScore(cmp), compare: cmp });
     await _yield();
   }
