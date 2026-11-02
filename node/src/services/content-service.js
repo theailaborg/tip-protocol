@@ -110,7 +110,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   // each component's `perceptual` object keyed by position. Per-component
   // fire-and-forget (async, off-DAG, advisory) — a failure must not affect the
   // registration. No-op when the request carried no fingerprints.
-  function _ingestRequestFingerprints(ctid, fingerprints, createdAt, mediaCount = 0) {
+  function _ingestRequestFingerprints(ctid, fingerprints, createdAt, mediaCount, owner) {
     // A media registration that lands with fewer media fingerprints than media
     // items is invisible to near-duplicate matching, and today it fails
     // silently — the only way to notice is joining content against phash_code
@@ -149,7 +149,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         for (let i = 0; i < items.length; i++) {
           const fp = items[i] && items[i].perceptual;
           if (!fp) continue;
-          await ingestFingerprint(dag, fp, { ctid, componentIdx: i, createdAt });
+          await ingestFingerprint(dag, fp, { ctid, componentIdx: i, createdAt, owner });
         }
       })
       .catch((err) => log.warn(`perceptual ingest failed for ${ctid}: ${err.message}`));
@@ -184,7 +184,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   // Advisory two-layer near-dup lookup: step 0 exact content_hash (committed +
   // mempool-pending), step 1 perceptual via the request's fingerprint envelope.
   // Never blocks: every failure degrades to "no warning".
-  async function _findNearDuplicates({ ctid, contentHash, fingerprints }) {
+  async function _findNearDuplicates({ ctid, contentHash, fingerprints, owner }) {
     const out = [];
     const seen = new Set([ctid]); // never report the registration itself
     // step 0a , committed exact matches (indexed content_hash lookup;
@@ -233,7 +233,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     if (fingerprints != null) {
       try {
         const items = contentRegisterSchema.parseFingerprintItems(fingerprints);
-        const hits = await matchFingerprintItems(dag, items, { excludeCtid: ctid });
+        const hits = await matchFingerprintItems(dag, items, { excludeCtid: ctid, owner });
         for (const hit of hits) {
           // An exact hit is the stronger signal , don't double-report.
           if (seen.has(hit.ctid)) continue;
@@ -478,8 +478,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     // Near-dup advisory rides the register response; computed before this
     // registration's own ingest, so only pre-existing content can surface.
+    // The record's owner as commit-handler will store it (primary byline, else signer).
+    const owner = (canonicalPayload.authors[0] && canonicalPayload.authors[0].tip_id) || signer_tip_id;
     const nearDuplicates = await _findNearDuplicates({
-      ctid, contentHash: contentHashFull, fingerprints: body.fingerprints,
+      ctid, contentHash: contentHashFull, fingerprints: body.fingerprints, owner,
     });
     if (nearDuplicates.length > 0) {
       log.info(`Near-duplicate warning for ${ctid}: ${nearDuplicates.length} match(es), best: ${nearDuplicates[0].ctid} (${nearDuplicates[0].match_type})`);
@@ -490,7 +492,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // validateRequest), never on tx.data — so only this receiving node indexes
     // it for now. Fire-and-forget: advisory, must not delay the response;
     // reject-tier items skip themselves in buildIngestRows.
-    _ingestRequestFingerprints(ctid, body.fingerprints, registeredAt, resolvedMedia.length);
+    _ingestRequestFingerprints(ctid, body.fingerprints, registeredAt, resolvedMedia.length, owner);
 
     _enqueuePrescanJob({
       ctid, content, origin_code, signer_tip_id, ctypeResolution,

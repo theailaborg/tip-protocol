@@ -106,13 +106,13 @@ describe.each(BACKENDS)("%s", (_name, make) => {
     expect(textIndex.status(dag, "b42r3")).toMatchObject({ state: "complete", texts: 1, bands: 42 });
   });
 
-  test("batched reads: fingerprints by ctid for one component, and a keyset scan of text rows", async () => {
+  test("batched reads: text fingerprints by ctid for one component, and a keyset scan of text rows", async () => {
     const dag = await make();
     for (const id of ["OH-c", "OH-a", "OH-b"]) await ingestFingerprint(dag, mkText(A), { ctid: id });
     await ingestFingerprint(dag, { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 90 }, { ctid: "OH-img" });
     await ingestFingerprint(dag, mkText(A), { ctid: "OH-a", componentIdx: 1 });
     await dag.flush();
-    const got = await dag.getPerceptualFingerprintsByCtids(["OH-b", "OH-missing", "OH-a"], 0);
+    const got = await dag.getTextFingerprintsByCtids(["OH-b", "OH-missing", "OH-a", "OH-img"], 0);
     expect(got.map((r) => r.ctid).sort()).toEqual(["OH-a", "OH-b"]);
     expect(got.every((r) => r.component_idx === 0 && typeof r.fingerprint === "string")).toBe(true);
     const page1 = await dag.listTextFingerprintsAfter("", -1, 2);

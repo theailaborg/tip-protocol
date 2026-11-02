@@ -6,11 +6,12 @@
 // the hash format (versioned by the modality PROFILE). Pure, no I/O: the caller
 // writes the returned rows through the dag store methods (step b).
 //
-// Returns { fingerprint, bands, codes, landmarks, landmarkCount }:
+// Returns { fingerprint, bands, codes, landmarks, landmarkCount, document }:
 //   fingerprint -> one perceptual_fingerprint row (source of truth)
-//   bands       -> minhash_band rows   (text LSH)
-//   codes       -> phash_code rows     (image/video MIH)
+//   bands       -> minhash_band rows   (text LSH; a document's own text too)
+//   codes       -> phash_code rows     (image/video MIH; a document's pictures and page images)
 //   landmarks   -> [{ hash, t }]       (audio inverted index; clip_id assigned at write)
+//   document    -> { text, passages }  (document_text row or null, document_passage rows)
 //
 // See my-notes/PERCEPTUAL_INDEX_PLAN.md.
 
@@ -20,6 +21,8 @@
 // dependency-free. (TODO: have the package expose a lightweight `keys` entry so
 // this isn't a deep import.)
 const { indexChunks } = require("tip-content-fingerprint/src/image/mih");
+const { PROFILE: IMAGE_PROFILE } = require("tip-content-fingerprint/src/image");
+const { passageKeys } = require("tip-content-fingerprint/src/document/passages");
 const PKG_VERSION = require("tip-content-fingerprint/package.json").version;
 const textIndex = require("./text-index");
 
@@ -55,6 +58,7 @@ function buildIngestRows(fp, opts) {
   const bands = [];
   const codes = [];
   const landmarks = []; // audio: [{ hash, t }] (clip_id assigned at write time)
+  let document = null;
 
   if (fp.kind === "text") {
     // Only char-tier (MinHash) texts get LSH bands; micro-tier is exact-match.
@@ -69,6 +73,15 @@ function buildIngestRows(fp, opts) {
     for (const f of fp.features || []) {
       codes.push(phashRow(ctid, componentIdx, fp.profile, "video", f.frame, f.timestamp, f.quality, f.pdq));
     }
+  } else if (fp.kind === "document") {
+    if (fp.text && fp.text.tier === "char" && Array.isArray(fp.text.minhash)) {
+      for (const b of textIndex.bandRows(fp.text, ctid, opts.schemes || textIndex.ingestSchemes())) bands.push(b);
+    }
+    // Pictures and drawn page images as image codes, so a scan or a picture also
+    // matches the same image posted alone.
+    const images = [...(fp.images || []), ...(fp.textless_pages || []).filter((p) => p.pdq)];
+    images.forEach((p, frame) => codes.push(phashRow(ctid, componentIdx, IMAGE_PROFILE, "image", frame, null, p.quality, p.pdq)));
+    document = documentRows(fp, ctid, componentIdx, opts.owner);
   } else if (fp.kind === "audio") {
     // Index the landmark set as-is. §8.1 lever 2 (cap N/sec, keep loudest peaks)
     // is a future subset-cap here; the full set always lives in `fingerprint`.
@@ -81,7 +94,24 @@ function buildIngestRows(fp, opts) {
     ? (fp.landmarkCount != null ? fp.landmarkCount : landmarks.length)
     : 0;
 
-  return { fingerprint, bands, codes, landmarks, landmarkCount };
+  return { fingerprint, bands, codes, landmarks, landmarkCount, document };
+}
+
+// A document without text hashes the empty string, the same for every scan, so
+// it gets no text row. Passage keys are kept once per document, at their first unit.
+function documentRows(fp, ctid, componentIdx, owner) {
+  if (!owner) throw new Error("perceptual ingest: a document needs its record's owner");
+  const text = fp.chars_covered > 0
+    ? { ctid, component_idx: componentIdx, profile: fp.profile, text_hash: fp.text_hash, chars: fp.chars_covered, text: fp.text ? JSON.stringify(fp.text) : null }
+    : null;
+  const seen = new Set();
+  const passages = [];
+  for (const { key, at } of passageKeys(fp.passages)) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    passages.push({ profile: fp.profile, passage_key: key, owner, ctid, component_idx: componentIdx, unit: at });
+  }
+  return { text, passages };
 }
 
 // One phash_code row: the metadata + the 16 MIH chunk columns c0..c15.
@@ -101,10 +131,12 @@ function phashRow(ctid, componentIdx, profile, modality, frame, ts, quality, pdq
 async function ingestFingerprint(dag, fp, opts) {
   const rows = buildIngestRows(fp, opts);
   if (!rows) return { skipped: true, bands: 0, codes: 0, landmarks: 0 }; // reject tier
-  const { fingerprint, bands, codes, landmarks, landmarkCount } = rows;
+  const { fingerprint, bands, codes, landmarks, landmarkCount, document } = rows;
   dag.savePerceptualFingerprint(fingerprint);
   if (bands.length) dag.saveMinhashBands(bands);
   if (codes.length) dag.savePhashCodes(codes);
+  if (document && document.text) dag.saveDocumentText(document.text);
+  if (document && document.passages.length) dag.saveDocumentPassages(document.passages);
   if (landmarks.length) {
     const clipId = await dag.getOrCreateAudioClip(fingerprint.ctid, fingerprint.component_idx, landmarkCount);
     dag.saveAudioLandmarks(

@@ -34,7 +34,7 @@ const { shake256 } = require("../../shared/crypto");
 const { createSMT } = require("../../shared/smt");
 const { STATE_PK, stateLeafKey } = require("./consensus/state-root");
 const { nowMs } = require("../../shared/time");
-const { TX_TYPES, PRESCAN_REVIEW_STATES, PENDING_OWNER_HEAD_TTL_MS, UPLOAD_SESSION_STATE, TEXT_LSH } = require("../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, PENDING_OWNER_HEAD_TTL_MS, UPLOAD_SESSION_STATE, TEXT_LSH, DOCUMENT_MATCH } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
 const { subjectTipId, subjectTipIds } = require("./tx-attribution");
 const { quantizeProbability } = require("../../shared/prescan-probability");
@@ -591,6 +591,8 @@ class MemoryStore {
     this._audioClipById = new Map();            // clip_id -> the same clip row (matcher resolves clip_id -> ctid)
     this._audioClipSeq = 0;                     // surrogate clip_id allocator (§8.1)
     this._audioLandmarks = [];                  // audio inverted-index rows { profile, hash, clip_id, t }
+    this._documentTexts = new Map();            // `${ctid}|${component_idx}` -> document_text row
+    this._documentPassages = new Map();         // `${profile}|${passage_key}` -> document_passage rows
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new SmtMap(this, "platform_links"); // key: `${tip_id}::${platform}` (== row.id)
     this._orgMembers = new SmtMap(this, "org_members"); // invite_tx_id -> roster row (canonical)
@@ -2039,24 +2041,71 @@ class MemoryStore {
     rows.sort((a, b) => a.component_idx - b.component_idx);
     return rows;
   }
-  getPerceptualFingerprintsByCtids(ctids, componentIdx = 0) {
+  getTextFingerprintsByCtids(ctids, componentIdx = 0) {
     const out = [];
     for (const ctid of ctids) {
       const r = this._perceptualFingerprints.get(`${ctid}|${componentIdx}`);
-      if (r) out.push({ ...r });
+      if (r && r.modality === "text") out.push({ ...r });
     }
     return out;
   }
-  // Keyset scan of text fingerprints in (ctid, component_idx) order, for the band rebuild.
+  // Keyset scan of text fingerprints in (ctid, component_idx) order, for the band
+  // rebuild: text components, and each document's own text as modality "document".
   listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
+    const after = (r) => r.ctid > afterCtid || (r.ctid === afterCtid && r.component_idx > afterIdx);
     const rows = [];
     for (const r of this._perceptualFingerprints.values()) {
-      if (r.modality !== "text") continue;
-      if (r.ctid < afterCtid || (r.ctid === afterCtid && r.component_idx <= afterIdx)) continue;
-      rows.push(r);
+      if (r.modality === "text" && after(r)) rows.push({ ...r });
+    }
+    for (const d of this._documentTexts.values()) {
+      if (d.text != null && after(d)) rows.push({ ctid: d.ctid, component_idx: d.component_idx, modality: "document", profile: d.profile, fingerprint: d.text });
     }
     rows.sort((a, b) => (a.ctid < b.ctid ? -1 : a.ctid > b.ctid ? 1 : a.component_idx - b.component_idx));
-    return rows.slice(0, limit).map((r) => ({ ...r }));
+    return rows.slice(0, limit);
+  }
+  saveDocumentText(row) {
+    const key = `${row.ctid}|${row.component_idx}`;
+    if (!this._documentTexts.has(key)) this._documentTexts.set(key, { ...row });
+  }
+  saveDocumentPassages(rows) {
+    for (const r of rows) {
+      const key = `${r.profile}|${r.passage_key}`;
+      let list = this._documentPassages.get(key);
+      if (!list) this._documentPassages.set(key, (list = []));
+      if (!list.some((x) => x.owner === r.owner && x.ctid === r.ctid && x.component_idx === r.component_idx)) list.push({ ...r });
+    }
+  }
+  findDocumentsByTextHash(profile, textHash) {
+    const out = [];
+    for (const d of this._documentTexts.values()) {
+      if (d.profile === profile && d.text_hash === textHash) out.push({ ctid: d.ctid, component_idx: d.component_idx });
+    }
+    return out;
+  }
+  countDocumentPassageOwners(profile, keys) {
+    const out = [];
+    for (const k of keys) {
+      const list = this._documentPassages.get(`${profile}|${k}`);
+      if (list) out.push({ passage_key: k, owners: new Set(list.map((r) => r.owner)).size });
+    }
+    return out;
+  }
+  findDocumentPassages(profile, keys) {
+    const out = [];
+    for (const k of keys) {
+      for (const r of this._documentPassages.get(`${profile}|${k}`) || []) {
+        out.push({ passage_key: k, owner: r.owner, ctid: r.ctid, component_idx: r.component_idx });
+      }
+    }
+    return out;
+  }
+  getDocumentTextsByCtids(ctids) {
+    const want = new Set(ctids);
+    const out = [];
+    for (const d of this._documentTexts.values()) {
+      if (want.has(d.ctid) && d.text != null) out.push({ ctid: d.ctid, component_idx: d.component_idx, text: d.text });
+    }
+    return out;
   }
   // LSH candidate-gen: ctids that share >= 1 band bucket with the query's bands.
   findMinhashCandidates(profile, bandHashes) {
@@ -3267,7 +3316,19 @@ class SQLiteStore {
       listTextFingerprintsAfter: this.db.prepare(
         `SELECT tip_ctid AS ctid, component_idx, modality, profile, fingerprint FROM perceptual_fingerprint
           WHERE modality='text' AND (tip_ctid > ? OR (tip_ctid = ? AND component_idx > ?))
-          ORDER BY tip_ctid, component_idx LIMIT ?`
+         UNION ALL
+         SELECT tip_ctid AS ctid, component_idx, 'document' AS modality, profile, text AS fingerprint FROM document_text
+          WHERE text IS NOT NULL AND (tip_ctid > ? OR (tip_ctid = ? AND component_idx > ?))
+          ORDER BY ctid, component_idx LIMIT ?`
+      ),
+      saveDocumentText: this.db.prepare(
+        `INSERT OR IGNORE INTO document_text (tip_ctid, component_idx, profile, text_hash, chars, text) VALUES (?, ?, ?, ?, ?, ?)`
+      ),
+      saveDocumentPassage: this.db.prepare(
+        `INSERT OR IGNORE INTO document_passage (profile, passage_key, owner, tip_ctid, component_idx, unit) VALUES (?, ?, ?, ?, ?, ?)`
+      ),
+      findDocumentsByTextHash: this.db.prepare(
+        "SELECT tip_ctid AS ctid, component_idx FROM document_text WHERE profile=? AND text_hash=?"
       ),
       getPhashCodesByCtid: this.db.prepare(
         "SELECT tip_ctid AS ctid, profile, modality, frame, ts, quality, pdq FROM phash_code WHERE tip_ctid=? ORDER BY component_idx, frame"
@@ -4528,18 +4589,57 @@ class SQLiteStore {
   getPerceptualFingerprints(ctid) {
     return this._stmts.getPerceptualFingerprints.all(ctid);
   }
-  getPerceptualFingerprintsByCtids(ctids, componentIdx = 0) {
+  getTextFingerprintsByCtids(ctids, componentIdx = 0) {
     const out = [];
     for (let i = 0; i < ctids.length; i += TEXT_LSH.READ_CHUNK_ROWS) {
       const chunk = ctids.slice(i, i + TEXT_LSH.READ_CHUNK_ROWS);
       const sql = `SELECT tip_ctid AS ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at
-                     FROM perceptual_fingerprint WHERE component_idx = ? AND tip_ctid IN (${chunk.map(() => "?").join(",")})`;
+                     FROM perceptual_fingerprint WHERE modality = 'text' AND component_idx = ? AND tip_ctid IN (${chunk.map(() => "?").join(",")})`;
       for (const r of this.db.prepare(sql).all(componentIdx, ...chunk)) out.push(r);
     }
     return out;
   }
   listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
-    return this._stmts.listTextFingerprintsAfter.all(afterCtid, afterCtid, afterIdx, limit);
+    return this._stmts.listTextFingerprintsAfter.all(afterCtid, afterCtid, afterIdx, afterCtid, afterCtid, afterIdx, limit);
+  }
+  saveDocumentText(row) {
+    this._stmts.saveDocumentText.run(row.ctid, row.component_idx, row.profile, row.text_hash, row.chars, row.text);
+  }
+  saveDocumentPassages(rows) {
+    this.db.transaction(() => {
+      for (const r of rows) this._stmts.saveDocumentPassage.run(r.profile, r.passage_key, r.owner, r.ctid, r.component_idx, r.unit);
+    })();
+  }
+  findDocumentsByTextHash(profile, textHash) {
+    return this._stmts.findDocumentsByTextHash.all(profile, textHash);
+  }
+  _documentPassageChunks(keys, sql, profile) {
+    const out = [];
+    for (let i = 0; i < keys.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const chunk = keys.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS);
+      for (const r of this.db.prepare(sql(chunk.map(() => "?").join(","))).all(profile, ...chunk)) out.push(r);
+    }
+    return out;
+  }
+  countDocumentPassageOwners(profile, keys) {
+    return this._documentPassageChunks(keys, (marks) =>
+      `SELECT passage_key, COUNT(DISTINCT owner) AS owners FROM document_passage
+        WHERE profile = ? AND passage_key IN (${marks}) GROUP BY passage_key`, profile);
+  }
+  findDocumentPassages(profile, keys) {
+    return this._documentPassageChunks(keys, (marks) =>
+      `SELECT passage_key, owner, tip_ctid AS ctid, component_idx FROM document_passage
+        WHERE profile = ? AND passage_key IN (${marks})`, profile);
+  }
+  getDocumentTextsByCtids(ctids) {
+    const out = [];
+    for (let i = 0; i < ctids.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const chunk = ctids.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS);
+      const sql = `SELECT tip_ctid AS ctid, component_idx, text FROM document_text
+                    WHERE text IS NOT NULL AND tip_ctid IN (${chunk.map(() => "?").join(",")})`;
+      for (const r of this.db.prepare(sql).all(...chunk)) out.push(r);
+    }
+    return out;
   }
   findMinhashCandidates(profile, bandHashes) {
     const ctids = new Set();
@@ -4558,7 +4658,7 @@ class SQLiteStore {
       for (const k of keys) params.push(k);
     }
     const sql =
-      `SELECT DISTINCT tip_ctid AS ctid, profile, modality, frame, ts, quality, pdq
+      `SELECT DISTINCT tip_ctid AS ctid, component_idx, profile, modality, frame, ts, quality, pdq
          FROM phash_code
         WHERE profile=? AND modality=? AND (${conds.join(" OR ")})
         ORDER BY tip_ctid, frame, pdq`;
@@ -5045,8 +5145,14 @@ function _buildDagHandle(store, config) {
     savePhashCodes: (rows) => store.savePhashCodes(rows),
     getPerceptualFingerprint: (ctid, idx) => store.getPerceptualFingerprint(ctid, idx),
     getPerceptualFingerprints: (ctid) => store.getPerceptualFingerprints(ctid),
-    getPerceptualFingerprintsByCtids: (ctids, idx) => store.getPerceptualFingerprintsByCtids(ctids, idx),
+    getTextFingerprintsByCtids: (ctids, idx) => store.getTextFingerprintsByCtids(ctids, idx),
     listTextFingerprintsAfter: (afterCtid, afterIdx, limit) => store.listTextFingerprintsAfter(afterCtid, afterIdx, limit),
+    saveDocumentText: (row) => store.saveDocumentText(row),
+    saveDocumentPassages: (rows) => store.saveDocumentPassages(rows),
+    findDocumentsByTextHash: (profile, textHash) => store.findDocumentsByTextHash(profile, textHash),
+    countDocumentPassageOwners: (profile, keys) => store.countDocumentPassageOwners(profile, keys),
+    findDocumentPassages: (profile, keys) => store.findDocumentPassages(profile, keys),
+    getDocumentTextsByCtids: (ctids) => store.getDocumentTextsByCtids(ctids),
     findMinhashCandidates: (profile, bandHashes) => store.findMinhashCandidates(profile, bandHashes),
     findPhashCandidates: (profile, modality, queryKeys) => store.findPhashCandidates(profile, modality, queryKeys),
     getPhashCodesByCtid: (ctid) => store.getPhashCodesByCtid(ctid),

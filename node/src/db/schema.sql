@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS `dedup_registry` (`dedup_hash` varchar(512), `created
 
 CREATE TABLE IF NOT EXISTS `dispute_details` (`evidence_hash` varchar(128), `disputer_tip_id` varchar(512) not null, `payload_json` text not null, `signature` text not null, `local_inserted_at` bigint not null, primary key (`evidence_hash`));
 
+CREATE TABLE IF NOT EXISTS `document_passage` (`profile` varchar(64) not null, `passage_key` varchar(16) not null, `owner` varchar(512) not null, `tip_ctid` varchar(512) not null, `component_idx` integer not null, `unit` integer, primary key (`profile`, `passage_key`, `owner`, `tip_ctid`, `component_idx`));
+
+CREATE TABLE IF NOT EXISTS `document_text` (`tip_ctid` varchar(512) not null, `component_idx` integer not null, `profile` varchar(64) not null, `text_hash` varchar(64) not null, `chars` integer not null, `text` text, primary key (`tip_ctid`, `component_idx`));
+
 CREATE TABLE IF NOT EXISTS `domain_bindings` (`domain` varchar(253), `tip_id` varchar(512) not null, `binding_state` varchar(32) not null, `method` varchar(16) not null, `claimed_at` bigint not null, `verified_at` bigint not null, `expires_at` bigint not null, `consecutive_failures` integer not null default '0', `node_id` varchar(512) not null, `claim_signature` text not null, `binding_signature` text not null, `tx_id` varchar(512) not null, primary key (`domain`));
 
 CREATE TABLE IF NOT EXISTS `entity_keys` (`entity_type` varchar(32) not null, `entity_id` varchar(128) not null, `public_key` text not null, `algorithm` varchar(64) not null default 'ml-dsa-65', `valid_from_ts` bigint not null, `valid_to_ts` bigint null, `source_tx_id` varchar(512) not null, constraint `pk_entity_keys` primary key (`entity_type`, `entity_id`, `valid_from_ts`));
@@ -92,6 +96,8 @@ CREATE INDEX IF NOT EXISTS `idx_content_prescan_status` on `content` (`prescan_s
 CREATE INDEX IF NOT EXISTS `idx_content_signer` on `content` (`signer_tip_id`);
 
 CREATE INDEX IF NOT EXISTS `idx_content_status` on `content` (`status`);
+
+CREATE INDEX IF NOT EXISTS `idx_document_text_hash` on `document_text` (`profile`, `text_hash`);
 
 CREATE INDEX IF NOT EXISTS `idx_dom_bind_expires` on `domain_bindings` (`expires_at`);
 

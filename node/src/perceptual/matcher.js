@@ -68,19 +68,22 @@ async function _matchTextIn(dag, queryFp, scheme, threshold, excludeCtid) {
   const bandHashes = lshBands(queryFp.minhash, { scheme });
   const found = await dag.findMinhashCandidates(textIndex.bandProfile(queryFp.profile, scheme), bandHashes);
   const ctids = excludeCtid ? found.filter((c) => c !== excludeCtid) : found;
-  const rows = ctids.length ? await dag.getPerceptualFingerprintsByCtids(ctids, 0) : [];
-  const matches = [];
-  for (const row of rows) {
+  // A candidate's text is its text component or a document's own text (both feed the bands).
+  const texts = ctids.length ? await dag.getTextFingerprintsByCtids(ctids, 0) : [];
+  const docs = ctids.length ? await dag.getDocumentTextsByCtids(ctids) : [];
+  const best = new Map();
+  for (const raw of [...texts.map((r) => [r.ctid, r.fingerprint]), ...docs.map((d) => [d.ctid, d.text])]) {
     let candFp;
     try {
-      candFp = JSON.parse(row.fingerprint);
+      candFp = JSON.parse(raw[1]);
     } catch {
       continue;
     }
     if (!Array.isArray(candFp.minhash)) continue;
     const similarity = jaccardEstimate(queryFp.minhash, candFp.minhash);
-    if (similarity >= threshold) matches.push({ ctid: row.ctid, similarity });
+    if (similarity >= threshold && similarity > (best.get(raw[0]) || 0)) best.set(raw[0], similarity);
   }
+  const matches = [...best].map(([ctid, similarity]) => ({ ctid, similarity }));
   matches.sort((a, b) => (b.similarity - a.similarity) || (a.ctid < b.ctid ? -1 : a.ctid > b.ctid ? 1 : 0));
   return { matches, candidates: ctids.length, ms: performance.now() - t0 };
 }

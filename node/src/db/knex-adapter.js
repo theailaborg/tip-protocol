@@ -23,7 +23,7 @@ const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx }
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
-const { SNAPSHOT_BULK_CHUNK_ROWS, BULK_INSERT_CHUNK_ROWS, UPLOAD_SESSION_STATE, TEXT_LSH } = require("../../../shared/constants");
+const { SNAPSHOT_BULK_CHUNK_ROWS, BULK_INSERT_CHUNK_ROWS, UPLOAD_SESSION_STATE, TEXT_LSH, DOCUMENT_MATCH } = require("../../../shared/constants");
 const { DB_WRITE_BACKPRESSURE_MS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/local-config");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
@@ -1103,25 +1103,76 @@ class KnexAdapter {
     const rows = await this.knex("perceptual_fingerprint").where({ tip_ctid: ctid }).orderBy("component_idx");
     return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
   }
-  async getPerceptualFingerprintsByCtids(ctids, componentIdx = 0) {
+  async getTextFingerprintsByCtids(ctids, componentIdx = 0) {
     const out = [];
     for (let i = 0; i < ctids.length; i += TEXT_LSH.READ_CHUNK_ROWS) {
       const rows = await this.knex("perceptual_fingerprint")
-        .where({ component_idx: componentIdx })
+        .where({ modality: "text", component_idx: componentIdx })
         .whereIn("tip_ctid", ctids.slice(i, i + TEXT_LSH.READ_CHUNK_ROWS));
       for (const { tip_ctid, ...rest } of rows) out.push({ ctid: tip_ctid, ...rest });
     }
     return out;
   }
+  // Text components, then each document's own text as modality "document", merged
+  // in keyset order: the first `limit` of the two sorted scans is the next page.
   async listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
-    const rows = await this.knex("perceptual_fingerprint")
-      .where({ modality: "text" })
-      .andWhere((q) => q.where("tip_ctid", ">", afterCtid)
-        .orWhere((q2) => q2.where("tip_ctid", afterCtid).andWhere("component_idx", ">", afterIdx)))
-      .orderBy([{ column: "tip_ctid" }, { column: "component_idx" }])
-      .limit(limit)
-      .select("tip_ctid", "component_idx", "modality", "profile", "fingerprint");
-    return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
+    const after = (q) => q.where("tip_ctid", ">", afterCtid)
+      .orWhere((q2) => q2.where("tip_ctid", afterCtid).andWhere("component_idx", ">", afterIdx));
+    const order = [{ column: "tip_ctid" }, { column: "component_idx" }];
+    const texts = await this.knex("perceptual_fingerprint").where({ modality: "text" }).andWhere(after)
+      .orderBy(order).limit(limit).select("tip_ctid", "component_idx", "modality", "profile", "fingerprint");
+    const docs = await this.knex("document_text").whereNotNull("text").andWhere(after)
+      .orderBy(order).limit(limit).select("tip_ctid", "component_idx", "profile", "text");
+    const rows = [
+      ...texts.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest })),
+      ...docs.map((d) => ({ ctid: d.tip_ctid, component_idx: d.component_idx, modality: "document", profile: d.profile, fingerprint: d.text })),
+    ];
+    rows.sort((a, b) => (a.ctid < b.ctid ? -1 : a.ctid > b.ctid ? 1 : a.component_idx - b.component_idx));
+    return rows.slice(0, limit);
+  }
+  saveDocumentText(row) {
+    const { ctid, ...rest } = row;
+    this._ff(() => this._k("document_text").insert({ tip_ctid: ctid, ...rest }).onConflict(["tip_ctid", "component_idx"]).ignore());
+  }
+  saveDocumentPassages(rows) {
+    if (!rows || !rows.length) return;
+    const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
+    this._ff(() => this._chunkedInsertIgnore("document_passage", mapped,
+      ["profile", "passage_key", "owner", "tip_ctid", "component_idx"]));
+  }
+  async findDocumentsByTextHash(profile, textHash) {
+    const rows = await this.knex("document_text").where({ profile, text_hash: textHash }).select("tip_ctid", "component_idx");
+    return rows.map((r) => ({ ctid: r.tip_ctid, component_idx: r.component_idx }));
+  }
+  async countDocumentPassageOwners(profile, keys) {
+    const out = [];
+    for (let i = 0; i < keys.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const rows = await this.knex("document_passage").where({ profile })
+        .whereIn("passage_key", keys.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
+        .groupBy("passage_key").select("passage_key").countDistinct({ owners: "owner" });
+      for (const r of rows) out.push({ passage_key: r.passage_key, owners: Number(r.owners) });
+    }
+    return out;
+  }
+  async findDocumentPassages(profile, keys) {
+    const out = [];
+    for (let i = 0; i < keys.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const rows = await this.knex("document_passage").where({ profile })
+        .whereIn("passage_key", keys.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
+        .select("passage_key", "owner", "tip_ctid", "component_idx");
+      for (const r of rows) out.push({ passage_key: r.passage_key, owner: r.owner, ctid: r.tip_ctid, component_idx: r.component_idx });
+    }
+    return out;
+  }
+  async getDocumentTextsByCtids(ctids) {
+    const out = [];
+    for (let i = 0; i < ctids.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const rows = await this.knex("document_text").whereNotNull("text")
+        .whereIn("tip_ctid", ctids.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
+        .select("tip_ctid", "component_idx", "text");
+      for (const r of rows) out.push({ ctid: r.tip_ctid, component_idx: r.component_idx, text: r.text });
+    }
+    return out;
   }
   // One round trip for every band: a seek per band in sequence cost a Postgres
   // round trip each, inside record fetches and registrations.
@@ -1139,7 +1190,7 @@ class KnexAdapter {
       .andWhere(function () {
         for (let i = 0; i < 16; i++) this.orWhereIn(`c${i}`, queryKeys[i]);
       })
-      .distinct("tip_ctid", "profile", "modality", "frame", "ts", "quality", "pdq")
+      .distinct("tip_ctid", "component_idx", "profile", "modality", "frame", "ts", "quality", "pdq")
       .orderBy([{ column: "tip_ctid" }, { column: "frame" }, { column: "pdq" }]);
     return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
   }
