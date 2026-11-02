@@ -135,8 +135,8 @@ async function rebuild(dag, scheme, { resume = null, isStopped = () => false } =
 
 // Startup check. Indexes the node will not write to are marked stale (they would
 // fall behind); each index it will write to is loaded, resumed or rebuilt in the
-// background, and answers only once complete.
-function start(dag) {
+// background once `after` settles, and answers only once complete.
+function start(dag, { after = null, retryMs = TEXT_LSH.REBUILD_RETRY_MS } = {}) {
   const idle = { stop() { }, done: Promise.resolve() };
   if (typeof dag.getConsensusMeta !== "function" || typeof dag.listTextFingerprintsAfter !== "function") return idle;
   const want = ingestSchemes();
@@ -160,13 +160,31 @@ function start(dag) {
   }
   if (!todo.length) return idle;
   let stopped = false;
+  let wake = null;
+  const pause = (ms) => new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    wake = () => { clearTimeout(timer); resolve(); };
+  });
   const done = (async () => {
+    if (after) await after;
     for (const t of todo) {
-      if (stopped) return;
-      await rebuild(dag, t.scheme, { resume: t.resume, isStopped: () => stopped });
+      let wait = retryMs;
+      let resume = t.resume;
+      while (!stopped) {
+        try {
+          await rebuild(dag, t.scheme, { resume, isStopped: () => stopped });
+          break;
+        } catch (err) {
+          log.error(`text LSH index ${t.scheme}: rebuild failed, retrying in ${Math.round(wait / 1000)} s: ${err?.stack || err}`);
+          await pause(wait);
+          wait = Math.min(wait * 2, TEXT_LSH.REBUILD_RETRY_MAX_MS);
+          const st = _load(dag, t.scheme);
+          resume = st && st.state === STATE.BUILDING && Array.isArray(st.after) ? st : null;
+        }
+      }
     }
-  })().catch((err) => log.error(`text LSH index rebuild failed: ${err?.stack || err}`));
-  return { stop() { stopped = true; }, done };
+  })();
+  return { stop() { stopped = true; if (wake) wake(); }, done };
 }
 
 function _bucketCounts(buckets, value, counts) {

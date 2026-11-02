@@ -1103,11 +1103,11 @@ class KnexAdapter {
     const rows = await this.knex("perceptual_fingerprint").where({ tip_ctid: ctid }).orderBy("component_idx");
     return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
   }
-  async getPerceptualFingerprintsByCtids(ctids, componentIdx = 0) {
+  async getTextFingerprintsByCtids(ctids) {
     const out = [];
     for (let i = 0; i < ctids.length; i += TEXT_LSH.READ_CHUNK_ROWS) {
       const rows = await this.knex("perceptual_fingerprint")
-        .where({ component_idx: componentIdx })
+        .where({ modality: "text" })
         .whereIn("tip_ctid", ctids.slice(i, i + TEXT_LSH.READ_CHUNK_ROWS));
       for (const { tip_ctid, ...rest } of rows) out.push({ ctid: tip_ctid, ...rest });
     }
@@ -1116,8 +1116,7 @@ class KnexAdapter {
   async listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
     const rows = await this.knex("perceptual_fingerprint")
       .where({ modality: "text" })
-      .andWhere((q) => q.where("tip_ctid", ">", afterCtid)
-        .orWhere((q2) => q2.where("tip_ctid", afterCtid).andWhere("component_idx", ">", afterIdx)))
+      .whereRaw("(tip_ctid, component_idx) > (?, ?)", [afterCtid, afterIdx])
       .orderBy([{ column: "tip_ctid" }, { column: "component_idx" }])
       .limit(limit)
       .select("tip_ctid", "component_idx", "modality", "profile", "fingerprint");

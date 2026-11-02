@@ -129,8 +129,9 @@ async function main() {
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");
 
-  // 2a. Text near-duplicate index: scheme check before any ingest, rebuilds in the background.
-  const textIndexJob = initTextIndex({ dag, config });
+  // 2a. Text near-duplicate index: scheme check before any ingest; rebuilds start after step 5.
+  let networkUp;
+  const textIndexJob = initTextIndex({ dag, config, after: new Promise((resolve) => { networkUp = resolve; }) });
 
   // 3. Build Express app — prescanJobs queue is node-local and bound to dag.
   const consensusRef = { current: null };
@@ -143,6 +144,7 @@ async function main() {
 
   // 5. P2P network + Narwhal/Bullshark consensus (returns nulls on failure)
   const { network, consensus } = await initNetworkAndConsensus({ dag, scoring, config });
+  networkUp();
   networkRef.current = network;
   consensusRef.current = consensus;
   if (consensus && consensus.cryptoPool && app.locals.mediaService) {

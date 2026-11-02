@@ -1246,11 +1246,17 @@ const VIDEO_MATCH_YIELD_ROWS = 64;
 
 // Text near-dup LSH. Every node has built the b32r4 bands at ingest since the
 // perceptual index shipped; any other scheme's bands are rebuilt from stored
-// fingerprints in batches of REBUILD_BATCH_ROWS, yielding between batches.
+// fingerprints in batches of REBUILD_BATCH_ROWS, yielding between batches. A
+// failed rebuild retries from its cursor, backing off to REBUILD_RETRY_MAX_MS.
+// MINHASH_K is the cf-text MinHash length; library 2.7 no longer enforces it.
 const TEXT_LSH = Object.freeze({
   DEFAULT_SCHEME: "b32r4",
+  MINHASH_K: 128,
   REBUILD_BATCH_ROWS: 500,
   READ_CHUNK_ROWS: 500,
+  REBUILD_RETRY_MS: 30_000,
+  REBUILD_RETRY_MAX_MS: 600_000,
+  SHADOW_MAX_IN_FLIGHT: 1,
 });
 
 module.exports = {

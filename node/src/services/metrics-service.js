@@ -706,12 +706,16 @@ function injectNodeLabel(body, nodeId) {
 
 // Text near-duplicate lookups per LSH scheme: "answer" serves requests, "shadow" is only measured.
 function textLshSection(dag) {
-  const out = [];
-  for (const scheme of textIndex.ingestSchemes()) {
-    const st = textIndex.status(dag, scheme);
-    out.push(gauge("tip_text_lsh_index_complete", "1 when this text LSH index is complete and may answer, 0 while it builds", st && st.state === textIndex.STATE.COMPLETE ? 1 : 0, { scheme }));
-    out.push(gauge("tip_text_lsh_index_texts", "Texts in this LSH index as of its last build or rebuild batch", (st && st.texts) || 0, { scheme }));
-  }
+  const schemes = textIndex.ingestSchemes().map((scheme) => ({ scheme, st: textIndex.status(dag, scheme) }));
+  // One HELP/TYPE per family, then a line per scheme: a repeated TYPE breaks the scrape.
+  const out = [
+    "# HELP tip_text_lsh_index_complete 1 when this text LSH index is complete and may answer, 0 while it builds",
+    "# TYPE tip_text_lsh_index_complete gauge",
+    ...schemes.map(({ scheme, st }) => line("tip_text_lsh_index_complete", st && st.state === textIndex.STATE.COMPLETE ? 1 : 0, { scheme })),
+    "# HELP tip_text_lsh_index_texts Texts in this LSH index as of its last build or rebuild batch",
+    "# TYPE tip_text_lsh_index_texts gauge",
+    ...schemes.map(({ scheme, st }) => line("tip_text_lsh_index_texts", (st && st.texts) || 0, { scheme })),
+  ];
   const snap = textIndex.statsSnapshot();
   if (!snap.series.length) return out.join("\n");
   const labels = (s) => ({ scheme: s.scheme, role: s.role });

@@ -586,6 +586,7 @@ class MemoryStore {
     // state_merkle_root). Source of truth + derived candidate indexes.
     this._perceptualFingerprints = new Map(); // `${ctid}|${component_idx}` -> fingerprint row
     this._minhashBands = [];                    // text LSH index rows
+    this._minhashBandKeys = new Set();
     this._phashCodes = [];                      // image/video MIH index rows
     this._audioClips = new Map();               // `${ctid}|${component_idx}` -> { clip_id, ctid, component_idx, landmark_count }
     this._audioClipById = new Map();            // clip_id -> the same clip row (matcher resolves clip_id -> ctid)
@@ -2014,7 +2015,13 @@ class MemoryStore {
     this._perceptualFingerprints.set(`${rec.ctid}|${rec.component_idx}`, { ...rec });
   }
   saveMinhashBands(rows) {
-    for (const r of rows) this._minhashBands.push({ ...r });
+    // Mirrors the SQLite/Knex INSERT OR IGNORE on (profile, band_idx, band_hash, ctid).
+    for (const r of rows) {
+      const key = `${r.profile}|${r.band_idx}|${r.band_hash}|${r.ctid}`;
+      if (this._minhashBandKeys.has(key)) continue;
+      this._minhashBandKeys.add(key);
+      this._minhashBands.push({ ...r });
+    }
   }
   savePhashCodes(rows) {
     if (!rows || !rows.length) return;
@@ -2039,11 +2046,11 @@ class MemoryStore {
     rows.sort((a, b) => a.component_idx - b.component_idx);
     return rows;
   }
-  getPerceptualFingerprintsByCtids(ctids, componentIdx = 0) {
+  getTextFingerprintsByCtids(ctids) {
+    const want = new Set(ctids);
     const out = [];
-    for (const ctid of ctids) {
-      const r = this._perceptualFingerprints.get(`${ctid}|${componentIdx}`);
-      if (r) out.push({ ...r });
+    for (const r of this._perceptualFingerprints.values()) {
+      if (r.modality === "text" && want.has(r.ctid)) out.push({ ...r });
     }
     return out;
   }
@@ -3266,7 +3273,7 @@ class SQLiteStore {
       ),
       listTextFingerprintsAfter: this.db.prepare(
         `SELECT tip_ctid AS ctid, component_idx, modality, profile, fingerprint FROM perceptual_fingerprint
-          WHERE modality='text' AND (tip_ctid > ? OR (tip_ctid = ? AND component_idx > ?))
+          WHERE modality='text' AND (tip_ctid, component_idx) > (?, ?)
           ORDER BY tip_ctid, component_idx LIMIT ?`
       ),
       getPhashCodesByCtid: this.db.prepare(
@@ -4528,18 +4535,18 @@ class SQLiteStore {
   getPerceptualFingerprints(ctid) {
     return this._stmts.getPerceptualFingerprints.all(ctid);
   }
-  getPerceptualFingerprintsByCtids(ctids, componentIdx = 0) {
+  getTextFingerprintsByCtids(ctids) {
     const out = [];
     for (let i = 0; i < ctids.length; i += TEXT_LSH.READ_CHUNK_ROWS) {
       const chunk = ctids.slice(i, i + TEXT_LSH.READ_CHUNK_ROWS);
       const sql = `SELECT tip_ctid AS ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at
-                     FROM perceptual_fingerprint WHERE component_idx = ? AND tip_ctid IN (${chunk.map(() => "?").join(",")})`;
-      for (const r of this.db.prepare(sql).all(componentIdx, ...chunk)) out.push(r);
+                     FROM perceptual_fingerprint WHERE modality = 'text' AND tip_ctid IN (${chunk.map(() => "?").join(",")})`;
+      for (const r of this.db.prepare(sql).all(...chunk)) out.push(r);
     }
     return out;
   }
   listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
-    return this._stmts.listTextFingerprintsAfter.all(afterCtid, afterCtid, afterIdx, limit);
+    return this._stmts.listTextFingerprintsAfter.all(afterCtid, afterIdx, limit);
   }
   findMinhashCandidates(profile, bandHashes) {
     const ctids = new Set();
@@ -5045,7 +5052,7 @@ function _buildDagHandle(store, config) {
     savePhashCodes: (rows) => store.savePhashCodes(rows),
     getPerceptualFingerprint: (ctid, idx) => store.getPerceptualFingerprint(ctid, idx),
     getPerceptualFingerprints: (ctid) => store.getPerceptualFingerprints(ctid),
-    getPerceptualFingerprintsByCtids: (ctids, idx) => store.getPerceptualFingerprintsByCtids(ctids, idx),
+    getTextFingerprintsByCtids: (ctids) => store.getTextFingerprintsByCtids(ctids),
     listTextFingerprintsAfter: (afterCtid, afterIdx, limit) => store.listTextFingerprintsAfter(afterCtid, afterIdx, limit),
     findMinhashCandidates: (profile, bandHashes) => store.findMinhashCandidates(profile, bandHashes),
     findPhashCandidates: (profile, modality, queryKeys) => store.findPhashCandidates(profile, modality, queryKeys),
