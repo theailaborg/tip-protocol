@@ -41,6 +41,7 @@ const { initPrescanWorker } = require("./init-prescan-worker");
 const { initMediaRetention } = require("./init-media-retention");
 const { initChunkedUploadCleanup } = require("./init-chunked-upload-cleanup");
 const { initEndpointAnnounce } = require("./init-endpoint-announce");
+const { initTextIndex } = require("./init-text-index");
 const { createMediaStorage } = require("./services/media-storage");
 const processErrors = require("./process-error-handler");
 
@@ -128,6 +129,9 @@ async function main() {
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");
 
+  // 2a. Text near-duplicate index: scheme check before any ingest, rebuilds in the background.
+  const textIndexJob = initTextIndex({ dag, config });
+
   // 3. Build Express app — prescanJobs queue is node-local and bound to dag.
   const consensusRef = { current: null };
   const networkRef = { current: null };
@@ -197,6 +201,7 @@ async function main() {
     server.close(async () => {
       try { scheduler.stop(); } catch { }
       try { mediaRetention.stop(); } catch { }
+      try { textIndexJob.stop(); } catch { }
       try { chunkedUploadCleanup.stop(); } catch { }
       // Await prescan worker drain so in-flight classifier calls finish
       // before the process exits. Without this, the safety net is the

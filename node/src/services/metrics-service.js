@@ -37,7 +37,8 @@ const { nowMs } = require("../../../shared/time");
 
 // Pure Prometheus text-format helpers live in lib/ — they're reusable
 // from any emitter and don't belong in a TIP-specific service file.
-const { line, gauge, counter } = require("../lib/prom-format");
+const { line, gauge, counter, histogram } = require("../lib/prom-format");
+const textIndex = require("../perceptual/text-index");
 const { eventLoopMonitor } = require("../lib/event-loop-monitor");
 const processErrors = require("../process-error-handler");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
@@ -703,6 +704,27 @@ function injectNodeLabel(body, nodeId) {
 
 // ── Public API ────────────────────────────────────────────────────────────
 
+// Text near-duplicate lookups per LSH scheme: "answer" serves requests, "shadow" is only measured.
+function textLshSection(dag) {
+  const out = [];
+  for (const scheme of textIndex.ingestSchemes()) {
+    const st = textIndex.status(dag, scheme);
+    out.push(gauge("tip_text_lsh_index_complete", "1 when this text LSH index is complete and may answer, 0 while it builds", st && st.state === textIndex.STATE.COMPLETE ? 1 : 0, { scheme }));
+    out.push(gauge("tip_text_lsh_index_texts", "Texts in this LSH index as of its last build or rebuild batch", (st && st.texts) || 0, { scheme }));
+  }
+  const snap = textIndex.statsSnapshot();
+  if (!snap.series.length) return out.join("\n");
+  const labels = (s) => ({ scheme: s.scheme, role: s.role });
+  out.push(histogram("tip_text_lsh_lookup_ms", "One text near-duplicate lookup, candidate search plus verification (ms)", snap.msBuckets,
+    snap.series.map((s) => ({ labels: labels(s), counts: s.ms.counts, sum: s.ms.sum, count: s.lookups }))));
+  out.push(histogram("tip_text_lsh_candidates", "Indexed texts verified by one text near-duplicate lookup", snap.candidateBuckets,
+    snap.series.map((s) => ({ labels: labels(s), counts: s.candidates.counts, sum: s.candidates.sum, count: s.lookups }))));
+  out.push("# HELP tip_text_lsh_matches_total Near-duplicate texts found at or above the flag threshold");
+  out.push("# TYPE tip_text_lsh_matches_total counter");
+  for (const s of snap.series) out.push(line("tip_text_lsh_matches_total", s.matches, labels(s)));
+  return out.join("\n");
+}
+
 function createMetricsService({ dag, config, consensus, network }) {
   /**
    * Build the full Prometheus exposition body.
@@ -717,6 +739,7 @@ function createMetricsService({ dag, config, consensus, network }) {
     if (peBlock) sections.push(peBlock);
     sections.push(dagSection(dag));
     sections.push(registrySection(dag));
+    sections.push(textLshSection(dag));
 
     const networkBlock = networkSection(network, dag);
     if (networkBlock) sections.push(networkBlock);

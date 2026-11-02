@@ -13,7 +13,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { MEDIA_LIMITS, MEDIA_QUOTA_CLIENT, PRESCAN_FAIL_OPEN_AFTER_MS } = require("../../shared/constants");
+const { MEDIA_LIMITS, MEDIA_QUOTA_CLIENT, PRESCAN_FAIL_OPEN_AFTER_MS, TEXT_LSH } = require("../../shared/constants");
 const { CONTENT_LIMITS } = require("../../shared/protocol-constants");
 
 // Fail closed: dev-gated paths check NODE_ENV !== "production", so an unset
@@ -210,6 +210,12 @@ function loadConfig() {
     // Node policy: how long content may sit unscanned before any node commits
     // the neutral verdict. The fleet's effective window is the shortest running.
     prescanFailOpenAfterMs: parseInt(process.env.TIP_PRESCAN_FAIL_OPEN_AFTER_MS || "", 10) || PRESCAN_FAIL_OPEN_AFTER_MS,
+
+    // ── Text near-duplicate matching ──────────────────────────────────────────
+    // The LSH band scheme that answers, and an optional second scheme indexed and
+    // timed beside it (measurement only). Validated at boot.
+    textLshScheme: process.env.TIP_TEXT_LSH_SCHEME || TEXT_LSH.DEFAULT_SCHEME,
+    textLshShadow: process.env.TIP_TEXT_LSH_SHADOW || "",
 
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),

@@ -16,6 +16,9 @@ const { lshBands } = require("tip-content-fingerprint/src/text/lsh");
 const { jaccardEstimate } = require("tip-content-fingerprint/src/text/compare");
 const { queryKeys } = require("tip-content-fingerprint/src/image/mih");
 const { hammingHex } = require("tip-content-fingerprint/src/image/hamming");
+const { performance } = require("perf_hooks");
+const textIndex = require("./text-index");
+const { log } = require("../logger");
 const { VIDEO_MATCH_PROBE_FRAMES, VIDEO_MATCH_MAX_CANDIDATES, VIDEO_MATCH_SCORE_FRAMES, VIDEO_MATCH_YIELD_ROWS } = require("../../../shared/constants");
 
 const TEXT_FLAG_THRESHOLD = 0.30; // reviewer-panel "possible copy" cutoff
@@ -38,14 +41,36 @@ async function matchText(dag, queryFp, opts) {
     return [];
   }
 
-  const bandHashes = lshBands(queryFp.minhash);
-  const candidates = await dag.findMinhashCandidates(queryFp.profile, bandHashes);
+  const scheme = textIndex.answerScheme();
+  if (!textIndex.isReady(dag, scheme)) {
+    textIndex.warnNotReady(dag, scheme);
+    return [];
+  }
+  const answer = await _matchTextIn(dag, queryFp, scheme, threshold, opts.excludeCtid);
+  textIndex.recordLookup(scheme, "answer", answer);
+  const shadow = textIndex.shadowScheme();
+  if (shadow && textIndex.isReady(dag, shadow)) {
+    // Off the request path: the shadow scheme is timed and logged, never answered.
+    setImmediate(() => {
+      _matchTextIn(dag, queryFp, shadow, threshold, opts.excludeCtid)
+        .then((r) => {
+          textIndex.recordLookup(shadow, "shadow", r);
+          textIndex.logShadow(opts.excludeCtid, scheme, answer, shadow, r);
+        })
+        .catch((err) => log.warn(`text-lsh shadow lookup failed: ${err.message || err}`));
+    });
+  }
+  return answer.matches;
+}
 
-  const out = [];
-  for (const ctid of candidates) {
-    if (opts.excludeCtid && ctid === opts.excludeCtid) continue;
-    const row = await dag.getPerceptualFingerprint(ctid, 0);
-    if (!row) continue;
+async function _matchTextIn(dag, queryFp, scheme, threshold, excludeCtid) {
+  const t0 = performance.now();
+  const bandHashes = lshBands(queryFp.minhash, { scheme });
+  const found = await dag.findMinhashCandidates(textIndex.bandProfile(queryFp.profile, scheme), bandHashes);
+  const ctids = excludeCtid ? found.filter((c) => c !== excludeCtid) : found;
+  const rows = ctids.length ? await dag.getPerceptualFingerprintsByCtids(ctids, 0) : [];
+  const matches = [];
+  for (const row of rows) {
     let candFp;
     try {
       candFp = JSON.parse(row.fingerprint);
@@ -54,10 +79,10 @@ async function matchText(dag, queryFp, opts) {
     }
     if (!Array.isArray(candFp.minhash)) continue;
     const similarity = jaccardEstimate(queryFp.minhash, candFp.minhash);
-    if (similarity >= threshold) out.push({ ctid, similarity });
+    if (similarity >= threshold) matches.push({ ctid: row.ctid, similarity });
   }
-  out.sort((a, b) => b.similarity - a.similarity);
-  return out;
+  matches.sort((a, b) => (b.similarity - a.similarity) || (a.ctid < b.ctid ? -1 : a.ctid > b.ctid ? 1 : 0));
+  return { matches, candidates: ctids.length, ms: performance.now() - t0 };
 }
 
 // Find indexed images that are near-duplicates of queryFp. MIH candidate-gen on
