@@ -31,6 +31,36 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.9.0: text matching finds reworded copies, and documents match by shared text**
+- Text near-duplicates: the `b42r3` LSH scheme (42 bands of 3) shortlists 84%
+  of copies at 0.3-0.4 similarity and 100% at 0.4-0.5, where `b32r4` found 34%
+  and 79% (test cluster, 23,600 texts). Opt in with `TIP_TEXT_LSH_SCHEME=b42r3`
+  (default `b32r4`). A scheme the node has not indexed is built in the
+  background from stored fingerprints once the node is up, resuming after a
+  restart and retrying after a failure; text matching for it is off until the
+  index is complete (seconds at mainnet size). `TIP_TEXT_LSH_SHADOW` indexes and
+  times a second scheme without answering, for measurement only.
+- Every text component of a record is checked, so a caption after an image is
+  matched; a char-tier text item must carry 128 MinHash values
+  (`fingerprint_text_invalid`). Metrics `tip_text_lsh_*`.
+- `GET /v1/content/:ctid` computes the similar cards only with
+  `include=similar` (the VP asks; the extension never read them). Deploy the VP
+  with this first: older nodes ignore the parameter.
+- Documents (`cf-doc-1`, VP document uploads): a document fingerprint is
+  accepted (at most 2,000 pages, 8,000,000 characters, 8,000 chunks, 1.5 MB),
+  indexed by whole text, passages and scanned pages, and listed by
+  `/v1/content/:ctid/similar` when it shares at least 300 characters, the same
+  wording or a scanned page, ranked by shared text with text many owners hold
+  (licences, disclaimers) weighted down, never by a list. A document and a post
+  with the same text find each other. `include=fingerprints.document` serves
+  the item. `TIP_DOC_PASSAGE_MAX_OWNERS` (default 500) skips very common text
+  when finding candidates. OCR stays off at registration.
+- Node-local tables `document_text` and `document_passage` (migration 015);
+  library tip-content-fingerprint 2.7.1. No consensus change: fingerprints and
+  their indexes are off chain, so nodes on either side of the release agree on
+  state. Only the node that receives a registration indexes it until
+  fingerprints are shared between nodes.
+
 **Node 2.8.3: registered again, the first author hears about exact copies**
 - When someone unconnected registers the same content again (same normalized
   `content_hash`: the text after TIP normalization plus byte-identical files
