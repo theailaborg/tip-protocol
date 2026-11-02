@@ -8,6 +8,7 @@
  *   block(name, type, help, value, ...)   → HELP + TYPE + value (joined)
  *   gauge(name, help, value, labels?)     → block, type=gauge
  *   counter(name, help, value, labels?)   → block, type=counter
+ *   histogram(name, help, buckets, series) → HELP + TYPE + _bucket/_sum/_count per series
  *
  * NaN / null / undefined values become 0 — Prometheus would reject NaN
  * and we'd rather emit a defensible zero than break the scrape.
@@ -41,4 +42,16 @@ function block(name, type, help, value, labels) {
 const gauge = (name, help, value, labels) => block(name, "gauge", help, value, labels);
 const counter = (name, help, value, labels) => block(name, "counter", help, value, labels);
 
-module.exports = { line, block, gauge, counter };
+/** series: [{ labels, counts, sum, count }], counts cumulative per bucket bound. */
+function histogram(name, help, buckets, series) {
+  const out = [`# HELP ${name} ${help}`, `# TYPE ${name} histogram`];
+  for (const s of series) {
+    buckets.forEach((le, i) => out.push(line(`${name}_bucket`, s.counts[i], { ...s.labels, le })));
+    out.push(line(`${name}_bucket`, s.count, { ...s.labels, le: "+Inf" }));
+    out.push(line(`${name}_sum`, s.sum, s.labels));
+    out.push(line(`${name}_count`, s.count, s.labels));
+  }
+  return out.join("\n");
+}
+
+module.exports = { line, block, gauge, counter, histogram };

@@ -41,6 +41,7 @@ const { initPrescanWorker } = require("./init-prescan-worker");
 const { initMediaRetention } = require("./init-media-retention");
 const { initChunkedUploadCleanup } = require("./init-chunked-upload-cleanup");
 const { initEndpointAnnounce } = require("./init-endpoint-announce");
+const { initTextIndex } = require("./init-text-index");
 const { createMediaStorage } = require("./services/media-storage");
 const processErrors = require("./process-error-handler");
 
@@ -128,6 +129,10 @@ async function main() {
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");
 
+  // 2a. Text near-duplicate index: scheme check before any ingest; rebuilds start after step 5.
+  let networkUp;
+  const textIndexJob = initTextIndex({ dag, config, after: new Promise((resolve) => { networkUp = resolve; }) });
+
   // 3. Build Express app — prescanJobs queue is node-local and bound to dag.
   const consensusRef = { current: null };
   const networkRef = { current: null };
@@ -139,6 +144,7 @@ async function main() {
 
   // 5. P2P network + Narwhal/Bullshark consensus (returns nulls on failure)
   const { network, consensus } = await initNetworkAndConsensus({ dag, scoring, config });
+  networkUp();
   networkRef.current = network;
   consensusRef.current = consensus;
   if (consensus && consensus.cryptoPool && app.locals.mediaService) {
@@ -197,6 +203,7 @@ async function main() {
     server.close(async () => {
       try { scheduler.stop(); } catch { }
       try { mediaRetention.stop(); } catch { }
+      try { textIndexJob.stop(); } catch { }
       try { chunkedUploadCleanup.stop(); } catch { }
       // Await prescan worker drain so in-flight classifier calls finish
       // before the process exits. Without this, the safety net is the

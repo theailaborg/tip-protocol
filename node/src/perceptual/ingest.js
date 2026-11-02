@@ -19,9 +19,9 @@
 // the node never needs and that jest can't `require`. lsh.js / mih.js are
 // dependency-free. (TODO: have the package expose a lightweight `keys` entry so
 // this isn't a deep import.)
-const { lshBands } = require("tip-content-fingerprint/src/text/lsh");
 const { indexChunks } = require("tip-content-fingerprint/src/image/mih");
 const PKG_VERSION = require("tip-content-fingerprint/package.json").version;
+const textIndex = require("./text-index");
 
 function buildIngestRows(fp, opts) {
   opts = opts || {};
@@ -59,10 +59,7 @@ function buildIngestRows(fp, opts) {
   if (fp.kind === "text") {
     // Only char-tier (MinHash) texts get LSH bands; micro-tier is exact-match.
     if (fp.tier === "char" && Array.isArray(fp.minhash)) {
-      const bandHashes = lshBands(fp.minhash);
-      for (let band_idx = 0; band_idx < bandHashes.length; band_idx++) {
-        bands.push({ profile: fp.profile, band_idx, band_hash: bandHashes[band_idx], ctid });
-      }
+      for (const b of textIndex.bandRows(fp, ctid, opts.schemes || textIndex.ingestSchemes())) bands.push(b);
     }
   } else if (fp.kind === "image") {
     // frame 0 (not null): a single image is one frame, and the phash_code key

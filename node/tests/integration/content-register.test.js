@@ -278,9 +278,21 @@ describe("content register — similar content (findSimilar + resolve.similar)",
     _seedIdentity(fx.dag, tipId, kp);
     const { ctidA, ctidB } = await _registerPair(fx, kp, tipId);
 
-    const detail = await fx.contentService.resolve(ctidB);
+    const detail = await fx.contentService.resolve(ctidB, { includeSimilar: true });
     expect(Array.isArray(detail.similar)).toBe(true);
     expect(detail.similar.map(s => s.ctid)).toContain(ctidA);
+  });
+
+  test("resolve() without includeSimilar runs no lookup and carries no similar key", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("sim-signer3").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const { ctidB } = await _registerPair(fx, kp, tipId);
+    const spy = jest.spyOn(fx.dag, "findMinhashCandidates");
+    const detail = await fx.contentService.resolve(ctidB);
+    expect(detail).not.toHaveProperty("similar");
+    expect(spy).not.toHaveBeenCalled();
   });
 
   test("findSimilar on unknown ctid → 404", async () => {

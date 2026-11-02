@@ -23,7 +23,7 @@ const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx }
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
-const { SNAPSHOT_BULK_CHUNK_ROWS, BULK_INSERT_CHUNK_ROWS, UPLOAD_SESSION_STATE } = require("../../../shared/constants");
+const { SNAPSHOT_BULK_CHUNK_ROWS, BULK_INSERT_CHUNK_ROWS, UPLOAD_SESSION_STATE, TEXT_LSH } = require("../../../shared/constants");
 const { DB_WRITE_BACKPRESSURE_MS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/local-config");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
@@ -1103,15 +1103,34 @@ class KnexAdapter {
     const rows = await this.knex("perceptual_fingerprint").where({ tip_ctid: ctid }).orderBy("component_idx");
     return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
   }
-  async findMinhashCandidates(profile, bandHashes) {
-    const ctids = new Set();
-    for (let i = 0; i < bandHashes.length; i++) {
-      const rows = await this.knex("minhash_band")
-        .where({ profile, band_idx: i, band_hash: bandHashes[i] })
-        .select("tip_ctid");
-      for (const r of rows) ctids.add(r.tip_ctid);
+  async getTextFingerprintsByCtids(ctids) {
+    const out = [];
+    for (let i = 0; i < ctids.length; i += TEXT_LSH.READ_CHUNK_ROWS) {
+      const rows = await this.knex("perceptual_fingerprint")
+        .where({ modality: "text" })
+        .whereIn("tip_ctid", ctids.slice(i, i + TEXT_LSH.READ_CHUNK_ROWS));
+      for (const { tip_ctid, ...rest } of rows) out.push({ ctid: tip_ctid, ...rest });
     }
-    return [...ctids];
+    return out;
+  }
+  async listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
+    const rows = await this.knex("perceptual_fingerprint")
+      .where({ modality: "text" })
+      .whereRaw("(tip_ctid, component_idx) > (?, ?)", [afterCtid, afterIdx])
+      .orderBy([{ column: "tip_ctid" }, { column: "component_idx" }])
+      .limit(limit)
+      .select("tip_ctid", "component_idx", "modality", "profile", "fingerprint");
+    return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
+  }
+  // One round trip for every band: a seek per band in sequence cost a Postgres
+  // round trip each, inside record fetches and registrations.
+  async findMinhashCandidates(profile, bandHashes) {
+    if (!bandHashes.length) return [];
+    const rows = await this.knex("minhash_band")
+      .where({ profile })
+      .whereIn(["band_idx", "band_hash"], bandHashes.map((h, i) => [i, h]))
+      .distinct("tip_ctid");
+    return rows.map((r) => r.tip_ctid);
   }
   async findPhashCandidates(profile, modality, queryKeys) {
     const rows = await this.knex("phash_code")

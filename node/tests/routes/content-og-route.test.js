@@ -47,3 +47,29 @@ test("GET /v1/content/:ctid still dispatches to resolve(), not resolveForOg()", 
   expect(res.status).toBe(200);
   expect(resolveCalled).toBe(true);
 });
+
+test("GET /v1/content/:ctid asks resolve() for similar cards only with include=similar", async () => {
+  const seen = [];
+  const app = _app({ resolve: async (c, opts) => { seen.push(opts); return { ok: true }; } });
+  const url = `/v1/content/${encodeURIComponent(CTID)}`;
+  await request(app).get(url);
+  await request(app).get(`${url}?include=similar`);
+  await request(app).get(`${url}?include=fingerprints.text,image`);
+  expect(seen[0]).toEqual({ includeSimilar: false });
+  expect(seen[1]).toEqual({ includeSimilar: true });
+  expect(seen[2]).toMatchObject({ includeSimilar: false, includeFingerprints: true, modalities: ["text", "image"] });
+});
+
+test("include lists similar and fingerprints in any order", async () => {
+  const seen = [];
+  const app = _app({ resolve: async (c, opts) => { seen.push(opts); return { ok: true }; } });
+  const url = `/v1/content/${encodeURIComponent(CTID)}`;
+  for (const q of ["similar,fingerprints", "fingerprints.text,similar", "fingerprints.text,image,similar", "similar,fingerprints.document", "fingerprints,fingerprints.text"]) {
+    await request(app).get(`${url}?include=${q}`);
+  }
+  expect(seen[0]).toMatchObject({ includeSimilar: true, includeFingerprints: true, modalities: null });
+  expect(seen[1]).toMatchObject({ includeSimilar: true, includeFingerprints: true, modalities: ["text"] });
+  expect(seen[2]).toMatchObject({ includeSimilar: true, modalities: ["text", "image"] });
+  expect(seen[3]).toMatchObject({ includeSimilar: true, modalities: ["document"] });
+  expect(seen[4]).toMatchObject({ includeFingerprints: true, modalities: null });
+});

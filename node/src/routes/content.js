@@ -6,15 +6,21 @@ const { asyncHandler } = require("../middleware/error-handler");
 // GET /content/:ctid?include=fingerprints[.modality,...]&video_every=N
 // Fingerprints are opt-in so the default response (browser-extension
 // contract) is byte-identical without the param.
-function _fingerprintOpts(q) {
-  const include = String(q.include || "");
-  if (!include.startsWith("fingerprints")) return {};
-  const dot = include.indexOf(".");
-  return {
-    includeFingerprints: true,
-    modalities: dot >= 0 ? include.slice(dot + 1).split(",").filter(Boolean) : null,
-    videoEvery: Math.max(1, Number(q.video_every) || 1),
-  };
+// include=similar adds the similar-content cards; include=fingerprints[.modalities] the stored fingerprints.
+// Comma-separated, in any order; a bare name after fingerprints.<m> is one more
+// modality (fingerprints.text,image).
+function _resolveOpts(q) {
+  const opts = { includeSimilar: false };
+  let modalities;   // undefined: no fingerprints, null: every modality
+  for (const tok of String(q.include || "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (tok === "similar") opts.includeSimilar = true;
+    else if (tok === "fingerprints") modalities = null;
+    else if (tok.startsWith("fingerprints.")) {
+      if (modalities !== null && tok.length > 13) modalities = [...(modalities || []), tok.slice(13)];
+    } else if (Array.isArray(modalities)) modalities.push(tok);
+  }
+  if (modalities === undefined) return opts;
+  return { ...opts, includeFingerprints: true, modalities, videoEvery: Math.max(1, Number(q.video_every) || 1) };
 }
 
 function createRouter({ contentService }) {
@@ -38,7 +44,7 @@ function createRouter({ contentService }) {
   }));
 
   router.get("/content/:ctid", asyncHandler(async (req, res) => {
-    res.json(await contentService.resolve(req.params.ctid, _fingerprintOpts(req.query)));
+    res.json(await contentService.resolve(req.params.ctid, _resolveOpts(req.query)));
   }));
 
   // OG card read — slim, crawler-cacheable projection used by the Open

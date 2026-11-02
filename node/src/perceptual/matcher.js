@@ -16,7 +16,10 @@ const { lshBands } = require("tip-content-fingerprint/src/text/lsh");
 const { jaccardEstimate } = require("tip-content-fingerprint/src/text/compare");
 const { queryKeys } = require("tip-content-fingerprint/src/image/mih");
 const { hammingHex } = require("tip-content-fingerprint/src/image/hamming");
-const { VIDEO_MATCH_PROBE_FRAMES, VIDEO_MATCH_MAX_CANDIDATES, VIDEO_MATCH_SCORE_FRAMES, VIDEO_MATCH_YIELD_ROWS } = require("../../../shared/constants");
+const { performance } = require("perf_hooks");
+const textIndex = require("./text-index");
+const { log } = require("../logger");
+const { VIDEO_MATCH_PROBE_FRAMES, VIDEO_MATCH_MAX_CANDIDATES, VIDEO_MATCH_SCORE_FRAMES, VIDEO_MATCH_YIELD_ROWS, TEXT_LSH } = require("../../../shared/constants");
 
 const TEXT_FLAG_THRESHOLD = 0.30; // reviewer-panel "possible copy" cutoff
 const IMAGE_DISTANCE = 31;        // PDQ Hamming match floor (of 256)
@@ -28,6 +31,8 @@ const VIDEO_PQ = 0;               // query-coverage % (0 = clip-in-longer-video 
 const AUDIO_MIN_SCORE = 10;       // min time-consistent landmarks at the best offset
 const AUDIO_MIN_RATIO = 0.06;     // min fraction of the smaller fingerprint
 
+let _shadowInFlight = 0;
+
 // Find indexed texts that are near-duplicates of queryFp (char-tier MinHash only;
 // micro-tier is exact-match, handled elsewhere). Returns [{ ctid, similarity }]
 // sorted high-to-low, above the threshold.
@@ -38,14 +43,41 @@ async function matchText(dag, queryFp, opts) {
     return [];
   }
 
-  const bandHashes = lshBands(queryFp.minhash);
-  const candidates = await dag.findMinhashCandidates(queryFp.profile, bandHashes);
+  const scheme = textIndex.answerScheme();
+  if (!textIndex.isReady(dag, scheme)) {
+    textIndex.warnNotReady(dag, scheme);
+    return [];
+  }
+  const answer = await _matchTextIn(dag, queryFp, scheme, threshold, opts.excludeCtid);
+  textIndex.recordLookup(scheme, "answer", answer);
+  const shadow = textIndex.shadowScheme();
+  if (shadow && textIndex.isReady(dag, shadow) && _shadowInFlight < TEXT_LSH.SHADOW_MAX_IN_FLIGHT) {
+    // Off the request path: the shadow scheme is timed and logged, never answered.
+    // Under load only a sample is measured, so shadow work never queues up.
+    _shadowInFlight++;
+    setImmediate(() => {
+      _matchTextIn(dag, queryFp, shadow, threshold, opts.excludeCtid)
+        .then((r) => {
+          textIndex.recordLookup(shadow, "shadow", r);
+          textIndex.logShadow(opts.excludeCtid, scheme, answer, shadow, r);
+        })
+        .catch((err) => log.warn(`text-lsh shadow lookup failed: ${err.message || err}`))
+        .finally(() => { _shadowInFlight--; });
+    });
+  }
+  return answer.matches;
+}
 
-  const out = [];
-  for (const ctid of candidates) {
-    if (opts.excludeCtid && ctid === opts.excludeCtid) continue;
-    const row = await dag.getPerceptualFingerprint(ctid, 0);
-    if (!row) continue;
+// Every text component of a candidate is verified (a caption can follow an image)
+// and the best one counts.
+async function _matchTextIn(dag, queryFp, scheme, threshold, excludeCtid) {
+  const t0 = performance.now();
+  const bandHashes = lshBands(queryFp.minhash, { scheme });
+  const found = await dag.findMinhashCandidates(textIndex.bandProfile(queryFp.profile, scheme), bandHashes);
+  const ctids = excludeCtid ? found.filter((c) => c !== excludeCtid) : found;
+  const rows = ctids.length ? await dag.getTextFingerprintsByCtids(ctids) : [];
+  const best = new Map();
+  for (const row of rows) {
     let candFp;
     try {
       candFp = JSON.parse(row.fingerprint);
@@ -54,10 +86,11 @@ async function matchText(dag, queryFp, opts) {
     }
     if (!Array.isArray(candFp.minhash)) continue;
     const similarity = jaccardEstimate(queryFp.minhash, candFp.minhash);
-    if (similarity >= threshold) out.push({ ctid, similarity });
+    if (similarity >= threshold && similarity > (best.get(row.ctid) || 0)) best.set(row.ctid, similarity);
   }
-  out.sort((a, b) => b.similarity - a.similarity);
-  return out;
+  const matches = [...best].map(([ctid, similarity]) => ({ ctid, similarity }));
+  matches.sort((a, b) => (b.similarity - a.similarity) || (a.ctid < b.ctid ? -1 : a.ctid > b.ctid ? 1 : 0));
+  return { matches, candidates: ctids.length, ms: performance.now() - t0 };
 }
 
 // Find indexed images that are near-duplicates of queryFp. MIH candidate-gen on

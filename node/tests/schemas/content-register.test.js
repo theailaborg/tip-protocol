@@ -744,6 +744,22 @@ describe("perceptual fingerprint — validateRequest envelope gate (throws befor
     );
   });
 
+  test("char-tier text whose minhash is not 128 unsigned 32-bit integers → reject", () => {
+    const text = (minhash) => [{ kind: "text", role: "body", perceptual: { profile: "cf-text-3", kind: "text", tier: "char", minhash } }];
+    const ok = Array.from({ length: 128 }, (_, i) => i * 7919);
+    for (const bad of [ok.slice(0, 126), [...ok, 1, 2], [...ok.slice(0, 127), -1], [...ok.slice(0, 127), 2 ** 32], [...ok.slice(0, 127), 1.5], "x"]) {
+      const env = pack(text(bad));
+      expectThrowCode(
+        () => schema.validateRequest(base({ fingerprints: env, fingerprint_commit: schema.fingerprintsCommit(env) }), deps),
+        "fingerprint_text_invalid",
+      );
+    }
+    const env = pack(text(ok));
+    let err;
+    try { schema.validateRequest(base({ fingerprints: env, fingerprint_commit: schema.fingerprintsCommit(env) }), deps); } catch (e) { err = e; }
+    expect(String(err && err.code)).not.toMatch(/^fingerprint/);
+  });
+
   test("commit that doesn't match the envelope → reject", () => {
     expectThrowCode(
       () => schema.validateRequest(base({ fingerprints: ENV, fingerprint_commit: "b".repeat(64) }), deps),
