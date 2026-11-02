@@ -738,7 +738,6 @@ function _validateFingerprintsEnvelope(fingerprints) {
   return items;
 }
 
-const HEX64_RE = /^[0-9a-f]{64}$/;
 const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 function _docInvalid(i, what) {
@@ -768,7 +767,7 @@ function _validateDocumentItem(p, i) {
     throw schemaError(400, `fingerprints item ${i} document fingerprint exceeds ${D.MAX_ITEM_BYTES} bytes`, "fingerprint_document_too_large");
   }
   if (!D.FORMATS.includes(p.format)) throw _docInvalid(i, "format is not a supported document format");
-  if (typeof p.text_hash !== "string" || !HEX64_RE.test(p.text_hash)) throw _docInvalid(i, "text_hash must be 64 lowercase hex characters");
+  if (!_isHex(p.text_hash, 32)) throw _docInvalid(i, "text_hash must be 64 lowercase hex characters");
   _validateDocumentText(p.text, i);
   const hasUnits = p.unit !== null;
   if (hasUnits && !D.UNITS.includes(p.unit)) throw _docInvalid(i, "unit must be page, slide, sheet, item or null");
@@ -791,6 +790,8 @@ function _validateDocumentItem(p, i) {
     || _base64Bytes(ps.h) !== ps.count * D.PASSAGE_HASH_BYTES) {
     throw _docInvalid(i, `passages must be { k: ${D.PASSAGE_K}, w: ${D.PASSAGE_W}, count, h } with count hashes in h`);
   }
+  // Winnowing keeps at most one sample per k-character window of the covered text.
+  if (ps.count > Math.max(0, p.chars_covered - D.PASSAGE_K + 1)) throw _docInvalid(i, "passages.count is more than chars_covered allows");
   if (hasUnits) {
     if (!Array.isArray(ps.at) || ps.at.length > p.units_covered) throw _docInvalid(i, "passages.at must list the units");
     let prev = -1;
@@ -811,7 +812,7 @@ function _validateDocumentItem(p, i) {
 
   if (!Array.isArray(p.images) || p.images.length > D.MAX_PICTURES) throw _docInvalid(i, `images must be an array of at most ${D.MAX_PICTURES}`);
   for (const im of p.images) {
-    if (!im || !HEX64_RE.test(im.pdq) || !_isCount(im.quality, 100) || !isUnit(im.at)) {
+    if (!im || !_isHex(im.pdq, 32) || !_isCount(im.quality, 100) || !isUnit(im.at)) {
       throw _docInvalid(i, "each image must be { at, pdq, quality } within bounds");
     }
   }
@@ -820,7 +821,7 @@ function _validateDocumentItem(p, i) {
       throw _docInvalid(i, "textless_pages must be an array of at most units_covered pages");
     }
     for (const tp of p.textless_pages) {
-      const drawn = tp && HEX64_RE.test(tp.pdq) && _isCount(tp.quality, 100);
+      const drawn = tp && _isHex(tp.pdq, 32) && _isCount(tp.quality, 100);
       const undrawn = tp && tp.pdq === null && tp.quality === null;
       if (!tp || !hasUnits || !isUnit(tp.at) || !D.TEXTLESS_REASONS.includes(tp.reason) || !(drawn || undrawn)) {
         throw _docInvalid(i, "each textless page must be { at, reason, pdq, quality } within bounds");
@@ -835,9 +836,7 @@ function _validateDocumentText(t, i) {
   if (t === null) return;
   const D = DOCUMENT_FINGERPRINT;
   const ok = t && typeof t === "object" && t.kind === "text" && t.profile === D.TEXT_PROFILE && (
-    t.tier === "char"
-      ? Array.isArray(t.minhash) && t.minhash.length === D.TEXT_MINHASH_K && t.minhash.every((v) => _isCount(v, 0xffffffff))
-      : t.tier === "micro" && typeof t.exact === "string" && HEX64_RE.test(t.exact));
+    t.tier === "char" ? _isMinhash(t.minhash) : t.tier === "micro" && _isHex(t.exact, 32));
   if (!ok) throw _docInvalid(i, `text must be null or a ${D.TEXT_PROFILE} fingerprint`);
 }
 

@@ -2056,6 +2056,14 @@ class MemoryStore {
     }
     return out;
   }
+  getPerceptualModalities(ctids) {
+    const want = new Set(ctids);
+    const out = [];
+    for (const r of this._perceptualFingerprints.values()) {
+      if (want.has(r.ctid)) out.push({ ctid: r.ctid, component_idx: r.component_idx, modality: r.modality });
+    }
+    return out;
+  }
   // Keyset scan of text fingerprints in (ctid, component_idx) order, for the band
   // rebuild: text components, and each document's own text as modality "document".
   listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
@@ -4611,6 +4619,15 @@ class SQLiteStore {
     }
     return out;
   }
+  getPerceptualModalities(ctids) {
+    const out = [];
+    for (let i = 0; i < ctids.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const chunk = ctids.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS);
+      const sql = `SELECT tip_ctid AS ctid, component_idx, modality FROM perceptual_fingerprint WHERE tip_ctid IN (${chunk.map(() => "?").join(",")})`;
+      for (const r of this.db.prepare(sql).all(...chunk)) out.push(r);
+    }
+    return out;
+  }
   listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
     return this._stmts.listTextFingerprintsAfter.all(afterCtid, afterIdx, limit);
   }
@@ -5167,6 +5184,7 @@ function _buildDagHandle(store, config) {
     getPerceptualFingerprint: (ctid, idx) => store.getPerceptualFingerprint(ctid, idx),
     getPerceptualFingerprints: (ctid) => store.getPerceptualFingerprints(ctid),
     getTextFingerprintsByCtids: (ctids) => store.getTextFingerprintsByCtids(ctids),
+    getPerceptualModalities: (ctids) => store.getPerceptualModalities(ctids),
     listTextFingerprintsAfter: (afterCtid, afterIdx, limit) => store.listTextFingerprintsAfter(afterCtid, afterIdx, limit),
     listDocumentTextsAfter: (afterCtid, afterIdx, limit) => store.listDocumentTextsAfter(afterCtid, afterIdx, limit),
     saveDocumentText: (row) => store.saveDocumentText(row),

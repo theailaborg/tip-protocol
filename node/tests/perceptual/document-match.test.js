@@ -135,6 +135,25 @@ describe.each(BACKENDS)("%s", (_name, make) => {
     for (const n of ["licence_a", "licence_b", "licence_c"]) expect(order).not.toContain(ctid(n));
   });
 
+  test("a short real copy keeps its comparison slot when 30 documents share only a common licence", async () => {
+    const dag = await make();
+    await add(dag, "original", "tip://id/US-author");
+    await add(dag, "reworded", "tip://id/US-w");
+    for (let i = 0; i < 30; i++) await add(dag, `lic${i}`, `tip://id/US-l${i}`, fixture("licence_a"));
+    const order = (await similar(dag, "original")).map((h) => h.ctid);
+    expect(order).toContain(ctid("reworded"));
+  });
+
+  test("documents sharing only a picture never take a comparison slot", async () => {
+    const dag = await make();
+    const pdq = fixture("scan").textless_pages[0].pdq;
+    await add(dag, "original", "tip://id/US-author", { ...fixture("original"), images: [{ at: 1, pdq, quality: 90 }] });
+    await add(dag, "chapter", "tip://id/US-c");
+    for (let i = 0; i < 30; i++) await add(dag, `pic${i}`, `tip://id/US-p${i}`, { ...fixture("unrelated"), images: [{ at: 1, pdq, quality: 90 }] });
+    const order = (await similar(dag, "original")).map((h) => h.ctid);
+    expect(order).toEqual([ctid("chapter")]);
+  });
+
   test("a copy found from the other side: the chapter lists every document holding it first", async () => {
     const order = (await similar(await corpus(), "chapter")).map((h) => h.ctid);
     expect(new Set(order.slice(0, 3))).toEqual(new Set([ctid("original"), ctid("resaved"), ctid("exported")]));

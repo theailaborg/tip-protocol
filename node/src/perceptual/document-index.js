@@ -1,25 +1,17 @@
 "use strict";
 
-// Similar documents (cf-doc-1). Candidates come from the same wording
-// (text_hash), shared passages and the document's picture and page images; each
-// is then measured with the library's compareDocument, which says how much text
-// the two share and where. Advisory, never a copy verdict. The text MinHash is
-// not a document signal: two large unrelated texts in one language can pass 0.30.
-//
-// There is no list of common text (licences, disclaimers, templates):
-// compareDocument weights each shared passage by 1 / (1 + other owners holding
-// it), counted from the index, so text that many people hold sorts last.
+// Similar documents (cf-doc-1): candidates by same wording, shared passages and
+// shared scanned pages, each measured with the library's compareDocument.
 
 const { compareDocument } = require("tip-content-fingerprint/src/document/compare");
 const { sampleKeys } = require("tip-content-fingerprint/src/document/passages");
 const { MIN_SHARED_CHARS } = require("tip-content-fingerprint/src/document/constants");
-const { queryKeys } = require("tip-content-fingerprint/src/image/mih");
 const { hammingHex } = require("tip-content-fingerprint/src/image/hamming");
 const { PROFILE: IMAGE_PROFILE, DISTANCE_THRESHOLD, MIN_QUALITY } = require("tip-content-fingerprint/src/image");
+const { evenSample, mergedProbeKeys } = require("./matcher");
 const { DOCUMENT_FINGERPRINT, DOCUMENT_MATCH } = require("../../../shared/constants");
 
-// Candidates with the same wording or a shared image are compared before those
-// found only through shared passages.
+// Same wording and shared scanned pages are compared before passage-only candidates.
 const TIER = Object.freeze({ SAME_WORDING: 0, CONFIRMED: 1, PASSAGES: 2 });
 
 let _maxKeyOwners = DOCUMENT_MATCH.MAX_KEY_OWNERS;
@@ -32,11 +24,10 @@ function maxKeyOwners() { return _maxKeyOwners; }
 
 const _yield = () => new Promise((resolve) => setImmediate(resolve));
 
-function _evenSample(arr, n) {
-  if (arr.length <= n) return arr;
-  const out = [];
-  for (let i = 0; i < n; i++) out.push(arr[Math.floor((i * (arr.length - 1)) / (n - 1))]);
-  return out;
+// Keys are queried in groups of equal owner counts (exact to 16, then by power
+// of two), so a candidate's rank weighs each key 1 / (1 + owners) as the score does.
+function _ownerBucket(n) {
+  return n <= 16 ? n : 2 ** Math.floor(Math.log2(n));
 }
 
 // compareDocument's `owners` for one pair: `others` counts owners besides the
@@ -73,7 +64,6 @@ async function matchDocument(dag, queryFp, opts = {}) {
   const exclude = opts.excludeCtid || null;
   const owner = opts.owner || null;
   const candidates = new Map();
-  const rows = new Map();
   const add = (ctid, componentIdx, tier, weight) => {
     if (ctid === exclude) return;
     const key = `${ctid}|${componentIdx}`;
@@ -90,12 +80,18 @@ async function matchDocument(dag, queryFp, opts = {}) {
   const keys = queryFp.passages ? [...new Set(sampleKeys(queryFp.passages))] : [];
   const others = new Map();
   for (const r of keys.length ? await dag.countDocumentPassageOwners(profile, keys, owner) : []) others.set(r.passage_key, r.owners);
-  const usable = keys.filter((k) => others.has(k) && others.get(k) <= _maxKeyOwners);
-  for (const r of usable.length ? await dag.findDocumentPassageCandidates(profile, usable) : []) {
-    add(r.ctid, r.component_idx, TIER.PASSAGES, r.shared);
+  const groups = new Map();
+  for (const [key, n] of others) {
+    if (n > _maxKeyOwners) continue;
+    const b = _ownerBucket(n);
+    if (!groups.has(b)) groups.set(b, []);
+    groups.get(b).push(key);
+  }
+  for (const [n, group] of groups) {
+    for (const r of await dag.findDocumentPassageCandidates(profile, group)) add(r.ctid, r.component_idx, TIER.PASSAGES, r.shared / (1 + n));
   }
 
-  const imageHits = await _matchImages(dag, queryFp, exclude, rows, add);
+  const imageHits = await _matchImages(dag, queryFp, exclude, add);
 
   const ranked = [...candidates.values()]
     .sort((a, b) => (a.tier - b.tier) || (b.weight - a.weight) || (a.ctid < b.ctid ? -1 : a.ctid > b.ctid ? 1 : a.component_idx - b.component_idx))
@@ -104,8 +100,7 @@ async function matchDocument(dag, queryFp, opts = {}) {
   for (const c of ranked) {
     const rec = dag.getContent(c.ctid);
     if (!rec) continue;
-    const key = `${c.ctid}|${c.component_idx}`;
-    const row = rows.has(key) ? rows.get(key) : await dag.getPerceptualFingerprint(c.ctid, c.component_idx);
+    const row = await dag.getPerceptualFingerprint(c.ctid, c.component_idx);
     if (!row || row.modality !== "document") continue;
     let fp;
     try { fp = JSON.parse(row.fingerprint); } catch { continue; }
@@ -119,39 +114,47 @@ async function matchDocument(dag, queryFp, opts = {}) {
   return [...hits, ...imageHits];
 }
 
-// Pictures and drawn page images, probed in one candidate query. A match in
-// another document makes it a candidate; a match with an image posted alone is
-// an image hit.
-async function _matchImages(dag, queryFp, exclude, rows, add) {
-  const usable = [...(queryFp.images || []), ...(queryFp.textless_pages || [])]
-    .filter((p) => typeof p.pdq === "string" && p.quality >= MIN_QUALITY);
-  if (!usable.length) return [];
-  const probes = _evenSample(usable, DOCUMENT_MATCH.IMAGE_PROBES);
-  const merged = Array.from({ length: 16 }, () => new Set());
-  for (const p of probes) {
-    const k = queryKeys(p.pdq);
-    for (let i = 0; i < 16; i++) for (const v of k[i]) merged[i].add(v);
-  }
+// Pictures and scanned pages, probed in one candidate query. Only a shared
+// scanned page makes another document a candidate (a shared picture never lists
+// one); a picture or page that matches an image posted alone is an image hit.
+async function _matchImages(dag, queryFp, exclude, add) {
+  const usable = (list, page) => (list || [])
+    .filter((p) => typeof p.pdq === "string" && p.quality >= MIN_QUALITY)
+    .map((p) => ({ pdq: p.pdq, page }));
+  const probes = evenSample([...usable(queryFp.images, false), ...usable(queryFp.textless_pages, true)], DOCUMENT_MATCH.IMAGE_PROBES);
+  if (!probes.length) return [];
   const best = new Map();
-  for (const c of await dag.findPhashCandidates(IMAGE_PROFILE, "image", merged.map((s) => [...s]))) {
+  for (const c of await dag.findPhashCandidates(IMAGE_PROFILE, "image", mergedProbeKeys(probes.map((p) => p.pdq)))) {
     if (c.ctid === exclude || c.quality < MIN_QUALITY) continue;
-    let d = Infinity;
-    for (const p of probes) d = Math.min(d, hammingHex(p.pdq, c.pdq));
-    if (d > DISTANCE_THRESHOLD) continue;
+    let distance = Infinity;
+    let page = false;
+    for (const p of probes) {
+      const d = hammingHex(p.pdq, c.pdq);
+      if (d < distance) distance = d;
+      if (p.page && d <= DISTANCE_THRESHOLD) page = true;
+    }
+    if (distance > DISTANCE_THRESHOLD) continue;
     const key = `${c.ctid}|${c.component_idx}`;
-    if (!best.has(key) || d < best.get(key).distance) best.set(key, { ctid: c.ctid, component_idx: c.component_idx, distance: d });
+    const b = best.get(key);
+    if (!b) best.set(key, { ctid: c.ctid, component_idx: c.component_idx, distance, page });
+    else { b.distance = Math.min(b.distance, distance); b.page = b.page || page; }
+  }
+  const nearest = [...best.values()].sort((a, b) => a.distance - b.distance).slice(0, DOCUMENT_MATCH.IMAGE_HITS);
+  if (!nearest.length) return [];
+  const modality = new Map();
+  for (const r of await dag.getPerceptualModalities([...new Set(nearest.map((h) => h.ctid))])) {
+    modality.set(`${r.ctid}|${r.component_idx}`, r.modality);
   }
   const images = new Map();
-  for (const [key, hit] of best) {
-    const row = await dag.getPerceptualFingerprint(hit.ctid, hit.component_idx);
-    rows.set(key, row);
-    if (!row) continue;
-    if (row.modality === "document") add(hit.ctid, hit.component_idx, TIER.CONFIRMED, 0);
-    else if (!images.has(hit.ctid) || hit.distance < images.get(hit.ctid).distance) {
+  for (const hit of nearest) {
+    const m = modality.get(`${hit.ctid}|${hit.component_idx}`);
+    if (m === "document") {
+      if (hit.page) add(hit.ctid, hit.component_idx, TIER.CONFIRMED, 0);
+    } else if (m === "image" && !images.has(hit.ctid)) {
       images.set(hit.ctid, { ctid: hit.ctid, modality: "image", distance: hit.distance });
     }
   }
-  return [...images.values()].sort((a, b) => a.distance - b.distance);
+  return [...images.values()];
 }
 
 module.exports = { configure, maxKeyOwners, matchDocument, documentScore };

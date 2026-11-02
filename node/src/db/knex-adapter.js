@@ -1115,6 +1115,16 @@ class KnexAdapter {
   }
   // Text components, then each document's own text as modality "document", merged
   // in keyset order: the first `limit` of the two sorted scans is the next page.
+  async getPerceptualModalities(ctids) {
+    const out = [];
+    for (let i = 0; i < ctids.length; i += DOCUMENT_MATCH.READ_CHUNK_ROWS) {
+      const rows = await this.knex("perceptual_fingerprint")
+        .whereIn("tip_ctid", ctids.slice(i, i + DOCUMENT_MATCH.READ_CHUNK_ROWS))
+        .select("tip_ctid", "component_idx", "modality");
+      for (const r of rows) out.push({ ctid: r.tip_ctid, component_idx: r.component_idx, modality: r.modality });
+    }
+    return out;
+  }
   async listTextFingerprintsAfter(afterCtid, afterIdx, limit) {
     const rows = await this.knex("perceptual_fingerprint")
       .where({ modality: "text" })

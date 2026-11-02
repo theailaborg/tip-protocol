@@ -1,12 +1,5 @@
-// node-local: off-DAG document near-duplicate index (advisory, never in
-// state_merkle_root), derived from stored cf-doc-1 fingerprints.
-//
-// document_text: one row per document component with text: its whole-text hash
-// (same wording in any format) and its cf-text-3 fingerprint, which also feeds
-// the shared text bands.
-// document_passage: one row per distinct passage key per document component,
-// with the record's owner, so the number of owners holding a key is a count over
-// the key's rows.
+// node-local: off-DAG document near-duplicate index (advisory, never in state_merkle_root).
+// Owners per passage key are counted over document_passage at query time.
 
 "use strict";
 

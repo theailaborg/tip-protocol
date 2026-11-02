@@ -381,7 +381,6 @@ const DOCUMENT_FINGERPRINT = Object.freeze({
   CHUNK_HASH_BYTES: 8,
   UNIT_HASH_BYTES: 8,
   TEXT_PROFILE: "cf-text-3",
-  TEXT_MINHASH_K: 128,
   FORMATS: Object.freeze(["pdf", "doc", "docx", "pptx", "xlsx", "odt", "odp", "ods", "epub", "rtf"]),
   UNITS: Object.freeze(["page", "slide", "sheet", "item"]),
   TEXTLESS_REASONS: Object.freeze(["no-text", "rejected", "scrambled", "ocr-layer"]),
@@ -389,12 +388,14 @@ const DOCUMENT_FINGERPRINT = Object.freeze({
 
 // Document near-duplicate lookup. Passage keys held by more than MAX_KEY_OWNERS
 // owners are skipped when finding candidates (speed only: they weigh almost
-// nothing); at most MAX_CANDIDATES documents are compared per lookup.
+// nothing); at most MAX_CANDIDATES documents are compared per lookup, and the
+// IMAGE_HITS nearest picture or page matches are looked at.
 // READ_CHUNK_ROWS keys per query stays under SQLite's 32,766 and Postgres's 65,535 bind limits.
 const DOCUMENT_MATCH = Object.freeze({
   MAX_KEY_OWNERS: 500,
   MAX_CANDIDATES: 25,
   IMAGE_PROBES: 32,
+  IMAGE_HITS: 64,
   READ_CHUNK_ROWS: 8000,
 });
 

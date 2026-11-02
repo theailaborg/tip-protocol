@@ -12,7 +12,7 @@
 
 const zlib = require("zlib");
 const schema = require("../../src/schemas/content-register");
-const { DOCUMENT_FINGERPRINT } = require("../../../shared/constants");
+const { DOCUMENT_FINGERPRINT, TEXT_LSH } = require("../../../shared/constants");
 const LIB = require("tip-content-fingerprint/src/document/constants");
 const TEXT_LIB = require("tip-content-fingerprint/src/text/constants");
 
@@ -45,7 +45,7 @@ describe("cf-doc-1 bounds match the vendored library", () => {
       expect([k, DOCUMENT_FINGERPRINT[k]]).toEqual([k, LIB[k]]);
     }
     expect(DOCUMENT_FINGERPRINT.TEXT_PROFILE).toBe(TEXT_LIB.PROFILE);
-    expect(DOCUMENT_FINGERPRINT.TEXT_MINHASH_K).toBe(TEXT_LIB.K);
+    expect(TEXT_LSH.MINHASH_K).toBe(TEXT_LIB.K);
   });
 });
 
@@ -91,6 +91,23 @@ describe("validateRequest refuses document items out of shape", () => {
     const d = fixture("original");
     d.images = Array.from({ length: 201 }, () => ({ at: 1, pdq: "ab".repeat(32), quality: 90 }));
     expect(codeFor(d)).toBe("fingerprint_document_invalid");
+  });
+
+  test("a picture or page hash that is not a string, even one that prints as 64 hex", () => {
+    const pic = fixture("original");
+    pic.images = [{ at: 1, pdq: ["ab".repeat(32)], quality: 90 }];
+    expect(codeFor(pic)).toBe("fingerprint_document_invalid");
+    const scan = fixture("scan");
+    scan.textless_pages[0].pdq = [scan.textless_pages[0].pdq];
+    expect(codeFor(scan)).toBe("fingerprint_document_invalid");
+  });
+
+  test("more passages than the covered text can hold (one per 50-character window)", () => {
+    const d = fixture("original");
+    d.chars_covered = d.passages.count + 48;
+    expect(codeFor(d)).toBe("fingerprint_document_invalid");
+    d.chars_covered = d.passages.count + 49;
+    expect(codeFor(d)).not.toBe("fingerprint_document_invalid");
   });
 
   test("a textless page with a hash but no quality", () => {
