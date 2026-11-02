@@ -106,19 +106,28 @@ describe.each(BACKENDS)("%s", (_name, make) => {
     expect(textIndex.status(dag, "b42r3")).toMatchObject({ state: "complete", texts: 1, bands: 42 });
   });
 
-  test("batched reads: text fingerprints by ctid for one component, and a keyset scan of text rows", async () => {
+  test("batched reads: every text component by ctid, and a keyset scan of text rows", async () => {
     const dag = await make();
     for (const id of ["OH-c", "OH-a", "OH-b"]) await ingestFingerprint(dag, mkText(A), { ctid: id });
     await ingestFingerprint(dag, { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 90 }, { ctid: "OH-img" });
     await ingestFingerprint(dag, mkText(A), { ctid: "OH-a", componentIdx: 1 });
+    await ingestFingerprint(dag, mkText(A), { ctid: "OH-a", componentIdx: 2 });
     await dag.flush();
-    const got = await dag.getTextFingerprintsByCtids(["OH-b", "OH-missing", "OH-a", "OH-img"], 0);
-    expect(got.map((r) => r.ctid).sort()).toEqual(["OH-a", "OH-b"]);
-    expect(got.every((r) => r.component_idx === 0 && typeof r.fingerprint === "string")).toBe(true);
+    const got = await dag.getTextFingerprintsByCtids(["OH-b", "OH-missing", "OH-a", "OH-img"]);
+    expect(got.map((r) => [r.ctid, r.component_idx]).sort()).toEqual([["OH-a", 0], ["OH-a", 1], ["OH-a", 2], ["OH-b", 0]]);
+    expect(got.every((r) => r.modality === "text" && typeof r.fingerprint === "string")).toBe(true);
     const page1 = await dag.listTextFingerprintsAfter("", -1, 2);
     expect(page1.map((r) => [r.ctid, r.component_idx])).toEqual([["OH-a", 0], ["OH-a", 1]]);
     const page2 = await dag.listTextFingerprintsAfter("OH-a", 1, 10);
-    expect(page2.map((r) => [r.ctid, r.component_idx])).toEqual([["OH-b", 0], ["OH-c", 0]]);
+    expect(page2.map((r) => [r.ctid, r.component_idx])).toEqual([["OH-a", 2], ["OH-b", 0], ["OH-c", 0]]);
+  });
+
+  test("a caption after an image is verified: every text component of a candidate counts", async () => {
+    const dag = await make();
+    await ingestFingerprint(dag, { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 90 }, { ctid: "OH-post", componentIdx: 0 });
+    await ingestFingerprint(dag, mkText(A), { ctid: "OH-post", componentIdx: 1 });
+    await dag.flush();
+    expect(await matchText(dag, mkText(A))).toEqual([{ ctid: "OH-post", similarity: 1 }]);
   });
 
   test("candidate search stays inside the profile it is given", async () => {
@@ -159,6 +168,22 @@ describe("shadow mode", () => {
   });
 });
 
+describe("shadow load", () => {
+  test("at most one shadow lookup runs at a time; the rest are skipped, not queued", async () => {
+    const dag = new MemoryStore();
+    textIndex.configure({ shadow: "b42r3" });
+    await textIndex.start(dag).done;
+    await ingestFingerprint(dag, mkText(A), { ctid: "OH-A" });
+    const info = jest.spyOn(log, "info").mockImplementation(() => { });
+    await Promise.all([1, 2, 3].map((n) => matchText(dag, mkText(REWORDED), { excludeCtid: `OH-q${n}` })));
+    await settle(); await settle();
+    expect(info.mock.calls.filter(([m]) => m.startsWith("text-lsh shadow ")).length).toBe(1);
+    await matchText(dag, mkText(REWORDED), { excludeCtid: "OH-q4" });
+    await settle(); await settle();
+    expect(info.mock.calls.filter(([m]) => m.startsWith("text-lsh shadow ")).length).toBe(2);
+  });
+});
+
 describe("startup check", () => {
   test("b32r4 with no record is complete: ingest has always written it", () => {
     const dag = new MemoryStore();
@@ -179,6 +204,50 @@ describe("startup check", () => {
     const b42 = textIndex.bandRows(mkText(A), "q", ["b42r3"]).map((b) => b.band_hash);
     // OH-1 was before the cursor (a real earlier run had built it); the resumed run did not redo it.
     expect((await dag.findMinhashCandidates(B42, b42)).sort()).toEqual(["OH-2", "OH-3"]);
+  });
+
+  test("the rebuild waits for `after` (network and consensus up) before it reads anything", async () => {
+    const dag = new MemoryStore();
+    await ingestFingerprint(dag, mkText(A), { ctid: "OH-1" });
+    const read = jest.spyOn(dag, "listTextFingerprintsAfter");
+    let release;
+    textIndex.configure({ scheme: "b42r3" });
+    const job = textIndex.start(dag, { after: new Promise((r) => { release = r; }) });
+    await settle(); await settle();
+    expect(read).not.toHaveBeenCalled();
+    expect(textIndex.isReady(dag, "b42r3")).toBe(false);
+    release();
+    await job.done;
+    expect(textIndex.status(dag, "b42r3")).toMatchObject({ state: "complete", texts: 1 });
+  });
+
+  test("a failed rebuild batch is retried from the cursor, and the index completes", async () => {
+    const dag = new MemoryStore();
+    for (const id of ["OH-1", "OH-2"]) await ingestFingerprint(dag, mkText(A), { ctid: id });
+    const real = dag.listTextFingerprintsAfter.bind(dag);
+    let calls = 0;
+    jest.spyOn(dag, "listTextFingerprintsAfter").mockImplementation((...a) => {
+      if (++calls === 1) throw new Error("connection reset");
+      return real(...a);
+    });
+    jest.spyOn(log, "error").mockImplementation(() => { });
+    textIndex.configure({ scheme: "b42r3" });
+    await textIndex.start(dag, { retryMs: 5 }).done;
+    expect(log.error.mock.calls.some(([m]) => /b42r3: rebuild failed, retrying/.test(m))).toBe(true);
+    expect(textIndex.status(dag, "b42r3")).toMatchObject({ state: "complete", texts: 2, bands: 84 });
+  });
+
+  test("stop() ends a rebuild that is waiting to retry", async () => {
+    const dag = new MemoryStore();
+    await ingestFingerprint(dag, mkText(A), { ctid: "OH-1" });
+    jest.spyOn(dag, "listTextFingerprintsAfter").mockImplementation(() => { throw new Error("down"); });
+    jest.spyOn(log, "error").mockImplementation(() => { });
+    textIndex.configure({ scheme: "b42r3" });
+    const job = textIndex.start(dag, { retryMs: 60_000 });
+    await settle(); await settle();
+    job.stop();
+    await job.done;
+    expect(textIndex.isReady(dag, "b42r3")).toBe(false);
   });
 
   test("an index the node stops writing goes stale and is rebuilt, not trusted, when configured again", async () => {

@@ -53,7 +53,7 @@ const {
   ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
   PERCEPTUAL_FINGERPRINT_KIND_VALUES, PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
-  PERCEPTUAL_FINGERPRINTS_PROFILE, PERCEPTUAL_FINGERPRINTS_ENCODINGS, DOCUMENT_FINGERPRINT,
+  PERCEPTUAL_FINGERPRINTS_PROFILE, PERCEPTUAL_FINGERPRINTS_ENCODINGS, TEXT_LSH, DOCUMENT_FINGERPRINT,
 } = require("../../../shared/constants");
 const { shake256 } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
@@ -729,6 +729,10 @@ function _validateFingerprintsEnvelope(fingerprints) {
     if (typeof p.profile !== "string" || p.profile.length === 0) {
       throw schemaError(400, `fingerprints item ${i} perceptual.profile must be a non-empty string`, "fingerprint_profile_invalid");
     }
+    // A wrong-length MinHash would be indexed and then throw in every lookup it is a candidate for.
+    if (p.kind === "text" && p.tier === "char" && !_isMinhash(p.minhash)) {
+      throw schemaError(400, `fingerprints item ${i} text minhash must be ${TEXT_LSH.MINHASH_K} unsigned 32-bit integers`, "fingerprint_text_invalid");
+    }
     if (p.kind === "document") _validateDocumentItem(p, i);
   }
   return items;
@@ -835,6 +839,10 @@ function _validateDocumentText(t, i) {
       ? Array.isArray(t.minhash) && t.minhash.length === D.TEXT_MINHASH_K && t.minhash.every((v) => _isCount(v, 0xffffffff))
       : t.tier === "micro" && typeof t.exact === "string" && HEX64_RE.test(t.exact));
   if (!ok) throw _docInvalid(i, `text must be null or a ${D.TEXT_PROFILE} fingerprint`);
+}
+
+function _isMinhash(m) {
+  return Array.isArray(m) && m.length === TEXT_LSH.MINHASH_K && m.every((v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff);
 }
 
 module.exports = {

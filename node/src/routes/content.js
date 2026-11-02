@@ -7,17 +7,20 @@ const { asyncHandler } = require("../middleware/error-handler");
 // Fingerprints are opt-in so the default response (browser-extension
 // contract) is byte-identical without the param.
 // include=similar adds the similar-content cards; include=fingerprints[.modalities] the stored fingerprints.
+// Comma-separated, in any order; a bare name after fingerprints.<m> is one more
+// modality (fingerprints.text,image).
 function _resolveOpts(q) {
-  const include = String(q.include || "");
-  const opts = { includeSimilar: include.split(",").includes("similar") };
-  if (!include.startsWith("fingerprints")) return opts;
-  const dot = include.indexOf(".");
-  return {
-    ...opts,
-    includeFingerprints: true,
-    modalities: dot >= 0 ? include.slice(dot + 1).split(",").filter(Boolean) : null,
-    videoEvery: Math.max(1, Number(q.video_every) || 1),
-  };
+  const opts = { includeSimilar: false };
+  let modalities;   // undefined: no fingerprints, null: every modality
+  for (const tok of String(q.include || "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (tok === "similar") opts.includeSimilar = true;
+    else if (tok === "fingerprints") modalities = null;
+    else if (tok.startsWith("fingerprints.")) {
+      if (modalities !== null && tok.length > 13) modalities = [...(modalities || []), tok.slice(13)];
+    } else if (Array.isArray(modalities)) modalities.push(tok);
+  }
+  if (modalities === undefined) return opts;
+  return { ...opts, includeFingerprints: true, modalities, videoEvery: Math.max(1, Number(q.video_every) || 1) };
 }
 
 function createRouter({ contentService }) {

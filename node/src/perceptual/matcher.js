@@ -19,7 +19,7 @@ const { hammingHex } = require("tip-content-fingerprint/src/image/hamming");
 const { performance } = require("perf_hooks");
 const textIndex = require("./text-index");
 const { log } = require("../logger");
-const { VIDEO_MATCH_PROBE_FRAMES, VIDEO_MATCH_MAX_CANDIDATES, VIDEO_MATCH_SCORE_FRAMES, VIDEO_MATCH_YIELD_ROWS } = require("../../../shared/constants");
+const { VIDEO_MATCH_PROBE_FRAMES, VIDEO_MATCH_MAX_CANDIDATES, VIDEO_MATCH_SCORE_FRAMES, VIDEO_MATCH_YIELD_ROWS, TEXT_LSH } = require("../../../shared/constants");
 
 const TEXT_FLAG_THRESHOLD = 0.30; // reviewer-panel "possible copy" cutoff
 const IMAGE_DISTANCE = 31;        // PDQ Hamming match floor (of 256)
@@ -30,6 +30,8 @@ const VIDEO_PC = 80;              // target-coverage % required for a match
 const VIDEO_PQ = 0;               // query-coverage % (0 = clip-in-longer-video friendly)
 const AUDIO_MIN_SCORE = 10;       // min time-consistent landmarks at the best offset
 const AUDIO_MIN_RATIO = 0.06;     // min fraction of the smaller fingerprint
+
+let _shadowInFlight = 0;
 
 // Find indexed texts that are near-duplicates of queryFp (char-tier MinHash only;
 // micro-tier is exact-match, handled elsewhere). Returns [{ ctid, similarity }]
@@ -51,27 +53,31 @@ async function matchText(dag, queryFp, opts) {
   const answer = await _matchTextIn(dag, queryFp, scheme, threshold, opts.excludeCtid, withDocuments);
   textIndex.recordLookup(scheme, "answer", answer);
   const shadow = textIndex.shadowScheme();
-  if (shadow && textIndex.isReady(dag, shadow)) {
+  if (shadow && textIndex.isReady(dag, shadow) && _shadowInFlight < TEXT_LSH.SHADOW_MAX_IN_FLIGHT) {
     // Off the request path: the shadow scheme is timed and logged, never answered.
+    // Under load only a sample is measured, so shadow work never queues up.
+    _shadowInFlight++;
     setImmediate(() => {
       _matchTextIn(dag, queryFp, shadow, threshold, opts.excludeCtid, withDocuments)
         .then((r) => {
           textIndex.recordLookup(shadow, "shadow", r);
           textIndex.logShadow(opts.excludeCtid, scheme, answer, shadow, r);
         })
-        .catch((err) => log.warn(`text-lsh shadow lookup failed: ${err.message || err}`));
+        .catch((err) => log.warn(`text-lsh shadow lookup failed: ${err.message || err}`))
+        .finally(() => { _shadowInFlight--; });
     });
   }
   return answer.matches;
 }
 
+// Every text component of a candidate is verified (a caption can follow an image),
+// and a document's own text unless withDocuments is false; the best one counts.
 async function _matchTextIn(dag, queryFp, scheme, threshold, excludeCtid, withDocuments) {
   const t0 = performance.now();
   const bandHashes = lshBands(queryFp.minhash, { scheme });
   const found = await dag.findMinhashCandidates(textIndex.bandProfile(queryFp.profile, scheme), bandHashes);
   const ctids = excludeCtid ? found.filter((c) => c !== excludeCtid) : found;
-  // A candidate's text is its text component or a document's own text (both feed the bands).
-  const texts = ctids.length ? await dag.getTextFingerprintsByCtids(ctids, 0) : [];
+  const texts = ctids.length ? await dag.getTextFingerprintsByCtids(ctids) : [];
   const docs = withDocuments && ctids.length ? await dag.getDocumentTextsByCtids(ctids) : [];
   const best = new Map();
   for (const raw of [...texts.map((r) => [r.ctid, r.fingerprint]), ...docs.map((d) => [d.ctid, d.text])]) {

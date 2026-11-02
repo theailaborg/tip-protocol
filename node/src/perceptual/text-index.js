@@ -98,18 +98,28 @@ function warnNotReady(dag, scheme) {
 
 const _yield = () => new Promise((resolve) => setImmediate(resolve));
 
+// Texts first, then documents' own text, each scanned in its own table's order.
+const SOURCES = ["listTextFingerprintsAfter", "listDocumentTextsAfter"];
+
 // Band rows are deterministic per fingerprint and saved ignore-on-conflict, so
 // texts ingested meanwhile, or a batch replayed after a restart, are harmless.
 async function rebuild(dag, scheme, { resume = null, isStopped = () => false } = {}) {
-  const st = resume ? { ...resume, state: STATE.BUILDING }
-    : { state: STATE.BUILDING, started_at: nowMs(), after: ["", -1], texts: 0, bands: 0 };
+  const st = resume ? { source: 0, ...resume, state: STATE.BUILDING }
+    : { state: STATE.BUILDING, started_at: nowMs(), source: 0, after: ["", -1], texts: 0, bands: 0 };
   _save(dag, scheme, st);
   log.notice(`text LSH index ${scheme}: ${resume ? `resuming after ${st.texts} texts` : "building from stored fingerprints"}`);
   const t0 = performance.now();
   while (true) {
     if (isStopped()) return false;
-    const rows = await dag.listTextFingerprintsAfter(st.after[0], st.after[1], TEXT_LSH.REBUILD_BATCH_ROWS);
-    if (!rows.length) break;
+    const read = dag[SOURCES[st.source]];
+    const rows = typeof read === "function" ? await read.call(dag, st.after[0], st.after[1], TEXT_LSH.REBUILD_BATCH_ROWS) : [];
+    if (!rows.length) {
+      if (st.source + 1 >= SOURCES.length) break;
+      st.source++;
+      st.after = ["", -1];
+      _save(dag, scheme, st);
+      continue;
+    }
     const bands = [];
     for (const r of rows) {
       let fp;
@@ -135,8 +145,8 @@ async function rebuild(dag, scheme, { resume = null, isStopped = () => false } =
 
 // Startup check. Indexes the node will not write to are marked stale (they would
 // fall behind); each index it will write to is loaded, resumed or rebuilt in the
-// background, and answers only once complete.
-function start(dag) {
+// background once `after` settles, and answers only once complete.
+function start(dag, { after = null, retryMs = TEXT_LSH.REBUILD_RETRY_MS } = {}) {
   const idle = { stop() { }, done: Promise.resolve() };
   if (typeof dag.getConsensusMeta !== "function" || typeof dag.listTextFingerprintsAfter !== "function") return idle;
   const want = ingestSchemes();
@@ -160,13 +170,31 @@ function start(dag) {
   }
   if (!todo.length) return idle;
   let stopped = false;
+  let wake = null;
+  const pause = (ms) => new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    wake = () => { clearTimeout(timer); resolve(); };
+  });
   const done = (async () => {
+    if (after) await after;
     for (const t of todo) {
-      if (stopped) return;
-      await rebuild(dag, t.scheme, { resume: t.resume, isStopped: () => stopped });
+      let wait = retryMs;
+      let resume = t.resume;
+      while (!stopped) {
+        try {
+          await rebuild(dag, t.scheme, { resume, isStopped: () => stopped });
+          break;
+        } catch (err) {
+          log.error(`text LSH index ${t.scheme}: rebuild failed, retrying in ${Math.round(wait / 1000)} s: ${err?.stack || err}`);
+          await pause(wait);
+          wait = Math.min(wait * 2, TEXT_LSH.REBUILD_RETRY_MAX_MS);
+          const st = _load(dag, t.scheme);
+          resume = st && st.state === STATE.BUILDING && Array.isArray(st.after) ? st : null;
+        }
+      }
     }
-  })().catch((err) => log.error(`text LSH index rebuild failed: ${err?.stack || err}`));
-  return { stop() { stopped = true; }, done };
+  })();
+  return { stop() { stopped = true; if (wake) wake(); }, done };
 }
 
 function _bucketCounts(buckets, value, counts) {
