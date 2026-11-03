@@ -402,8 +402,12 @@ const DOCUMENT_MATCH = Object.freeze({
 // Locked .tip.json key file export: the VP app's "tip-key-export-v2" download.
 // Byte layout and KDF parameters must stay identical on both sides or a file
 // written here will not import there (and vice versa).
+// v2 is locked with a date. v3 uses the same layout, locked with a 12-word
+// recovery phrase instead.
 const KEY_FILE_EXPORT = Object.freeze({
   VERSION: "tip-key-export-v2",
+  PHRASE_VERSION: "tip-key-export-v3",
+  PHRASE_LOCK: "recovery-phrase",
   ALGORITHM: "AES-256-GCM-PBKDF2-200k",
   SIG_ALGORITHM: "ML-DSA-65",
   PBKDF2_ITERATIONS: 200_000,

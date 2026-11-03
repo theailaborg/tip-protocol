@@ -39,14 +39,14 @@
  *
  * Output:
  *   generated/<partner>/org/
- *     └── <tip-id>.tip.json   VP-app export (tip-key-export-v2) + org metadata (mode 0600)
+ *     └── <tip-id>.tip.json   Key file (tip-key-export-v3) + org metadata (mode 0600)
  *
  * The private key is written locally and never transmitted: registration sends
- * only the public key. The file is locked with the incorporation date exactly
- * as the VP app locks a personal download with the date of birth, so it
- * imports into the VP app and is not usable as-is if it leaks. The date is
- * public record, so this is one layer, not the delivery channel. Deliver the file to the organization over a secure
- * channel and have them store it at mode 0600.
+ * only the public key. The file is locked with a fresh 12-word recovery phrase.
+ * The phrase is printed once to this terminal and written nowhere. The AI Lab
+ * hands the phrase to the organization separately from the file, never in the
+ * same message, bundle or folder. Deliver the file over a secure channel and
+ * have them store it at mode 0600.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  */
@@ -72,7 +72,7 @@ const registerIdentitySchema = require("../node/src/schemas/register-identity");
 const { loadVpBackup } = require("./genesis-backups");
 const { writePartnerReadme } = require("./partner-readme");
 const { KEY_FILE_EXPORT } = require("../shared/constants");
-const { datePassword, encryptPrivateKey, readKeyFile } = require("../shared/key-file");
+const { generatePhrase, encryptPrivateKey, readKeyFile } = require("../shared/key-file");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
 const T = {
@@ -264,13 +264,15 @@ async function main() {
   const fileName = String(result.tip_id || tipId)
     .replace(/^tip:\/\//, "").replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-") + ".tip.json";
   const finalTipId = result.tip_id || tipId;
-  // Same envelope as the VP app's download, locked with the incorporation
-  // date, so the organization imports it there the way a person imports theirs.
+  // Same envelope as the VP app's download, locked with a recovery phrase
+  // instead of a date. The phrase is never written to disk.
+  const phrase = generatePhrase();
   const tipJson = JSON.stringify({
-    version: KEY_FILE_EXPORT.VERSION,
+    version: KEY_FILE_EXPORT.PHRASE_VERSION,
+    lock: KEY_FILE_EXPORT.PHRASE_LOCK,
     tipId: finalTipId,
     publicKey: keypair.publicKey,
-    encrypted: encryptPrivateKey(keypair.privateKey, datePassword(incorporated)),
+    encrypted: encryptPrivateKey(keypair.privateKey, phrase),
     algorithm: KEY_FILE_EXPORT.ALGORITHM,
     sigAlgorithm: KEY_FILE_EXPORT.SIG_ALGORITHM,
     tip_id_type: "organization",
@@ -281,30 +283,37 @@ async function main() {
     // from the hash, and re-deriving them wrongly would mint a second identity.
     // The canonical value is what was hashed; the as-provided form is kept so a
     // later audit can read it back against the certificate it was copied from.
+    // The incorporation date is left out. It unlocked older files, and it is
+    // on the public register.
     registration_number: scheme.normalized,
     registration_number_as_provided: regNumber,
     registration_scheme: scheme.name,
-    incorporated,
     dedup_hash: dedupHash,
     registered_at: result.registered_at || nowMs(),
     registered_on: nodeUrl,
     exportedAt: nowIso(),
-    warning: "Locked with the date of incorporation (MM/DD/YYYY, as registered). There is no recovery if it is lost.",
+    warning: "Locked with a 12-word recovery phrase. Anyone with this file and the phrase can sign as this organization. There is no way to open it without the phrase.",
   }, null, 2);
   const credPath = path.join(outDir, fileName);
   fs.writeFileSync(credPath, tipJson, { mode: 0o600 });
 
-  // Prove the file on disk opens with the date before anyone relies on it.
-  const reread = readKeyFile(credPath, datePassword(incorporated));
+  // Prove the file on disk opens with the phrase before anyone relies on it.
+  const reread = readKeyFile(credPath, phrase);
   if (reread.private_key !== keypair.privateKey || reread.public_key !== keypair.publicKey || reread.tip_id !== finalTipId) {
     throw new Error(`${credPath} did not decrypt back to the generated keypair`);
   }
 
   console.log("");
   ok(`Credential: ${credPath}`);
-  ok(`Verified: decrypts with the incorporation date (${incorporated}), imports into the VP app as ${finalTipId}`);
-  warn("Contains the PRIVATE key, locked only with a public date. Deliver over a secure channel, never chat or email.");
-  warn("Recipient should store it at mode 0600; anyone holding it and the date can sign as this organization.");
+  ok(`Verified: opens with the recovery phrase below as ${finalTipId}`);
+  console.log("");
+  console.log(`${T.bold}  Recovery phrase. Shown once, saved nowhere.${T.reset}`);
+  phrase.split(" ").forEach((w, i) => console.log(`    ${String(i + 1).padStart(2)}. ${w}`));
+  console.log("");
+  warn("Write these 12 words down now. Without them the file can never be opened.");
+  warn("The AI Lab hands the words to the organization separately from the file.");
+  warn("Never send them in the same message, bundle or folder, and never save them next to the file.");
+  warn("Anyone holding the file and the words can sign as this organization.");
   console.log("");
 }
 
