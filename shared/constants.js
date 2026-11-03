@@ -386,6 +386,16 @@ const DOCUMENT_FINGERPRINT = Object.freeze({
   TEXTLESS_REASONS: Object.freeze(["no-text", "rejected", "scrambled", "ocr-layer"]),
 });
 
+// Plan page limits for documents (founder, 2026-11-02). A page or slide unit
+// counts itself; any other document counts one page per CHARS_PER_PAGE
+// characters (perceptual/document-pages.js, same vectors as the VP). The
+// billing service decides the limit per TIP-ID; upload-init accepts a declared
+// doc_pages from 1 to MAX_DECLARED.
+const DOCUMENT_PAGES = Object.freeze({
+  CHARS_PER_PAGE: 1800,
+  MAX_DECLARED: 1000000,
+});
+
 // Document near-duplicate lookup. Passage keys held by more than MAX_KEY_OWNERS
 // owners are skipped when finding candidates (speed only: they weigh almost
 // nothing); at most MAX_CANDIDATES documents are compared per lookup, and the
@@ -1362,6 +1372,7 @@ module.exports = {
   PERCEPTUAL_FINGERPRINT_KIND_VALUES,
   PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
   DOCUMENT_FINGERPRINT,
+  DOCUMENT_PAGES,
   DOCUMENT_MATCH,
   PERCEPTUAL_FINGERPRINTS_PROFILE,
   PERCEPTUAL_FINGERPRINTS_ENCODINGS,

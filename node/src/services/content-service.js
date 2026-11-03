@@ -12,6 +12,7 @@ const contentRegisterSchema = require("../schemas/content-register");
 const contentListSchema = require("../schemas/content-list");
 const roster = require("../schemas/_org-members");
 const { ingestFingerprint } = require("../perceptual/ingest");
+const { maxDocumentPages } = require("../perceptual/document-pages");
 const { findSimilarCtids, matchFingerprintItems } = require("../perceptual/similar");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
@@ -26,7 +27,7 @@ const helpers = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createContentService({ dag, scoring, config, submitTx, prescanJobs, mediaService, websitePages = null }) {
+function createContentService({ dag, scoring, config, submitTx, prescanJobs, mediaService, websitePages = null, mediaQuota = null }) {
   const urlTakeovers = createUrlTakeovers({ dag });
   const registeredAgain = createRegisteredAgain({ dag });
 
@@ -66,6 +67,23 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     }
   }
 
+  // Plan page limit for the registration's largest document item (see
+  // perceptual/document-pages.js). Asked only when there is a document item;
+  // an unreachable billing service lets it through. The code must never be
+  // fingerprint_kind_invalid, which clients answer by re-sending without
+  // document items, as for a node that predates documents.
+  async function _checkDocumentPages(fingerprints, signerTipId) {
+    if (!mediaQuota || !mediaQuota.enabled || fingerprints == null) return;
+    const pages = maxDocumentPages(contentRegisterSchema.parseFingerprintItems(fingerprints));
+    if (!pages) return;
+    const answer = await mediaQuota.checkDocPages({ tip_id: signerTipId, pages });
+    if (answer && answer.allowed === false) {
+      throw schemaError(413,
+        "This document has more pages than the uploader's plan fingerprints",
+        "document_pages_exceed_plan",
+        { pages: answer.pages, max_pages: answer.max_pages });
+    }
+  }
 
   // Enqueue the prescan job for the worker. The job payload carries
   // everything the worker needs (text, origin_code, resolved content_type,
@@ -393,6 +411,11 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         "url_already_registered",
       );
     }
+
+    // Signed and otherwise registrable: only now ask whether the signer's plan
+    // fingerprints a document this long, so nobody can probe plans unsigned.
+    // Before the website reservation, which counts the page.
+    await _checkDocumentPages(body.fingerprints, signer_tip_id);
 
     // Last gate before the tx exists: every check that can refuse for free
     // has passed, so a counted page is one that is about to register.

@@ -3,8 +3,9 @@
  * @description Service-layer tests for Phase 1 presigned-multipart uploads.
  *
  * Covers init (presigned URLs), complete (assemble + re-hash + verify + promote),
- * hash-mismatch rejection, detected-MIME gate, complete/abort ownership auth, and
- * expiry cleanup aborting the S3 multipart. Uses an in-memory DAG and a fake S3
+ * hash-mismatch rejection, detected-MIME gate, complete/abort ownership auth,
+ * expiry cleanup aborting the S3 multipart, and the plan page limit for documents
+ * (doc_pages). Uses an in-memory DAG and a fake S3
  * backend (no credentials / network).
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
@@ -1074,5 +1075,121 @@ describe("presigned chunked upload: documents", () => {
     const fx = _setup();
     const zip = docBytes("archive.zip");
     await expect(_upload(fx, zip, "application/zip")).rejects.toMatchObject({ status: 415, code: "mime_invalid" });
+  });
+});
+
+describe("presigned chunked upload: document page limits (doc_pages)", () => {
+  function _quota(docAnswer, checkAnswer = { allowed: true }) {
+    const calls = { check: [], checkDocPages: [] };
+    return {
+      calls,
+      enabled: true,
+      async check(args) { calls.check.push(args); return checkAnswer; },
+      async record() { return true; },
+      async checkDocPages(args) { calls.checkDocPages.push(args); return docAnswer; },
+    };
+  }
+
+  function _initArgs(fx, extra = {}) {
+    const file = _png(1024);
+    const contentHash = shake256(file);
+    const ts = nowMs();
+    return {
+      mime: "image/png", size: file.length, content_hash: contentHash, signer_tip_id: TIP, timestamp: ts,
+      signature: _signInit({ contentHash, mime: "image/png", timestamp: ts, signerTipId: TIP }, fx.kp.privateKey),
+      ...extra,
+    };
+  }
+
+  function _countMultiparts(fx) {
+    let n = 0;
+    const orig = fx.storage.createMultipartUpload.bind(fx.storage);
+    fx.storage.createMultipartUpload = async (...a) => { n += 1; return orig(...a); };
+    return () => n;
+  }
+
+  test("over the plan's pages: 413 document_pages_exceed_plan with pages and max_pages, before any session", async () => {
+    const quota = _quota({ allowed: false, pages: 301, max_pages: 300, enforced: true, from: "2026-11-02", reason: "document_pages_exceed_plan" });
+    const fx = _setup({ mediaQuota: quota });
+    const multiparts = _countMultiparts(fx);
+    await expect(fx.svc.init(_initArgs(fx, { doc_pages: 301 }))).rejects.toMatchObject({
+      status: 413, code: "document_pages_exceed_plan",
+      error: "This document has more pages than the uploader's plan fingerprints",
+      details: { pages: 301, max_pages: 300 },
+    });
+    expect(quota.calls.checkDocPages).toEqual([{ tip_id: TIP, pages: 301 }]);
+    expect(quota.calls.check).toHaveLength(1);   // the media allowance is asked first
+    expect(multiparts()).toBe(0);
+  });
+
+  test("within the plan's pages: the upload starts", async () => {
+    const quota = _quota({ allowed: true, pages: 300, max_pages: 300, enforced: true, from: null, reason: null });
+    const fx = _setup({ mediaQuota: quota });
+    const init = await fx.svc.init(_initArgs(fx, { doc_pages: 300 }));
+    expect(init.session_id).toBeTruthy();
+    expect(quota.calls.checkDocPages).toEqual([{ tip_id: TIP, pages: 300 }]);
+  });
+
+  test("no doc_pages (exact hash only, older clients): the page limit is never asked", async () => {
+    const quota = _quota({ allowed: false, pages: 1, max_pages: 0 });
+    const fx = _setup({ mediaQuota: quota });
+    for (const extra of [{}, { doc_pages: null }, { doc_pages: undefined }]) {
+      const init = await fx.svc.init(_initArgs(fx, extra));
+      expect(init.session_id).toBeTruthy();
+    }
+    expect(quota.calls.checkDocPages).toEqual([]);
+    expect(quota.calls.check).toHaveLength(3);
+  });
+
+  test("an unreachable billing service (null answer) lets the document through", async () => {
+    const quota = _quota(null);
+    const fx = _setup({ mediaQuota: quota });
+    const init = await fx.svc.init(_initArgs(fx, { doc_pages: 5000 }));
+    expect(init.session_id).toBeTruthy();
+    expect(quota.calls.checkDocPages).toHaveLength(1);
+  });
+
+  test("a disabled client is never asked", async () => {
+    const quota = _quota({ allowed: false, pages: 5000, max_pages: 300 });
+    quota.enabled = false;
+    const fx = _setup({ mediaQuota: quota });
+    const init = await fx.svc.init(_initArgs(fx, { doc_pages: 5000 }));
+    expect(init.session_id).toBeTruthy();
+    expect(quota.calls.checkDocPages).toEqual([]);
+  });
+
+  test.each([0, -1, 1.5, 1000001, "300", true, Number.MAX_SAFE_INTEGER + 1, NaN])(
+    "doc_pages %p is a 400 doc_pages_invalid, and billing is never asked",
+    async (bad) => {
+      const quota = _quota({ allowed: true });
+      const fx = _setup({ mediaQuota: quota });
+      await expect(fx.svc.init(_initArgs(fx, { doc_pages: bad }))).rejects.toMatchObject({ status: 400, code: "doc_pages_invalid" });
+      expect(quota.calls.checkDocPages).toEqual([]);
+      expect(quota.calls.check).toEqual([]);
+    },
+  );
+
+  test("doc_pages at the bounds (1 and 1,000,000) is accepted", async () => {
+    const quota = _quota({ allowed: true });
+    const fx = _setup({ mediaQuota: quota });
+    await fx.svc.init(_initArgs(fx, { doc_pages: 1 }));
+    await fx.svc.init(_initArgs(fx, { doc_pages: 1000000 }));
+    expect(quota.calls.checkDocPages.map((c) => c.pages)).toEqual([1, 1000000]);
+  });
+
+  test("a bad signature is refused before the page limit is asked", async () => {
+    const quota = _quota({ allowed: false, pages: 301, max_pages: 300 });
+    const fx = _setup({ mediaQuota: quota });
+    const args = _initArgs(fx, { doc_pages: 301 });
+    args.signature = _signInit({ contentHash: "b".repeat(64), mime: "image/png", timestamp: args.timestamp, signerTipId: TIP }, fx.kp.privateKey);
+    await expect(fx.svc.init(args)).rejects.toMatchObject({ status: 403, code: "signature_invalid" });
+    expect(quota.calls.checkDocPages).toEqual([]);
+  });
+
+  test("a media allowance refusal wins over the page limit, which is then not asked", async () => {
+    const quota = _quota({ allowed: false, pages: 301, max_pages: 300 }, { allowed: false, remaining_bytes: 0 });
+    const fx = _setup({ mediaQuota: quota });
+    await expect(fx.svc.init(_initArgs(fx, { doc_pages: 301 }))).rejects.toMatchObject({ status: 402, code: "media_quota_exceeded" });
+    expect(quota.calls.checkDocPages).toEqual([]);
   });
 });

@@ -33,6 +33,7 @@ const {
   UPLOAD_PART_MIN_BYTES, UPLOAD_PART_MAX_BYTES, UPLOAD_PART_MAX_COUNT, UPLOAD_PART_LEGACY_BYTES,
   UPLOAD_PART_ADAPTIVE_TARGET, UPLOAD_PART_ADAPTIVE_FLOOR_BYTES, UPLOAD_PART_ADAPTIVE_CAP_BYTES,
   UPLOAD_ETAG_PROBE_PART_NUMBER, UPLOAD_ETAG_PROBE_TEXT, UPLOAD_CHECKSUM_CRC32, UPLOAD_PART_URL_BATCH_MAX,
+  DOCUMENT_PAGES,
 } = require("../../../shared/constants");
 
 const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -159,13 +160,19 @@ function createChunkedUploadService({
 
   async function init({
     mime, size, content_hash: contentHash, signer_tip_id: signerTipId,
-    signature, timestamp, part_size: reqPartSize, checksum: reqChecksum,
+    signature, timestamp, part_size: reqPartSize, checksum: reqChecksum, doc_pages: docPages,
   }) {
     if (!contentHash || !/^[0-9a-f]{64}$/.test(contentHash)) {
       throw schemaError(400, "content_hash must be 64-char lowercase hex", "content_hash_invalid");
     }
     if (!Number.isInteger(size) || size <= 0) {
       throw schemaError(400, "size must be a positive integer", "size_invalid");
+    }
+    // Optional: pages the client will fingerprint for a document. Absent for
+    // an exact-hash-only upload and for clients that never send it.
+    const hasDocPages = docPages !== undefined && docPages !== null;
+    if (hasDocPages && !(Number.isSafeInteger(docPages) && docPages >= 1 && docPages <= DOCUMENT_PAGES.MAX_DECLARED)) {
+      throw schemaError(400, `doc_pages must be an integer from 1 to ${DOCUMENT_PAGES.MAX_DECLARED}`, "doc_pages_invalid");
     }
 
     const sizeLimit = mediaUploadSchema.validateStreamRequest({
@@ -214,6 +221,18 @@ function createChunkedUploadService({
           "media_quota_exceeded",
           { size, used_bytes: q.used_bytes, allowance_bytes: q.allowance_bytes,
             remaining_bytes: q.remaining_bytes, resets_at: q.resets_at });
+      }
+
+      // Plan page limit for a document. Without doc_pages the file can still
+      // be registered by exact hash only, so nothing is asked.
+      if (hasDocPages) {
+        const d = await mediaQuota.checkDocPages({ tip_id: signerTipId, pages: docPages });
+        if (d && d.allowed === false) {
+          throw schemaError(413,
+            "This document has more pages than the uploader's plan fingerprints",
+            "document_pages_exceed_plan",
+            { pages: d.pages, max_pages: d.max_pages });
+        }
       }
     }
 

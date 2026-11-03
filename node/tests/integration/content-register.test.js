@@ -12,6 +12,8 @@
  *   4. registered_urls array passes through verbatim
  *   5. Reject-on-extra: junk top-level fields don't end up in tx.data
  *      and the signature still verifies (proves they weren't bound)
+ *   6. Plan page limits: a document item over the signer's plan is refused
+ *      (413 document_pages_exceed_plan) before anything is written
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -32,13 +34,14 @@ const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anc
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createContentService } = require(path.join(SRC, "services", "content-service"));
 const schema = require(path.join(SRC, "schemas", "content-register"));
+const { documentPages } = require(path.join(SRC, "perceptual", "document-pages"));
 
 beforeAll(async () => { await initCrypto(); });
 
 const VP_ID = "tip://vp/v1";
 const NODE_ID = "tip://node/n1";
 
-function _setup() {
+function _setup({ mediaQuota = null } = {}) {
   const dag = initDAG({ dbPath: ":memory:" });
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
@@ -56,7 +59,7 @@ function _setup() {
   const scoring = initScoring(dag, config);
   const submitted = [];
   const submitTx = (tx) => { submitted.push(tx); dag.addTx(tx); };
-  const contentService = createContentService({ dag, scoring, config, submitTx });
+  const contentService = createContentService({ dag, scoring, config, submitTx, mediaQuota });
   return { dag, scoring, contentService, submitted };
 }
 
@@ -184,6 +187,108 @@ describe("content register — perceptual fingerprints (local off-DAG ingest)", 
     const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
     expect(tx.data.fingerprint_commit).toBeUndefined();
     expect(fx.dag.getPerceptualFingerprint(tx.data.ctid, 0)).toBeNull();
+  });
+});
+
+// ─── 1b2. Plan page limits for documents ────────────────────────────────────
+
+describe("content register: document page limits", () => {
+  const MSG = "This document has more pages than the uploader's plan fingerprints";
+  const OVER = { allowed: false, pages: 5, max_pages: 3, enforced: true, from: "2026-11-02", reason: "document_pages_exceed_plan" };
+  const docItem = (name = "original") => ({ kind: "document", role: "document", exact: "c".repeat(64), perceptual: require(`../fixtures/documents/${name}.json`) });
+  const minhash128 = Array.from({ length: 128 }, (_, i) => (i * 2654435761) % 100000);
+  const textItem = { kind: "text", role: "caption",
+    perceptual: { profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: minhash128 } };
+
+  function _billing(answer) {
+    return { enabled: true, checkDocPages: jest.fn(async () => answer) };
+  }
+
+  function _signer(fx, seed) {
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256(seed).slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    return { kp, tipId };
+  }
+
+  test("over the plan: 413 document_pages_exceed_plan with pages and max_pages, before any DAG write or ingest", async () => {
+    const mediaQuota = _billing(OVER);
+    const fx = _setup({ mediaQuota });
+    const { kp, tipId } = _signer(fx, "doc-pages-over");
+    const addTx = jest.spyOn(fx.dag, "addTx");
+    const ingest = jest.spyOn(fx.dag, "getPerceptualFingerprint");
+    const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "a long book", fingerprints: _packFingerprints([docItem()]) });
+
+    const err = await fx.contentService.register(body).catch((e) => e);
+    expect(err).toEqual({ status: 413, error: MSG, code: "document_pages_exceed_plan", details: { pages: 5, max_pages: 3 } });
+    // The original.json fixture is a 5-page PDF.
+    expect(mediaQuota.checkDocPages).toHaveBeenCalledTimes(1);
+    expect(mediaQuota.checkDocPages).toHaveBeenCalledWith({ tip_id: tipId, pages: 5 });
+    await _flush();
+    expect(fx.submitted).toEqual([]);
+    expect(addTx).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+  });
+
+  test("the same file still registers by exact hash only, and billing is not asked", async () => {
+    const mediaQuota = _billing(OVER);
+    const fx = _setup({ mediaQuota });
+    const { kp, tipId } = _signer(fx, "doc-pages-exact");
+    const out = await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "a long book" }));
+    expect(out.confirmation).toBe("proposed");
+    expect(fx.submitted.find((t) => t.tx_type === "REGISTER_CONTENT")).toBeDefined();
+    expect(mediaQuota.checkDocPages).not.toHaveBeenCalled();
+  });
+
+  test("fingerprints with no document item never call billing", async () => {
+    const mediaQuota = _billing(OVER);
+    const fx = _setup({ mediaQuota });
+    const { kp, tipId } = _signer(fx, "doc-pages-text");
+    await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "a post", fingerprints: _packFingerprints([textItem]) }));
+    expect(fx.submitted.find((t) => t.tx_type === "REGISTER_CONTENT")).toBeDefined();
+    expect(mediaQuota.checkDocPages).not.toHaveBeenCalled();
+  });
+
+  test("within the plan: registers, asking once for the largest document item", async () => {
+    const mediaQuota = _billing({ allowed: true, pages: 5, max_pages: 300, enforced: true, from: null, reason: null });
+    const fx = _setup({ mediaQuota });
+    const { kp, tipId } = _signer(fx, "doc-pages-ok");
+    const items = [textItem, docItem("chapter"), docItem("original")];
+    const out = await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "two documents", fingerprints: _packFingerprints(items) }));
+    expect(out.confirmation).toBe("proposed");
+    const want = Math.max(documentPages(items[1].perceptual), documentPages(items[2].perceptual));
+    expect(mediaQuota.checkDocPages.mock.calls).toEqual([[{ tip_id: tipId, pages: want }]]);
+    expect(fx.submitted.find((t) => t.tx_type === "REGISTER_CONTENT")).toBeDefined();
+  });
+
+  test("an unreachable billing service (null answer) lets the registration through", async () => {
+    const mediaQuota = _billing(null);
+    const fx = _setup({ mediaQuota });
+    const { kp, tipId } = _signer(fx, "doc-pages-down");
+    const out = await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "a long book", fingerprints: _packFingerprints([docItem()]) }));
+    expect(out.confirmation).toBe("proposed");
+    expect(mediaQuota.checkDocPages).toHaveBeenCalledTimes(1);
+  });
+
+  test("a disabled or absent billing client is never asked", async () => {
+    const disabled = { ..._billing(OVER), enabled: false };
+    for (const mediaQuota of [disabled, null]) {
+      const fx = _setup({ mediaQuota });
+      const { kp, tipId } = _signer(fx, `doc-pages-off-${mediaQuota ? "disabled" : "none"}`);
+      const out = await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "a long book", fingerprints: _packFingerprints([docItem()]) }));
+      expect(out.confirmation).toBe("proposed");
+    }
+    expect(disabled.checkDocPages).not.toHaveBeenCalled();
+  });
+
+  test("an unsigned request cannot probe the plan: a bad signature is refused before billing is asked", async () => {
+    const mediaQuota = _billing(OVER);
+    const fx = _setup({ mediaQuota });
+    const { tipId } = _signer(fx, "doc-pages-probe");
+    const other = generateMLDSAKeypair();
+    const body = _buildRegisterBody({ tipId, privKey: other.privateKey, content: "a long book", fingerprints: _packFingerprints([docItem()]) });
+    await expect(fx.contentService.register(body)).rejects.toMatchObject({ status: 403, code: "signature_invalid" });
+    expect(mediaQuota.checkDocPages).not.toHaveBeenCalled();
   });
 });
 

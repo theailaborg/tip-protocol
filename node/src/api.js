@@ -105,7 +105,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   const websitePages = createWebsitePagesClient({ ...(config.websitePages || {}), log: getLogger("tip.website.pages") });
 
   const ctx = {
-    dag, scoring, config, submitTx, submitBatch, seatAllowance, websitePages,
+    dag, scoring, config, submitTx, submitBatch, seatAllowance, websitePages, mediaQuota,
     consensus: consensusRef, network: networkRef, prescanJobs, mediaService,
   };
 

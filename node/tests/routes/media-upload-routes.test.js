@@ -52,6 +52,15 @@ describe("media upload routes forward every request field", () => {
     expect((res.body.data || res.body).checksum).toBe("crc32");
   });
 
+  test("upload-init passes doc_pages through, and leaves it undefined when absent", async () => {
+    const { app, calls } = _app();
+    const body = { mime: "application/pdf", size: 10, content_hash: "ab".repeat(32), signer_tip_id: "tip://id/US-1", timestamp: 1, signature: "sig" };
+    expect((await request(app).post("/v1/media/upload-init").send({ ...body, doc_pages: 301 })).status).toBe(201);
+    expect((await request(app).post("/v1/media/upload-init").send(body)).status).toBe(201);
+    expect(calls[0][1].doc_pages).toBe(301);
+    expect(calls[1][1].doc_pages).toBeUndefined();
+  });
+
   test("GET upload-status resumes, POST upload-status mints checksum-bound urls", async () => {
     const { app, calls } = _app();
     expect((await request(app).get("/v1/media/upload-status/s1")).status).toBe(200);
