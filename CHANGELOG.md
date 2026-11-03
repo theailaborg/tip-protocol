@@ -31,7 +31,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-**Node: plans limit how many pages of a document are fingerprinted**
+**Node 2.9.1: plans limit how many pages of a document are fingerprinted**
 - The operator's billing service sets the limit per TIP-ID (Free 300, Creator
   Premium 500, Media 10 GB 1,000, Media 25 GB 2,000 pages). A `cf-doc-1` item
   counts its pages or slides, otherwise one page per 1,800 characters, at
@@ -46,7 +46,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Opt-in through the media quota url and key; fails open (disabled, slow,
   down, malformed or non-2xx, including a VP without the endpoint, lets the
   document through). Clients that send no `doc_pages` and registrations with
-  no document item never call the billing service. No consensus change.
+  no document item never call the billing service.
+- No consensus change: the check runs only on the node that receives the
+  upload or registration. Deploy the VP first (it serves
+  `/api/doc-pages/check`); against an older VP the node gets a 404 and lets the
+  document through. The VP starts refusing on 2026-12-03, 30 days after the
+  TIP Acceptable Use Policy announced it.
 
 **Node 2.9.0: text matching finds reworded copies, and documents match by shared text**
 - Text near-duplicates: the `b42r3` LSH scheme (42 bands of 3) shortlists 84%
