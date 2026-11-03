@@ -1,7 +1,8 @@
 /**
  * @file tests/services/media-quota-client.test.js
  * @description Monthly media allowance client: opt-in, request shape, fail-open
- * with last-known fallback, and background record retries.
+ * with last-known fallback, and background record retries. Document page
+ * limits (checkDocPages): request shape and fail-open with nothing remembered.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -126,5 +127,69 @@ describe("media-quota-client", () => {
     expect(await c2.record({ tip_id: TIP, content_hash: HASH, size: 7 })).toBe(false);
     expect(never.calls.length).toBe(4);
     expect(slept).toEqual([2000, 2000, 10000, 60000]);
+  });
+});
+
+describe("media-quota-client checkDocPages", () => {
+  const ANSWER = { allowed: false, pages: 301, max_pages: 300, enforced: true, from: "2026-11-02", reason: "document_pages_exceed_plan" };
+
+  test("disabled without a URL or key, and then answers null without calling out", async () => {
+    const f = _fetch([]);
+    for (const opts of [{ url: "", key: "k" }, { url: "https://vp.example", key: "" }]) {
+      const c = createMediaQuotaClient({ ...opts, fetch: f, log: quiet });
+      expect(await c.checkDocPages({ tip_id: TIP, pages: 301 })).toBeNull();
+    }
+    expect(f.calls).toEqual([]);
+  });
+
+  test("posts { tip_id, pages } to /api/doc-pages/check with the key and returns the answer", async () => {
+    const f = _fetch([{ status: 200, body: ANSWER }]);
+    const c = createMediaQuotaClient({ url: "https://vp.example/", key: "secret-key", fetch: f, log: quiet });
+    expect(await c.checkDocPages({ tip_id: TIP, pages: 301 })).toEqual(ANSWER);
+    expect(f.calls[0].url).toBe("https://vp.example/api/doc-pages/check");
+    expect(f.calls[0].init.method).toBe("POST");
+    expect(f.calls[0].init.headers["X-TIP-Quota-Key"]).toBe("secret-key");
+    expect(f.calls[0].init.headers["User-Agent"]).toBe("TIP-Node/1.0");
+    expect(f.calls[0].body).toEqual({ tip_id: TIP, pages: 301 });
+  });
+
+  test("an allowed answer comes back as is", async () => {
+    const ok = { allowed: true, pages: 120, max_pages: 300, enforced: true, from: null, reason: null };
+    const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: _fetch([{ status: 200, body: ok }]), log: quiet });
+    expect(await c.checkDocPages({ tip_id: TIP, pages: 120 })).toEqual(ok);
+  });
+
+  test("fails open: unreachable, a 404 from a VP without the endpoint, another error status, or a malformed answer is null, with a warning", async () => {
+    const warned = [];
+    const log = { warn: (m) => warned.push(m), error() {} };
+    const f = _fetch([
+      new Error("ECONNREFUSED"),
+      { status: 404, body: { error: "not found" } },
+      { status: 503, body: { detail: "x" } },
+      { status: 200, body: { pages: 301 } },
+    ]);
+    const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: f, log });
+    for (let i = 0; i < 4; i++) expect(await c.checkDocPages({ tip_id: TIP, pages: 301 })).toBeNull();
+    expect(warned).toHaveLength(4);
+    expect(warned[0]).toContain("doc-pages check unavailable");
+    expect(warned[1]).toContain("HTTP 404");
+  });
+
+  test("a slow service is abandoned at the timeout and lets the document through", async () => {
+    const slow = (url, init) => new Promise((resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+    const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: slow, log: quiet, timeoutMs: 20 });
+    expect(await c.checkDocPages({ tip_id: TIP, pages: 301 })).toBeNull();
+  });
+
+  test("never remembers an answer: a refusal does not decide once the service is down", async () => {
+    const f = _fetch([{ status: 200, body: ANSWER }, new Error("down"), { status: 200, body: { allowed: true, remaining_bytes: 0 } }, new Error("down")]);
+    const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: f, log: quiet });
+    expect(await c.checkDocPages({ tip_id: TIP, pages: 301 })).toMatchObject({ allowed: false });
+    expect(await c.checkDocPages({ tip_id: TIP, pages: 301 })).toBeNull();
+    // ...and it leaves the byte allowance's last known answer alone.
+    await c.check({ tip_id: TIP, content_hash: HASH, size: 1 });
+    expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 1 })).toMatchObject({ allowed: false, stale: true });
   });
 });

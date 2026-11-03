@@ -5,6 +5,9 @@
 // X-TIP-Quota-Key auth). Opt-in through config.mediaQuota; disabled, uploads
 // behave exactly as before. Fails open: a slow or down service never blocks an
 // upload, a remembered answer for the TIP-ID decides only while it is fresh.
+//
+// The same service sets how many pages of a document a plan fingerprints
+// (POST /api/doc-pages/check). That check fails open with no remembered answer.
 
 const { nowMs } = require("../../../shared/time");
 const { MEDIA_QUOTA_CLIENT } = require("../../../shared/constants");
@@ -91,6 +94,25 @@ function createMediaQuotaClient(opts = {}) {
     }
   }
 
+  /**
+   * May a document of this many pages be fingerprinted? Resolves to the billing
+   * service's answer ({allowed, pages, max_pages, enforced, from, reason}), or
+   * null when the client is disabled or the service is unreachable, slow,
+   * malformed or answers non-2xx (a VP without the endpoint answers 404),
+   * which means let it through.
+   */
+  async function checkDocPages({ tip_id, pages }) {
+    if (!enabled) return null;
+    try {
+      const answer = await _post("/api/doc-pages/check", { tip_id, pages });
+      if (typeof answer.allowed !== "boolean") throw new Error("malformed answer");
+      return answer;
+    } catch (err) {
+      log.warn?.(`doc-pages check unavailable for ${tip_id}: ${err.message} (allowing)`);
+      return null;
+    }
+  }
+
   /** Count a verified upload. Never throws; retries in the background. */
   async function record({ tip_id, content_hash, size, media_id }) {
     if (!enabled) return false;
@@ -111,7 +133,7 @@ function createMediaQuotaClient(opts = {}) {
     }
   }
 
-  return { enabled, check, record };
+  return { enabled, check, record, checkDocPages };
 }
 
 module.exports = { createMediaQuotaClient };

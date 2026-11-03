@@ -178,6 +178,14 @@ registration (`fingerprint_document_invalid`, `fingerprint_document_profile_unsu
 | `ocr`, `meaning` | null |
 | whole item | at most 1.5 MB as JSON |
 
+On a node with a billing service configured, plans also limit how many pages of a document are
+fingerprinted. An item counts its `unit_count` when `unit` is `page` or `slide`, otherwise
+`ceil(chars_covered / 1800)` pages, at least 1 (`node/src/perceptual/document-pages.js`, vectors in
+`node/tests/fixtures/doc-pages-vectors.json`). A registration whose largest document item is over
+the signer's limit is refused with `413 document_pages_exceed_plan`, `details: { pages, max_pages }`.
+It is never `fingerprint_kind_invalid`, which clients read as a node that predates documents. The
+same file can still be registered without its document item, by exact hash only.
+
 A document fingerprint is public like every other fingerprint (`include=fingerprints.document`).
 A registrant who keeps a document private sends no document item; the record then has its
 exact hash only.

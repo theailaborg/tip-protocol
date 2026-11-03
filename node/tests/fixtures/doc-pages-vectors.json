@@ -1,0 +1,24 @@
+{
+  "_comment": "Pages a cf-doc-1 document item counts as for the plan page limits (founder, 2026-11-02). Page and slide units count themselves; every other document counts standard pages of chars_per_page characters, rounded up, at least 1. The VP (public/shared/doc-pages.js) and the TIP node must both return these exact numbers; keep a byte-identical copy in each repo.",
+  "chars_per_page": 1800,
+  "cases": [
+    { "name": "pdf at the Free limit", "item": { "format": "pdf", "unit": "page", "unit_count": 300, "units_covered": 300, "chars_covered": 540000 }, "pages": 300 },
+    { "name": "pdf one over the Free limit", "item": { "format": "pdf", "unit": "page", "unit_count": 301, "units_covered": 301, "chars_covered": 1000 }, "pages": 301 },
+    { "name": "pdf past the 2,000-page bound counts every page", "item": { "format": "pdf", "unit": "page", "unit_count": 2400, "units_covered": 2000, "chars_covered": 4000000 }, "pages": 2400 },
+    { "name": "scanned pdf with no text counts its pages", "item": { "format": "pdf", "unit": "page", "unit_count": 640, "units_covered": 640, "chars_covered": 0 }, "pages": 640 },
+    { "name": "slides count slides", "item": { "format": "pptx", "unit": "slide", "unit_count": 45, "units_covered": 45, "chars_covered": 900000 }, "pages": 45 },
+    { "name": "odp slides count slides", "item": { "format": "odp", "unit": "slide", "unit_count": 12, "units_covered": 12, "chars_covered": 3000 }, "pages": 12 },
+    { "name": "epub at exactly 300 standard pages", "item": { "format": "epub", "unit": "item", "unit_count": 30, "units_covered": 30, "chars_covered": 540000 }, "pages": 300 },
+    { "name": "epub one character over 300 standard pages", "item": { "format": "epub", "unit": "item", "unit_count": 30, "units_covered": 30, "chars_covered": 540001 }, "pages": 301 },
+    { "name": "docx with no text is one page", "item": { "format": "docx", "unit": null, "unit_count": 1, "units_covered": 1, "chars_covered": 0 }, "pages": 1 },
+    { "name": "docx with one character", "item": { "format": "docx", "unit": null, "unit_count": 1, "units_covered": 1, "chars_covered": 1 }, "pages": 1 },
+    { "name": "docx at one full page", "item": { "format": "docx", "unit": null, "unit_count": 1, "units_covered": 1, "chars_covered": 1800 }, "pages": 1 },
+    { "name": "docx just over one page", "item": { "format": "docx", "unit": null, "unit_count": 1, "units_covered": 1, "chars_covered": 1801 }, "pages": 2 },
+    { "name": "docx at the Creator Premium limit", "item": { "format": "docx", "unit": null, "unit_count": 1, "units_covered": 1, "chars_covered": 900000 }, "pages": 500 },
+    { "name": "spreadsheet counts characters", "item": { "format": "xlsx", "unit": "sheet", "unit_count": 3, "units_covered": 3, "chars_covered": 3600 }, "pages": 2 },
+    { "name": "rtf at the Media 10 GB limit", "item": { "format": "rtf", "unit": null, "unit_count": 1, "units_covered": 1, "chars_covered": 1800000 }, "pages": 1000 },
+    { "name": "odt at the Media 25 GB limit", "item": { "format": "odt", "unit": null, "unit_count": 1, "units_covered": 1, "chars_covered": 3600000 }, "pages": 2000 },
+    { "name": "odt one character over the Media 25 GB limit", "item": { "format": "odt", "unit": null, "unit_count": 1, "units_covered": 1, "chars_covered": 3600001 }, "pages": 2001 },
+    { "name": "text cut at the character bound is far over every limit", "item": { "format": "epub", "unit": "item", "unit_count": 900, "units_covered": 600, "chars_covered": 8000000 }, "pages": 4445 }
+  ]
+}
