@@ -49,6 +49,11 @@ function commitAt(base, round, overrides = {}) {
   };
 }
 
+const STORES = [
+  ["sqlite", () => initDAG({ dbPath: ":memory:" })],
+  ["memory", () => initDAG({ inMemory: true })],
+];
+
 describe("snapshot history is cut at the header round", () => {
   test("txs and commits added while the stream is in flight stay out of the install", async () => {
     const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
@@ -76,5 +81,43 @@ describe("snapshot history is cut at the header round", () => {
     fx.sourceDag.iterateAllCommitsExcept = function* (round) { yield* realIterate(round); yield head; };
     const destDag = initDAG({ dbPath: ":memory:" });
     await expect(attemptInstall(fx.sourceDag, destDag, { chunkSize: 64 })).rejects.toThrow(/not cut at the header/);
+  });
+});
+
+describe.each(STORES)("snapshot install replaces the joiner's history (%s)", (_name, makeDest) => {
+  test("the joiner's own stale commit rows give way to the attested history", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 1 });
+    const head = fx.sourceDag.getLatestCommit();
+    const destDag = makeDest();
+    destDag.saveCommit(commitAt(head, head.round, { state_merkle_root: shake256("stale-own-root") }));
+    destDag.saveCommit(commitAt(head, head.round + 6));
+    await attemptInstall(fx.sourceDag, destDag, { chunkSize: 64 });
+    expect(destDag.getCommit(head.round).state_merkle_root).toBe(fx.stateRoot);
+    expect(destDag.getCommit(head.round + 6)).toBeFalsy();
+    expect(destDag.getLatestCommit().round).toBe(head.round);
+  });
+
+  test("local tx rows the snapshot does not carry are pruned", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 2 });
+    const destDag = makeDest();
+    const own = lateTx(7);
+    destDag.addTx(own);
+    await attemptInstall(fx.sourceDag, destDag, { chunkSize: 64 });
+    expect(destDag.getTx(own.tx_id)).toBeFalsy();
+    for (const t of fx.seededTxs) expect(destDag.getTx(t.tx_id)).toBeTruthy();
+  });
+});
+
+describe("snapshot install hands the network's anchor count to consensus", () => {
+  test("the post-install hook receives the peer's committed round and consensus index", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 1 });
+    const head = fx.sourceDag.getLatestCommit();
+    const calls = [];
+    const destDag = initDAG({ dbPath: ":memory:" });
+    await attemptInstall(fx.sourceDag, destDag, {
+      chunkSize: 64,
+      destOptions: { onSnapshotInstalled: (...args) => calls.push(args) },
+    });
+    expect(calls).toEqual([[head.round, head.consensus_index]]);
   });
 });

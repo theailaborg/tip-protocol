@@ -1762,7 +1762,31 @@ class KnexAdapter {
 
   saveCommit(rec) {
     this.mirror.saveCommit(rec);
-    const row = {
+    const row = this._commitRow(rec);
+    this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
+  }
+
+  // Snapshot install. Awaited in one transaction rather than queued: bulk mode runs _ff writes
+  // unawaited, and a delete racing the buffered inserts could leave stale rows in Postgres.
+  async replaceCommits(recs) {
+    this.mirror.replaceCommits(recs);
+    await this.flush();
+    const rows = recs.map(r => this._commitRow(r));
+    try {
+      await this.knex.transaction(async (trx) => {
+        await trx("commits").del();
+        for (let i = 0; i < rows.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+          await trx("commits").insert(rows.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS));
+        }
+      });
+    } catch (err) {
+      this.log.error(`KnexAdapter commit history replace failed , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
+  }
+
+  _commitRow(rec) {
+    return {
       round: rec.round,
       anchor_cert_hash: rec.anchor_cert_hash,
       leader_node_id: rec.leader_node_id,
@@ -1779,7 +1803,6 @@ class KnexAdapter {
       anchor_batch_hash: rec.anchor_batch_hash || null,
       local_inserted_at: nowMs(),
     };
-    this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
   }
 
   getCommit(round) { return this.mirror.getCommit(round); }
@@ -1838,6 +1861,19 @@ class KnexAdapter {
   pruneSupersededContentTxs() {
     const ids = this.mirror.pruneSupersededContentTxs();
     if (ids.length > 0) this._ff(() => this._k("transactions").whereIn("tx_id", ids).delete());
+    return ids;
+  }
+  async pruneTransactionsExcept(keepIds) {
+    const ids = this.mirror.pruneTransactionsExcept(keepIds);
+    await this.flush();
+    try {
+      for (let i = 0; i < ids.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+        await this._k("transactions").whereIn("tx_id", ids.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS)).delete();
+      }
+    } catch (err) {
+      this.log.error(`KnexAdapter tx history prune failed , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
     return ids;
   }
   deleteMempoolTxs(txIds) {

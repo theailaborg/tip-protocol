@@ -380,10 +380,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     // can re-detect a stale deferred commit or BFT-time violation (SI-2 / CI-1).
     // peerCommittedRound (not snapshotRound) is passed so _lastCommittedRound
     // advances to the true peer head (SI-5).
-    onSnapshotInstalled: (peerCommittedRound) => {
+    onSnapshotInstalled: (peerCommittedRound, peerConsensusIndex) => {
       if (bullshark) {
         if (typeof bullshark.cancelPendingCommit === "function") {
           bullshark.cancelPendingCommit(peerCommittedRound || 0);
+        }
+        // Number the next commits from the network's anchor count: a joiner counting from its own
+        // lower index collides with installed rows on UNIQUE(consensus_index) and fails the parity probe.
+        if (peerConsensusIndex && typeof bullshark.setConsensusIndex === "function") {
+          bullshark.setConsensusIndex(peerConsensusIndex);
         }
         if (typeof bullshark.resetBftTimeFloor === "function") {
           bullshark.resetBftTimeFloor();
