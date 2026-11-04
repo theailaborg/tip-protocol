@@ -869,3 +869,97 @@ describe("registered_urls canonical-form gate", () => {
     expect(_err([long])?.code).toBe("registered_urls_invalid");
   });
 });
+
+// ─── extras.email: email registration marker (API-time gate) ───────────────
+
+describe("extras.email gate", () => {
+  const RECIPIENTS = "c3".repeat(32);
+  const tipId = "tip://id/US-email-gate";
+  let kp;
+  beforeAll(() => { kp = generateMLDSAKeypair(); });
+  function _body(extras) {
+    return {
+      signer_tip_id: tipId,
+      origin_code: "OH",
+      signature: "deadbeef",
+      content: "Subject line\nBody of the email",
+      registered_urls: [],
+      authors: [{ tip_id: tipId, role: "byline", key_mode: "attribution", signed: false, tip_id_type: "personal" }],
+      ...(extras !== undefined ? { extras } : {}),
+    };
+  }
+  const deps = {
+    mediaLimits: { max_text_bytes: 1_000_000 },
+    dag: {
+      getIdentity: (t) => (t === tipId ? { tip_id: tipId, public_key: kp.publicKey, status: "active" } : null),
+      isRevoked: () => false,
+    },
+  };
+  function _err(extras) {
+    try { schema.validateRequest(_body(extras), deps); return null; }
+    catch (e) { return e; }
+  }
+
+  test("valid with and without recipients", () => {
+    expect(_err({ email: { v: 1 } })).toBeNull();
+    expect(_err({ email: { v: 1, recipients: RECIPIENTS } })).toBeNull();
+    expect(_err({ title: "x", email: { v: 1 } })).toBeNull();
+  });
+
+  test("registrations without extras.email are unaffected", () => {
+    expect(_err(undefined)).toBeNull();
+    expect(_err({})).toBeNull();
+    expect(_err({ title: "A post" })).toBeNull();
+  });
+
+  test("v must be the integer 1", () => {
+    for (const email of [{}, { v: 0 }, { v: 2 }, { v: "1" }, { v: 1.5 }, { v: true }, { v: null }]) {
+      const e = _err({ email });
+      expect(e).toMatchObject({ status: 400, code: "extras_email_invalid" });
+      expect(e.error).toMatch(/^extras\.email /);
+    }
+  });
+
+  test("recipients must be 64 lowercase hex", () => {
+    for (const recipients of ["C3".repeat(32), "c3".repeat(31), "c3".repeat(33), "zz".repeat(32), 42, null, ""]) {
+      expect(_err({ email: { v: 1, recipients } })).toMatchObject({ status: 400, code: "extras_email_invalid" });
+    }
+  });
+
+  test("unknown keys are refused", () => {
+    const e = _err({ email: { v: 1, to: "someone@example.com" } });
+    expect(e).toMatchObject({ status: 400, code: "extras_email_invalid" });
+    expect(e.error).toMatch(/unknown keys: to/);
+  });
+
+  test("a non-object marker is refused", () => {
+    for (const email of [true, 1, "yes", null, [], [{ v: 1 }]]) {
+      expect(_err({ email })).toMatchObject({ status: 400, code: "extras_email_invalid" });
+    }
+  });
+
+  test("isEmailExtras reads the marker", () => {
+    expect(schema.isEmailExtras({ email: { v: 1 } })).toBe(true);
+    expect(schema.isEmailExtras({ email: { v: 1, recipients: RECIPIENTS } })).toBe(true);
+    expect(schema.isEmailExtras({})).toBe(false);
+    expect(schema.isEmailExtras(null)).toBe(false);
+    expect(schema.isEmailExtras({ email: [] })).toBe(false);
+  });
+
+  test("replay is not gated: verifyTx still accepts a signed tx whose marker is out of shape", () => {
+    // Older nodes commit such txs; a replay-time check would split the network.
+    const extras = { email: { v: 2, to: "x" } };
+    const payload = schema.buildSigningPayload({
+      signer_tip_id: tipId, origin_code: "OH", authors: [{ tip_id: tipId }], extras,
+    }, CONTENT_HASH);
+    const tx = {
+      tx_type: "REGISTER_CONTENT",
+      data: {
+        signer_tip_id: tipId, cna_version: "CNA-2.2", attribution_mode: "self",
+        authors: payload.authors, extras, origin_code: "OH", registered_urls: [],
+        content_hash: CONTENT_HASH, signature: schema.sign(payload, kp.privateKey),
+      },
+    };
+    expect(schema.verifyTx(tx, deps.dag)).toEqual({ ok: true });
+  });
+});
