@@ -1172,7 +1172,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       resetRegisteredAgain(dag);
       if (typeof onSnapshotInstalled === "function") {
         try {
-          onSnapshotInstalled(peerCommittedRound, peerConsensusIndex);
+          onSnapshotInstalled(Math.max(peerCommittedRound, snapshotRound), Math.max(peerConsensusIndex, snapshotConsensusIndex));
         } catch (err) {
           log.error(`Snapshot: onSnapshotInstalled callback failed: ${err.message} — node may experience BFT-time violations or stale pending commits until restart`);
         }
