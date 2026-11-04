@@ -20,14 +20,20 @@ const { createStreamPair } = require("./stream-pair");
 // optionally truncates at `truncateAfterFraction` of the total (a fraction, so
 // the cut lands past the header regardless of absolute size). A truncated
 // stream ends mid-frame / before END, exactly a dropped connection.
-async function attemptInstall(sourceDag, destDag, { chunkSize = 8, truncateAfterFraction = 1 } = {}) {
+// onFirstServerFrame runs once the header has left the server, before the later phases are built.
+async function attemptInstall(sourceDag, destDag, {
+  chunkSize = 8, truncateAfterFraction = 1, onFirstServerFrame = null, destOptions = {},
+} = {}) {
   const { client, server } = createStreamPair();
 
   const origServerSink = server.sink;
   server.sink = async (src) => {
     await origServerSink((async function* () {
       const parts = [];
-      for await (const f of src) parts.push(Buffer.from(f));
+      for await (const f of src) {
+        if (parts.length === 0 && onFirstServerFrame) onFirstServerFrame();
+        parts.push(Buffer.from(f));
+      }
       const whole = Buffer.concat(parts);
       const limit = Math.floor(whole.length * Math.min(1, truncateAfterFraction));
       for (let off = 0; off < limit; off += chunkSize) {
@@ -45,6 +51,7 @@ async function attemptInstall(sourceDag, destDag, { chunkSize = 8, truncateAfter
     dag: destDag,
     network: { node: {}, openStream: async () => client },
     isAuthorizedPeer: () => true,
+    ...destOptions,
   });
 
   const results = await Promise.allSettled([
