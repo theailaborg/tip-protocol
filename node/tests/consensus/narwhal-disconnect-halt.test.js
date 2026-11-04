@@ -169,6 +169,8 @@ describe("narwhal — peer disconnect halts round advance (partition-safety prop
 
   test("peer returns: round advances once peer ack lands", async () => {
     const fx = buildNarwhal({ currentRound: 1000 });
+    // Round 999's certs, as any node that reached round 1000 holds them (seal needs a parent quorum).
+    for (const id of [SELF_ID, PEER_ID]) _seedProvenCertHistory(fx.dag, id, 999, 999);
 
     fx.narwhal.start();
     fx.narwhal.exitSyncMode(999);

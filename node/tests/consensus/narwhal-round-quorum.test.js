@@ -107,3 +107,40 @@ describe("narwhal: round quorum counts only certs of the current round", () => {
     fx.narwhal.stop();
   }, 10000);
 });
+
+describe("narwhal: own cert needs a quorum of previous-round parents", () => {
+  test("a fast-forwarded node holds its seal until the previous round's certs arrive", async () => {
+    const fx = build();
+    fx.narwhal.start();
+    fx.narwhal.exitSyncMode(999);
+    await sleep(50);
+    const r = fx.narwhal.currentRound();
+    const own = createBatch(r, SELF, [], fx.kp[SELF].privateKey);
+    fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(createBatchAck(own.hash, B, nowMs(), fx.kp[B].privateKey))));
+    await sleep(20);
+    expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeFalsy();
+
+    await fx.narwhal.handleIncomingCertificate(peerCert(fx, r - 1, B, [B, C], []));
+    await fx.narwhal.handleIncomingCertificate(peerCert(fx, r - 1, C, [C, B], []));
+    await sleep(20);
+    const cert = fx.dag.getCertificateByAuthorRound(SELF, r);
+    expect(cert).toBeTruthy();
+    expect(cert.parent_hashes).toHaveLength(2);
+    fx.narwhal.stop();
+  }, 10000);
+
+  test("without parents it still seals once the round timer fires (no liveness loss)", async () => {
+    const fx = build();
+    fx.narwhal.start();
+    fx.narwhal.exitSyncMode(999);
+    await sleep(50);
+    const r = fx.narwhal.currentRound();
+    const own = createBatch(r, SELF, [], fx.kp[SELF].privateKey);
+    fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(createBatchAck(own.hash, B, nowMs(), fx.kp[B].privateKey))));
+    await sleep(20);
+    expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeFalsy();
+    await sleep(2300);
+    expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeTruthy();
+    fx.narwhal.stop();
+  }, 10000);
+});
