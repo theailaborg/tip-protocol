@@ -13,13 +13,13 @@ const path = require("path");
 
 const SRC = path.resolve(__dirname, "../../src");
 const SHARED = path.resolve(__dirname, "../../../shared");
-const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
+const { initCrypto, generateMLDSAKeypair, shake256, computeTxId } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
 const { createNarwhal } = require(path.join(SRC, "consensus", "narwhal"));
 const { createBatch, createBatchAck, createCertificate } = require(path.join(SRC, "consensus", "certificate"));
-const { serializeBatchAck, serializeCertificate } = require(path.join(SRC, "consensus", "certificate-codec"));
-const { loadTypes, encode } = require(path.join(SRC, "network", "proto"));
+const { serializeBatchAck, serializeCertificate, deserializeBatch } = require(path.join(SRC, "consensus", "certificate-codec"));
+const { loadTypes, encode, decode } = require(path.join(SRC, "network", "proto"));
 const { getActiveCommittee } = require(path.join(SRC, "consensus", "participants"));
 
 beforeAll(async () => {
@@ -141,6 +141,38 @@ describe("narwhal: own cert needs a quorum of previous-round parents", () => {
     expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeFalsy();
     await sleep(2300);
     expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeTruthy();
+    fx.narwhal.stop();
+  }, 10000);
+});
+
+function testTx(i) {
+  const body = { tx_type: "REGISTER_CONTENT", timestamp: 1767225600000 + i, prev: [], data: { ctid: `tip://content/requeue-${i}`, content_hash: shake256(`requeue-${i}`), seq: i } };
+  body.tx_id = computeTxId(body);
+  return body;
+}
+
+describe("narwhal: adopting an existing own cert never drops the new batch's txs", () => {
+  test("txs of a batch superseded by an already-sealed own cert go back to the mempool", async () => {
+    const fx = build();
+    const tx = testTx(1);
+    expect(fx.mempool.add(tx).added).toBe(true);
+    fx.narwhal.start();
+    fx.narwhal.exitSyncMode(999);
+    await sleep(50);
+    const r = fx.narwhal.currentRound();
+    const sent = fx.published.filter((m) => m.topic === "tip/mempool").map((m) => deserializeBatch(decode("Batch", m.buf)));
+    const mine = sent.find((b) => b.round === r);
+    expect(mine.txs.map((t) => t.tx_id)).toEqual([tx.tx_id]);
+    expect(fx.mempool.has(tx.tx_id)).toBe(false);
+
+    // A late seal already put an earlier batch under this round's label.
+    const earlier = createBatch(r - 1, SELF, [], fx.kp[SELF].privateKey);
+    const acks = [SELF, B].map((id) => createBatchAck(earlier.hash, id, nowMs(), fx.kp[id].privateKey));
+    fx.dag.saveCertificate(createCertificate(r, SELF, earlier, acks, [], fx.kp[SELF].privateKey));
+
+    fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(createBatchAck(mine.hash, B, nowMs(), fx.kp[B].privateKey))));
+    await sleep(20);
+    expect(fx.mempool.has(tx.tx_id)).toBe(true);
     fx.narwhal.stop();
   }, 10000);
 });

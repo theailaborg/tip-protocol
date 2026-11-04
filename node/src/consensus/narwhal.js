@@ -159,6 +159,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // no user traffic, so its batches are always empty, and failing to certify
     // them is exactly what keeps it out of the committee.
     my_batches_uncertified: 0,
+    my_batches_superseded: 0,
     seals_waiting_parents: 0,
 
     // Rounds where we did seal our own certificate. With rounds_advanced this
@@ -453,6 +454,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
   }
 
+  // Re-insert in reverse so the batch's first tx ends up at the mempool head.
+  function _requeueTxs(txs) {
+    let requeued = 0;
+    for (let i = txs.length - 1; i >= 0; i--) {
+      const r = mempool.addFront(txs[i], nowMs());
+      if (r && r.added) requeued++;
+    }
+    return requeued;
+  }
+
   // Quorum counts only certs of the current round: leftovers from the round just completed
   // would let a single early peer cert advance it (far-peer alternation, 2026-11-04).
   function _loadRoundCertificates() {
@@ -478,14 +489,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       const orphanedTxs = _myBatch.txs || [];
       _metrics.my_batches_uncertified++;
       if (orphanedTxs.length > 0) {
-        let requeued = 0;
-        // Re-insert in REVERSE order so the first tx of the original
-        // batch ends up at the front of the queue (each addFront
-        // prepends — last addFront becomes the new head).
-        for (let i = orphanedTxs.length - 1; i >= 0; i--) {
-          const r = mempool.addFront(orphanedTxs[i], nowMs());
-          if (r && r.added) requeued++;
-        }
+        const requeued = _requeueTxs(orphanedTxs);
         _metrics.my_batches_orphaned++;
         log.warn(`Round ${_myBatch.round} advanced without certifying my own batch — front-requeued ${requeued}/${orphanedTxs.length} txs to mempool`);
       }
@@ -908,6 +912,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // one and re-broadcast to shake off any GossipSub loss.
     const existingOwn = dag.getCertificateByAuthorRound(nodeId, _currentRound);
     if (existingOwn) {
+      // A cert sealed after advancing carries an earlier batch under this round's label; the batch
+      // cut for this round can then never seal, so its txs go back to the mempool instead of vanishing.
+      if (existingOwn.batch?.hash !== _myBatch.hash) {
+        const sealed = new Set((existingOwn.batch?.txs || []).map(t => t.tx_id));
+        const orphaned = (_myBatch.txs || []).filter(t => !sealed.has(t.tx_id));
+        _metrics.my_batches_superseded++;
+        if (orphaned.length > 0) {
+          const requeued = _requeueTxs(orphaned);
+          log.warn(`Round ${_currentRound}: own cert already sealed an earlier batch, front-requeued ${requeued}/${orphaned.length} txs to mempool`);
+        }
+      }
       log.info(`Round ${_currentRound}: own cert exists from prior session — reusing instead of re-signing`);
       _roundCertificates.set(nodeId, existingOwn);
       _myCertificateCreated = true;
