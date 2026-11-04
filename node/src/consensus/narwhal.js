@@ -452,6 +452,15 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
   }
 
+  // Quorum counts only certs of the current round: leftovers from the round just completed
+  // would let a single early peer cert advance it (far-peer alternation, 2026-11-04).
+  function _loadRoundCertificates() {
+    _roundCertificates.clear();
+    for (const cert of dag.getCertificatesByRound(_currentRound)) {
+      _roundCertificates.set(cert.author_node_id, cert);
+    }
+  }
+
   function _resetRoundState() {
     // #64: if our own batch never formed a cert at this round, return
     // its txs to the FRONT of the mempool so they get re-batched at
@@ -488,7 +497,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _myBatch = null;
     _peerBatches.clear();
     _batchAcks.clear();
-    _roundCertificates.clear();
+    _loadRoundCertificates();
     _myCertificateCreated = false;
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
     _retryCount = 0;
@@ -1223,6 +1232,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Advance
     _currentRound++;
+    _loadRoundCertificates();
 
     // §1 votes_seen auto-prune. We only need the last few rounds' commitments
     // (old rounds can't be re-entered). Pruning here — tied to round advance
