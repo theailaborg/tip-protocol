@@ -31,6 +31,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.9.2: email registrations stay out of the classifier**
+- An email registers as ordinary CNA-2.2 text (`content` is the subject, a
+  newline, then the body) with `extras.email` in the signed extras, either
+  `{ v: 1 }` or `{ v: 1, recipients }`, where `recipients` is a salted
+  commitment to the To and Cc addresses made on the client. The node never
+  sees the addresses. Any other shape is refused with
+  `400 extras_email_invalid`.
+- The node uses an email's text only to recompute `content_hash`. Its prescan
+  job carries no text and an `email` flag, and the worker completes it at once
+  with the verdict a locally skipped origin gets (probability 0.5, tier low,
+  `skipped_locally`), so the text never reaches the AI origin classifier, a
+  retry or the failover trigger. A text or document fingerprint item sent with
+  an email is dropped before ingest and near-duplicate lookup; image, video
+  and audio items are indexed as before. No log line carries the text.
+- No consensus change: `REGISTER_CONTENT` and `PRESCAN_COMPLETED` keep their
+  shapes, and the marker is checked only on the node that receives the
+  registration. Clients should send email registrations only to nodes on
+  2.9.2 or later, since an older node scans the text like any post.
+
 **Node 2.9.1: plans limit how many pages of a document are fingerprinted**
 - The operator's billing service sets the limit per TIP-ID (Free 300, Creator
   Premium 500, Media 10 GB 1,000, Media 25 GB 2,000 pages). A `cf-doc-1` item

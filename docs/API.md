@@ -182,12 +182,16 @@ If pre-scan flags the content, `status` will be `pending` and `pre_scan.flagged`
 
 **Errors:**
 - `400`: Missing required fields or invalid origin code
+- `400` extras_email_invalid, when `extras.email` is present but is not `{ v: 1 }` or `{ v: 1, recipients }` (see below)
 - `403`: Author TIP-ID not active
 - `413` document_pages_exceed_plan, when a document fingerprint item covers more pages than the signer's plan fingerprints (see below)
 - `422`: Invalid author signature
 
 ##### Document page limits
 Plans limit how many pages of a document the node fingerprints. A `cf-doc-1` item counts its `unit_count` when `unit` is `page` or `slide`, and otherwise `ceil(chars_covered / 1800)` standard pages, at least 1. On a node with a billing service configured, a registration whose largest document item is over the signer's plan limit is refused before anything is written, with `413` `{ code: "document_pages_exceed_plan", details: { pages, max_pages } }`; `POST /v1/media/upload-init` gives the same refusal for its `doc_pages`. The same file can still be registered without its document item, by exact hash only. A billing service that cannot be reached never blocks a registration or an upload.
+
+##### Email registrations
+An email is registered like any text: `content` is the subject, a newline, then the body, and `content_hash` covers that text. The signed `extras` carries `"email": { "v": 1 }`, or `"email": { "v": 1, "recipients": "<64 lowercase hex>" }` where `recipients` is a salted commitment to the To and Cc addresses computed by the client (the node never sees the addresses). `v` must be the integer `1`, `recipients` is optional, and no other keys are allowed; anything else is refused with `400` `{ code: "extras_email_invalid" }`. The node uses the text only to recompute `content_hash`. It never sends an email's text to the AI origin classifier, keeps no copy of it, and indexes no text fingerprint for it (clients send none; a text or document fingerprint item that arrives with an email is dropped). The prescan completes at once with the same verdict a locally skipped origin gets, which is `probability` 0.5, tier `low`, not flagged, and `classifier_providers_used` `skipped_locally`.
 
 #### `GET /v1/content/:ctid`
 Resolve a content provenance record.

@@ -175,6 +175,8 @@ Anything in `extras` is signed — the canonical-JSON encoder includes it byte-f
 
 `extras` keys MUST be JSON-safe (no nested undefined, no functions, no circular references).
 
+**Email registrations.** `extras.email` marks an email registration, as `{ "v": 1 }` or `{ "v": 1, "recipients": "<64 lowercase hex>" }`. `recipients` is a salted commitment to the To and Cc addresses, computed on the client; the node never sees the addresses. `content` is the subject, a newline, then the body, hashed as usual. The node checks the marker's shape at submission (`extras_email_invalid`), uses the text only to recompute `content_hash`, and never passes it to the AI origin classifier or a text index.
+
 ---
 
 ## 9. `registered_urls`
@@ -431,6 +433,7 @@ Common codes for `POST /v1/content/register`:
 | 400 | `authors_tip_id_invalid` | An `authors[].tip_id` is missing or not in `tip://id/...` format. |
 | 400 | `attribution_mode_invalid` | `attribution_mode` not in the enum (`self` / `employed` / `hosted`). |
 | 400 | `extras_invalid` | `extras` is not a plain object (e.g. array or null). |
+| 400 | `extras_email_invalid` | `extras.email` is present but is not `{ v: 1 }` or `{ v: 1, recipients }` with `recipients` 64 lowercase hex (§8). |
 | 400 | `registered_urls_invalid` | `registered_urls` is not an array of strings. |
 | 400 | `content_hash_mismatch` | Server-recomputed content hash != `content_hash` in signed payload. |
 | 403 | `signature_invalid` | ML-DSA verify failed against the DAG-resident public key. |
