@@ -364,6 +364,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
     // Total rows for the joiner's install % (display-only, never hashed/signed);
     // the tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
+    // History is cut at the header: txs and commits added while the stream is in flight would put
+    // the joiner's history ahead of its state, and its catch-up then skips those anchors.
+    const txsAtCut = [...dag.iterateAllTransactions()];
+
     let _snapTotalRows = 0;
     for (const _r of dag.iterateCanonicalState({ rawTransfer: true })) _snapTotalRows++;
     if (typeof dag.transactionCount === "function") _snapTotalRows += dag.transactionCount();
@@ -482,7 +486,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // (no GC). canonicalJson(canonTx(tx)) is the byte form both sides
         // hash and store in SnapshotTxRow.canonical_json.
         const txRoot = createTxsFullRootBuilder();
-        for (const tx of dag.iterateAllTransactions()) {
+        for (const tx of txsAtCut) {
           yield _frameFullHistoryRow(K.TX, "SnapshotTxRow", canonicalJson(canonTx(tx)), txRoot);
           txRowsSent++;
           await _breathe();
@@ -490,11 +494,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         txsFullRoot = txRoot.finalize();
         yield _framePhaseEnd(K.TX, txRowsSent, txsFullRoot);
 
-        // Phase C: commits history except latest (#49). Latest already
+        // Phase C: commits history below the header round (#49). Latest already
         // rides in SnapshotHeader — including it twice would double-count
         // in the receiver's commits table and break the install.
         const commitRoot = createCommitsFullRootBuilder();
         for (const c of dag.iterateAllCommitsExcept(latest.round)) {
+          if (c.round > latest.round) continue;   // past the cut, see txsAtCut
           yield _frameFullHistoryRow(K.COMMIT, "SnapshotCommitRow", canonicalJson(canonCommit(c)), commitRoot);
           commitRowsSent++;
           await _breathe();
@@ -708,6 +713,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const rotationRows = [];                  // few + tiny; chain-of-trust needs all
       const rpRows = [];                        // few; installed at RP boundary
       const seen = { state: 0, tx: 0, commit: 0, rotation: 0, cert: 0, rp: 0 };
+      let commitsPastCut = 0;
       const phaseVerified = new Set();          // which phase trailers arrived
       let header = null, end = null;
       let verifiedRotations = [];
@@ -830,7 +836,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           }
           case K.COMMIT: {
             const c = _decodeFullRow(proto, "SnapshotCommitRow", commitsRoot, "commit");
-            enqueue(() => dag.saveCommit(c));
+            if (Number(c.round) >= Number(header.round)) commitsPastCut++;
+            else enqueue(() => dag.saveCommit(c));
             seen.commit++;
             await maybeFlush();
             break;
@@ -1058,6 +1065,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const peerConsensusIndex = Number(header.peerConsensusIndex || 0);
       if (peerConsensusIndex > 0 && peerConsensusIndex < snapshotConsensusIndex) {
         throw new Error(`peer_consensus_index (${peerConsensusIndex}) < snapshot consensus_index (${snapshotConsensusIndex}) — peer is lying about its anchor count`);
+      }
+
+      // A peer that did not cut its history at the header streams rows from past the snapshot;
+      // installing them would leave this node's history ahead of its state.
+      if (commitsPastCut > 0) {
+        throw new Error(`snapshot carries ${commitsPastCut} commit row(s) at or past its header round ${snapshotRound}, not cut at the header`);
       }
 
       // ── Reconcile ─────────────────────────────────────────────────────
