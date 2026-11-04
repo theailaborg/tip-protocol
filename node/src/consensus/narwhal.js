@@ -100,7 +100,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   const _peerBatches = new Map();                   // nodeId → batch
   const _batchAcks = new Map();                     // batchHash → [ack, ack, ...]
   const _roundCertificates = new Map();             // nodeId → certificate
+  let _roundCertificatesRound = 0;                  // round _roundCertificates was loaded for
   let _myCertificateCreated = false;
+  let _parentWaitSince = 0;                         // first seal held for parents; spans fast-forwards
 
   // CertificateWaiter: peer certs whose parent hashes aren't in our DAG yet.
   // Parked on receive, reprocessed when the missing parent lands. Guarantees
@@ -471,6 +473,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     for (const cert of dag.getCertificatesByRound(_currentRound)) {
       _roundCertificates.set(cert.author_node_id, cert);
     }
+    _roundCertificatesRound = _currentRound;
   }
 
   function _resetRoundState() {
@@ -502,7 +505,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _myBatch = null;
     _peerBatches.clear();
     _batchAcks.clear();
-    _loadRoundCertificates();
+    // Same round: the set is current (gossip certs are added as they land), skip the rescan.
+    if (_roundCertificatesRound !== _currentRound) _loadRoundCertificates();
     _myCertificateCreated = false;
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
     _retryCount = 0;
@@ -940,16 +944,21 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
 
     // A cert on fewer than a quorum of previous-round parents (a fast-forwarded node can lack them)
-    // may never be reached by an anchor, so its txs never commit. Wait for them until the round timer.
+    // may never be reached by an anchor, so its txs never commit. Wait for them, at most one round
+    // timeout in total: fast-forwards re-arm the round timer, so the bound is kept across rounds.
     const parentCerts = _currentRound > 1 ? dag.getCertificatesByRound(_currentRound - 1) : [];
-    if (_currentRound > 1 && !afterTimeout) {
+    if (_currentRound > 1) {
       const parentCommittee = new Set(_getCommittee(_currentRound - 1));
       const backed = parentCerts.filter(c => parentCommittee.has(c.author_node_id)).length;
       if (backed < computeQuorum(parentCommittee.size)) {
-        _metrics.seals_waiting_parents++;
-        return;
+        if (!_parentWaitSince) _parentWaitSince = nowMs();
+        if (!afterTimeout && nowMs() - _parentWaitSince < CONSENSUS.ROUND_TIMEOUT_MS) {
+          _metrics.seals_waiting_parents++;
+          return;
+        }
       }
     }
+    _parentWaitSince = 0;
     const parentHashes = parentCerts.map(c => c.hash);
 
     const cert = createCertificate(

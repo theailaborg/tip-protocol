@@ -18,7 +18,7 @@ const { initDAG } = require(path.join(SRC, "dag"));
 const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
 const { createNarwhal } = require(path.join(SRC, "consensus", "narwhal"));
 const { createBatch, createBatchAck, createCertificate } = require(path.join(SRC, "consensus", "certificate"));
-const { serializeBatchAck, serializeCertificate, deserializeBatch } = require(path.join(SRC, "consensus", "certificate-codec"));
+const { serializeBatch, serializeBatchAck, serializeCertificate, deserializeBatch } = require(path.join(SRC, "consensus", "certificate-codec"));
 const { loadTypes, encode, decode } = require(path.join(SRC, "network", "proto"));
 const { getActiveCommittee } = require(path.join(SRC, "consensus", "participants"));
 
@@ -150,6 +150,36 @@ function testTx(i) {
   body.tx_id = computeTxId(body);
   return body;
 }
+
+describe("narwhal: the parent wait is bounded across fast-forwards", () => {
+  test("a node that keeps fast-forwarding without parents still seals one round timeout after it began waiting", async () => {
+    const fx = build();
+    fx.narwhal.start();
+    fx.narwhal.exitSyncMode(999);
+    await sleep(50);
+    const r = fx.narwhal.currentRound();
+    const ownBatch = (round) => fx.published.filter((m) => m.topic === "tip/mempool")
+      .map((m) => deserializeBatch(decode("Batch", m.buf))).find((b) => b.round === round && b.author_node_id === SELF);
+    const ackOwn = (round, from) => fx.narwhal.handleIncomingAck(encode("BatchAck",
+      serializeBatchAck(createBatchAck(ownBatch(round).hash, from, nowMs(), fx.kp[from].privateKey))));
+
+    ackOwn(r, B);
+    await sleep(1150);
+    // A peer batch one round ahead fast-forwards the node and re-arms its round timer.
+    fx.narwhal.handleIncomingBatch(encode("Batch", serializeBatch(createBatch(r + 1, B, [], fx.kp[B].privateKey))));
+    await sleep(50);
+    expect(fx.narwhal.currentRound()).toBe(r + 1);
+    ackOwn(r + 1, B);
+    await sleep(20);
+    expect(fx.dag.getCertificateByAuthorRound(SELF, r + 1)).toBeFalsy();
+
+    await sleep(1000);
+    ackOwn(r + 1, C);
+    await sleep(20);
+    expect(fx.dag.getCertificateByAuthorRound(SELF, r + 1)).toBeTruthy();
+    fx.narwhal.stop();
+  }, 10000);
+});
 
 describe("narwhal: adopting an existing own cert never drops the new batch's txs", () => {
   test("txs of a batch superseded by an already-sealed own cert go back to the mempool", async () => {
