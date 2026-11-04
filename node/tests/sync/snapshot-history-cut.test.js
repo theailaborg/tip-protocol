@@ -82,6 +82,17 @@ describe("snapshot history is cut at the header round", () => {
     const destDag = initDAG({ dbPath: ":memory:" });
     await expect(attemptInstall(fx.sourceDag, destDag, { chunkSize: 64 })).rejects.toThrow(/not cut at the header/);
   });
+
+  test("a commit history that repeats a round is refused", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 1 });
+    const head = fx.sourceDag.getLatestCommit();
+    const earlier = commitAt(head, head.round - 1, { consensus_index: head.consensus_index - 1, cert_timestamp: Number(head.cert_timestamp) - 1000 });
+    fx.sourceDag.saveCommit(earlier);
+    const realIterate = fx.sourceDag.iterateAllCommitsExcept;
+    fx.sourceDag.iterateAllCommitsExcept = function* (round) { yield* realIterate(round); yield earlier; };
+    const destDag = initDAG({ dbPath: ":memory:" });
+    await expect(attemptInstall(fx.sourceDag, destDag, { chunkSize: 64 })).rejects.toThrow(/repeats round/);
+  });
 });
 
 describe.each(STORES)("snapshot install replaces the joiner's history (%s)", (_name, makeDest) => {
@@ -105,6 +116,22 @@ describe.each(STORES)("snapshot install replaces the joiner's history (%s)", (_n
     await attemptInstall(fx.sourceDag, destDag, { chunkSize: 64 });
     expect(destDag.getTx(own.tx_id)).toBeFalsy();
     for (const t of fx.seededTxs) expect(destDag.getTx(t.tx_id)).toBeTruthy();
+  });
+
+  test("the joiner's own rotation tx stays when the installed rotation has the same payload", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 1 });
+    const destDag = makeDest();
+    const rotation0 = destDag.getCommitteeRotation(0);
+    const own = { tx_type: "COMMITTEE_ROTATION", timestamp: 1767225600000, prev: [], data: { rotation_number: 0, payload_hash: rotation0.payload_hash }, signature: "00" };
+    own.tx_id = computeTxId(own);
+    const divergent = { ...own, data: { rotation_number: 0, payload_hash: shake256("divergent-rotation") } };
+    delete divergent.tx_id;
+    divergent.tx_id = computeTxId(divergent);
+    destDag.addTx(own);
+    destDag.addTx(divergent);
+    await attemptInstall(fx.sourceDag, destDag, { chunkSize: 64 });
+    expect(destDag.getTx(own.tx_id)).toBeTruthy();
+    expect(destDag.getTx(divergent.tx_id)).toBeFalsy();
   });
 });
 

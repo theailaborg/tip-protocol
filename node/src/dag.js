@@ -1305,7 +1305,7 @@ class MemoryStore {
   // would keep a joiner's own stale rows, so it advertises a wrong root after a correct install.
   replaceCommits(recs) {
     this._commits.clear();
-    for (const rec of recs) this._commits.set(rec.round, { ...rec, committee: [...(rec.committee || [])] });
+    for (const rec of recs) this.saveCommit(rec);
   }
   getCommit(round) { return this._commits.get(round) || null; }
   getLatestCommit() {

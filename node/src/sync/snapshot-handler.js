@@ -362,12 +362,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       ? Number((bullshark.stats() || {}).consensusIndex || 0)
       : Number(latest.consensus_index || 0);
 
-    // Total rows for the joiner's install % (display-only, never hashed/signed);
-    // the tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
     // History is cut at the header: txs and commits added while the stream is in flight would put
     // the joiner's history ahead of its state, and its catch-up then skips those anchors.
-    const txsAtCut = [...dag.iterateAllTransactions()];
+    const txIdsAtCut = new Set();
+    for (const tx of dag.iterateAllTransactions()) txIdsAtCut.add(tx.tx_id);
 
+    // Total rows for the joiner's install % (display-only, never hashed/signed);
+    // the tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
     let _snapTotalRows = 0;
     for (const _r of dag.iterateCanonicalState({ rawTransfer: true })) _snapTotalRows++;
     if (typeof dag.transactionCount === "function") _snapTotalRows += dag.transactionCount();
@@ -486,7 +487,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // (no GC). canonicalJson(canonTx(tx)) is the byte form both sides
         // hash and store in SnapshotTxRow.canonical_json.
         const txRoot = createTxsFullRootBuilder();
-        for (const tx of txsAtCut) {
+        for (const tx of dag.iterateAllTransactions()) {
+          if (!txIdsAtCut.has(tx.tx_id)) continue;
           yield _frameFullHistoryRow(K.TX, "SnapshotTxRow", canonicalJson(canonTx(tx)), txRoot);
           txRowsSent++;
           await _breathe();
@@ -499,7 +501,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // in the receiver's commits table and break the install.
         const commitRoot = createCommitsFullRootBuilder();
         for (const c of dag.iterateAllCommitsExcept(latest.round)) {
-          if (c.round > latest.round) continue;   // past the cut, see txsAtCut
+          if (c.round > latest.round) continue;   // past the cut, see txIdsAtCut
           yield _frameFullHistoryRow(K.COMMIT, "SnapshotCommitRow", canonicalJson(canonCommit(c)), commitRoot);
           commitRowsSent++;
           await _breathe();
@@ -715,7 +717,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const seen = { state: 0, tx: 0, commit: 0, rotation: 0, cert: 0, rp: 0 };
       const streamedTxIds = new Set();          // reconcile keep-set for tx history
       const commitRows = [];                    // replaces the local commit history at finalize
-      let commitsPastCut = 0;
+      const commitRounds = new Set();
+      const commitIndexes = new Set();
       const phaseVerified = new Set();          // which phase trailers arrived
       let header = null, end = null;
       let verifiedRotations = [];
@@ -839,8 +842,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           }
           case K.COMMIT: {
             const c = _decodeFullRow(proto, "SnapshotCommitRow", commitsRoot, "commit");
-            if (Number(c.round) >= Number(header.round)) commitsPastCut++;
-            else commitRows.push(c);
+            const cRound = Number(c.round);
+            const cIndex = Number(c.consensus_index || 0);
+            // Refused at the first such row: the history must end below the header (a peer without
+            // the cut streams later rows) and name each round and anchor index once.
+            if (cRound >= Number(header.round)) {
+              throw new Error(`snapshot carries a commit at round ${cRound}, at or past its header round ${Number(header.round)}: not cut at the header`);
+            }
+            if (commitRounds.has(cRound) || (cIndex > 0 && commitIndexes.has(cIndex))) {
+              throw new Error(`snapshot commit history repeats round ${cRound} or consensus_index ${cIndex}`);
+            }
+            commitRounds.add(cRound);
+            if (cIndex > 0) commitIndexes.add(cIndex);
+            commitRows.push(c);
             seen.commit++;
             break;
           }
@@ -1069,10 +1083,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         throw new Error(`peer_consensus_index (${peerConsensusIndex}) < snapshot consensus_index (${snapshotConsensusIndex}) — peer is lying about its anchor count`);
       }
 
-      // A peer that did not cut its history at the header streams rows from past the snapshot;
-      // installing them would leave this node's history ahead of its state.
-      if (commitsPastCut > 0) {
-        throw new Error(`snapshot carries ${commitsPastCut} commit row(s) at or past its header round ${snapshotRound}, not cut at the header`);
+      if (commitIndexes.has(snapshotConsensusIndex)) {
+        throw new Error(`snapshot commit history repeats the header's consensus_index ${snapshotConsensusIndex}`);
       }
 
       // ── Reconcile ─────────────────────────────────────────────────────
@@ -1083,6 +1095,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       if (prunedRows.length > 0) {
         await dag.flush();
         log.notice(`Snapshot: reconcile pruned ${prunedRows.length} stale local row(s) absent from the snapshot`);
+      }
+      // A streamed rotation tx skipped as a duplicate of ours (same rotation, same payload) stands
+      // for our own copy, so that copy stays.
+      for (const tx of dag.getTxsByType(TX_TYPES.COMMITTEE_ROTATION)) {
+        const rn = tx.data?.rotation_number;
+        const installedRotation = rn != null ? dag.getCommitteeRotation(rn) : null;
+        if (installedRotation && installedRotation.payload_hash === tx.data?.payload_hash) streamedTxIds.add(tx.tx_id);
       }
       const prunedTxs = await dag.pruneTransactionsExcept(streamedTxIds);
       if (prunedTxs.length > 0) {

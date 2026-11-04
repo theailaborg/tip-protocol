@@ -1,9 +1,7 @@
 /**
  * @file tests/db/knex-adapter-history-replace.test.js
- * @description Snapshot install replaces the commit history and prunes the tx history in the mirror and
- * the database alike, inside bulk-install mode. A joiner's own rows reuse consensus indexes the attested
- * history needs (UNIQUE(consensus_index)); an insert-or-ignore left the mirror ahead of the DB and the
- * parity probe fail-stopped the node in a resync loop.
+ * @description Snapshot install replaces the commit history and prunes the tx history alike in the mirror
+ * and the database, in bulk mode, even when the joiner's own rows collide on consensus_index.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0

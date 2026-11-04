@@ -1779,12 +1779,11 @@ class KnexAdapter {
   async replaceCommits(recs) {
     this.mirror.replaceCommits(recs);
     await this.flush();
-    const rows = recs.map(r => this._commitRow(r));
     try {
       await this.knex.transaction(async (trx) => {
         await trx("commits").del();
-        for (let i = 0; i < rows.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
-          await trx("commits").insert(rows.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS));
+        for (let i = 0; i < recs.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+          await trx("commits").insert(recs.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS).map(r => this._commitRow(r)));
         }
       });
     } catch (err) {
