@@ -1161,6 +1161,33 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       }
     },
 
+    /**
+     * Snapshot install: the commit frontier and anchor count become the snapshot's exactly. Anchors
+     * committed past it (during the install, or on the state it replaces) commit again, or their
+     * txs, pruned with the stale history, never apply.
+     */
+    alignToSnapshot(boundaryRound, consensusIndex) {
+      if (_pendingAnchorCommit) {
+        clearTimeout(_pendingAnchorCommit.timer);
+        _pendingAnchorCommit = null;
+      }
+      if (_lastCommittedRound > boundaryRound) {
+        for (const hash of [..._orderedCertHashes]) {
+          const cert = dag.getCertificate(hash);
+          if (cert && cert.round > boundaryRound) _orderedCertHashes.delete(hash);
+        }
+        log.notice(`Bullshark: commit frontier lowered ${_lastCommittedRound} → ${boundaryRound} to the snapshot`);
+      }
+      _lastCommittedRound = boundaryRound;
+      if (consensusIndex > 0 && consensusIndex !== _consensusIndex) {
+        _consensusIndex = consensusIndex;
+        if (dag.setConsensusMeta) {
+          try { dag.setConsensusMeta("last_consensus_index", _consensusIndex); }
+          catch (err) { log.warn(`alignToSnapshot: consensus_meta write failed: ${err.message}`); }
+        }
+      }
+    },
+
     /** Stats for monitoring */
     stats: () => ({
       lastCommittedRound: _lastCommittedRound,
