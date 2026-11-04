@@ -746,12 +746,20 @@ class KnexAdapter {
   // final SQL state matches the mirror. Failures are swallowed per-write so a
   // single bad write doesn't poison the chain for everyone behind it.
   _ff(fn) {
-    // Bulk install: run the write NOW so _dbInsert buffers the row for batchInsert.
-    // Inserts-only into cleared tables, so no ordering hazard vs the _ffChain.
-    if (this._bulkInstall) { fn(); return; }
+    // Bulk install: run the write NOW so _dbInsert buffers the row for batchInsert. Anything else
+    // it returns (a lazy delete builder, an async write) must still run, and flush() awaits it.
+    if (this._bulkInstall) {
+      const pending = fn();
+      if (pending && typeof pending.then === "function") this._chainWrite(() => pending);
+      return;
+    }
     // Inside runInTransaction(fn): buffer the write so it joins the single
     // transaction flushed afterwards, instead of firing on its own connection.
     if (this._txBuffer) { this._txBuffer.push(fn); return; }
+    this._chainWrite(fn);
+  }
+
+  _chainWrite(fn) {
     this._ffPendingSince.push(nowMs());
     this._ffChain = (this._ffChain || Promise.resolve())
       .then(() => fn())
