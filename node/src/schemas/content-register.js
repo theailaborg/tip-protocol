@@ -398,7 +398,11 @@ function _normalizeExtras(input) {
   return input;
 }
 
-const EMAIL_EXTRAS_KEYS = new Set(["v", "recipients"]);
+// Each seal is a client-side commitment, 64 lowercase hex: recipients (To and
+// Cc), from (the sender's address) and all (To, Cc and Bcc with a secret only
+// the sender holds, so Bcc stays private). The node never sees an address.
+const EMAIL_SEALS = ["recipients", "from", "all"];
+const EMAIL_EXTRAS_KEYS = new Set(["v", ...EMAIL_SEALS]);
 
 /**
  * True when the signed extras mark an email registration
@@ -411,11 +415,12 @@ function isEmailExtras(extras) {
 }
 
 /**
- * Shape of the email marker: `{ v: 1 }` or `{ v: 1, recipients }`, where
- * recipients is the client's salted commitment to the To/Cc addresses
- * (64 lowercase hex; the node never sees the addresses). API time only:
- * _normalizeExtras also runs on consensus replay, and a check there would
- * refuse txs that older nodes committed.
+ * Shape of the email marker: `{ v: 1 }` plus any of the optional seals
+ * `recipients`, `from` and `all`, each the client's commitment (64 lowercase
+ * hex; the node never sees the addresses). recipients covers To and Cc, from
+ * the sender's address, all To, Cc and Bcc with a secret only the sender
+ * holds (2.9.3). API time only: _normalizeExtras also runs on consensus
+ * replay, and a check there would refuse txs that older nodes committed.
  */
 function _validateEmailExtras(extras) {
   if (!extras || typeof extras !== "object" || Array.isArray(extras)) return;
@@ -423,13 +428,15 @@ function _validateEmailExtras(extras) {
   const e = extras.email;
   const invalid = (what) => schemaError(400, `extras.email ${what}`, "extras_email_invalid");
   if (!e || typeof e !== "object" || Array.isArray(e)) {
-    throw invalid("must be an object like { v: 1 } or { v: 1, recipients }");
+    throw invalid("must be an object like { v: 1 } or { v: 1, recipients, from, all }");
   }
   const unknown = Object.keys(e).filter((k) => !EMAIL_EXTRAS_KEYS.has(k));
-  if (unknown.length) throw invalid(`has unknown keys: ${unknown.join(", ")} (allowed: v, recipients)`);
+  if (unknown.length) throw invalid(`has unknown keys: ${unknown.join(", ")} (allowed: v, ${EMAIL_SEALS.join(", ")})`);
   if (e.v !== 1) throw invalid("v must be the integer 1");
-  if (e.recipients !== undefined && (typeof e.recipients !== "string" || !/^[0-9a-f]{64}$/.test(e.recipients))) {
-    throw invalid("recipients must be a 64-char lowercase hex string");
+  for (const k of EMAIL_SEALS) {
+    if (e[k] !== undefined && (typeof e[k] !== "string" || !/^[0-9a-f]{64}$/.test(e[k]))) {
+      throw invalid(`${k} must be a 64-char lowercase hex string`);
+    }
   }
 }
 

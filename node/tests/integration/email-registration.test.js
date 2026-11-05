@@ -175,6 +175,23 @@ describe("email registration: prescan", () => {
     expect(fx.dag.getContent(r.ctid).status).toBe(CONTENT_STATUS.REGISTERED);
   });
 
+  test("2.9.3: the from and all seals are signed, committed and stored as sent, and the email stays out of the classifier", async () => {
+    const classifier = classifierSpy();
+    const fx = setup({ classifier });
+    const seals = { v: 1, recipients: RECIPIENTS, from: "f0".repeat(32), all: "a1".repeat(32) };
+    const r = await fx.contentService.register(fx.body({ extras: { email: seals } }));
+    expect(r.prescan_status).toBe("pending");
+    expect(fx.prescanJobs.getByCtid(r.ctid).payload.email).toBe(true);
+    const regTx = fx.submitted.find(t => t.tx_type === TX_TYPES.REGISTER_CONTENT);
+    expect(regTx.data.extras).toEqual({ email: seals });
+    expect(JSON.stringify(regTx)).not.toContain("private figures");
+    fx.commitDrain();
+    await fx.worker.tick();
+    expect(classifier.prescan).not.toHaveBeenCalled();
+    fx.commitDrain();
+    expect(fx.dag.getContent(r.ctid).extras).toEqual({ email: seals });
+  });
+
   test("a registration without extras.email still passes its text to the classifier", async () => {
     const classifier = classifierSpy(0.2);
     const fx = setup({ classifier });

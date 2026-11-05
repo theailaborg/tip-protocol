@@ -926,6 +926,25 @@ describe("extras.email gate", () => {
     }
   });
 
+  // 2.9.3: the sender's address (from) and To, Cc and Bcc under a secret only
+  // the sender holds (all) are sealed too, each as a commitment.
+  test("from and all seals are accepted, alone or together", () => {
+    const S = "a1".repeat(32);
+    expect(_err({ email: { v: 1, from: S } })).toBeNull();
+    expect(_err({ email: { v: 1, all: S } })).toBeNull();
+    expect(_err({ email: { v: 1, recipients: RECIPIENTS, from: S, all: S } })).toBeNull();
+  });
+
+  test("from and all must be 64 lowercase hex, never an address", () => {
+    for (const k of ["from", "all"]) {
+      for (const bad of ["A1".repeat(32), "a1".repeat(31), "a1".repeat(33), "zz".repeat(32), "ana@example.com", 42, null, ""]) {
+        const e = _err({ email: { v: 1, [k]: bad } });
+        expect(e).toMatchObject({ status: 400, code: "extras_email_invalid" });
+        expect(e.error).toMatch(new RegExp(`^extras\\.email ${k} must be a 64-char lowercase hex string`));
+      }
+    }
+  });
+
   test("unknown keys are refused", () => {
     const e = _err({ email: { v: 1, to: "someone@example.com" } });
     expect(e).toMatchObject({ status: 400, code: "extras_email_invalid" });
