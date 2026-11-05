@@ -144,7 +144,7 @@ function createBus() {
 
 // ── node factory (real narwhal+bullshark+commit-handler) ──────────────────────
 
-function makeNode(nodeId, kp, registered, committeeIds, bus, rejections) {
+function makeNode(nodeId, kp, registered, committeeIds, bus, rejections, activationMs) {
   const dag = initDAG({ dbPath: ":memory:" });
   for (const m of registered) {
     dag.saveNode({ node_id: m.nodeId, name: m.nodeId, public_key: m.publicKey, status: "active", registered_at: T0 });
@@ -152,6 +152,7 @@ function makeNode(nodeId, kp, registered, committeeIds, bus, rejections) {
   const config = {
     nodeId, nodeRegisteredId: nodeId,
     nodePrivateKey: kp.privateKey, nodePublicKey: kp.publicKey,
+    deterministicCommitActivationMs: activationMs,
   };
   const scoring = initScoring(dag, config);
   const mempool = createMempool(dag, { nodeId });
@@ -159,12 +160,16 @@ function makeNode(nodeId, kp, registered, committeeIds, bus, rejections) {
   const committee = [...committeeIds].sort();
   const getCommittee = () => committee;
   const network = bus.adapterFor(nodeId);
+  // Each anchor commit's ordered txs, in commit order: the consensus output to compare across nodes.
+  const committedGroups = [];
 
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
+    deterministicCommitActivationMs: activationMs,
     onMissingCertsTimeout: () => { },
     onOrderedTxs: (orderedTxs, round, certTimestamp) => {
+      committedGroups.push({ round, txIds: orderedTxs.map((t) => t.tx_id) });
       const res = commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp });
       // No-loss bookkeeping: an ordered tx that did NOT persist was explicitly
       // rejected by commit-handler (recorded, not silently lost).
@@ -214,12 +219,13 @@ function makeNode(nodeId, kp, registered, committeeIds, bus, rejections) {
     return body.tx_id;
   }
 
-  return { nodeId, dag, mempool, narwhal, bullshark, commitHandler, submitTx };
+  return { nodeId, dag, mempool, narwhal, bullshark, commitHandler, submitTx, committedGroups };
 }
 
 // ── the cluster ────────────────────────────────────────────────────────────────
 
-function createInProcessCluster({ nodeCount = 3, committeeSize = nodeCount } = {}) {
+// activationMs: the deterministic-commit activation (undefined = the mainnet constant).
+function createInProcessCluster({ nodeCount = 3, committeeSize = nodeCount, activationMs } = {}) {
   // Virtual clock: tests enable jest fake timers; pin the system clock so the
   // BFT-time floor is satisfied and nowMs() advances deterministically.
   if (typeof jest !== "undefined" && jest.setSystemTime) jest.setSystemTime(T0);
@@ -231,7 +237,7 @@ function createInProcessCluster({ nodeCount = 3, committeeSize = nodeCount } = {
     return { nodeId: `tip://node/n${i}`, ...kp };
   });
   const committeeIds = all.slice(0, committeeSize).map((m) => m.nodeId);
-  const nodes = all.map((m) => makeNode(m.nodeId, m, all, committeeIds, bus, rejections));
+  const nodes = all.map((m) => makeNode(m.nodeId, m, all, committeeIds, bus, rejections, activationMs));
   nodes.forEach((n) => n.narwhal.start());
 
   // Index helpers: setDelay accepts node indices or node-id strings.

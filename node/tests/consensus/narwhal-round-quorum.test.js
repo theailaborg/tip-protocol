@@ -1,6 +1,7 @@
 /**
  * @file tests/consensus/narwhal-round-quorum.test.js
- * @description Round advance, own-cert sealing and batch requeue under a peer whose certs land late.
+ * @description Round advance, own-cert sealing, cert acceptance and batch requeue under a peer whose
+ * certs land late, from the deterministic-commit activation and (where it differs) before it.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -30,13 +31,16 @@ beforeAll(async () => {
 const SELF = "tip://node/self";
 const B = "tip://node/peerB";
 const C = "tip://node/peerC";
+const OUT = "tip://node/outsider";   // registered, not in the committee
+const ACTIVE = 0;
+const LEGACY = Number.MAX_SAFE_INTEGER;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function build() {
-  const kp = { [SELF]: generateMLDSAKeypair(), [B]: generateMLDSAKeypair(), [C]: generateMLDSAKeypair() };
+function build({ activationMs = ACTIVE } = {}) {
+  const kp = { [SELF]: generateMLDSAKeypair(), [B]: generateMLDSAKeypair(), [C]: generateMLDSAKeypair(), [OUT]: generateMLDSAKeypair() };
   const dag = initDAG({ inMemory: true });
   const published = [];
-  for (const id of [SELF, B, C]) {
+  for (const id of [SELF, B, C, OUT]) {
     dag.saveNode({ node_id: id, name: id, public_key: kp[id].publicKey, status: "active", registered_at: 1767225600000 });
   }
   dag.saveCommitteeRotation({
@@ -52,7 +56,10 @@ function build() {
   const mempool = createMempool({ dag });
   const narwhal = createNarwhal({
     dag, mempool, network,
-    config: { nodeId: SELF, nodeRegisteredId: SELF, nodePrivateKey: kp[SELF].privateKey, nodePublicKey: kp[SELF].publicKey },
+    config: {
+      nodeId: SELF, nodeRegisteredId: SELF, nodePrivateKey: kp[SELF].privateKey, nodePublicKey: kp[SELF].publicKey,
+      deterministicCommitActivationMs: activationMs,
+    },
     getNodeKey: (id) => dag.getNode(id)?.public_key || null,
     getNodeCount: () => 3,
     getCommittee: (round) => getActiveCommittee(dag, round != null ? round : narwhal.currentRound()),
@@ -62,10 +69,30 @@ function build() {
   return { narwhal, dag, kp, mempool, published };
 }
 
-function peerCert(fx, round, author, ackers, parentHashes) {
+function makeCert(fx, round, author, ackers, parentHashes) {
   const batch = createBatch(round, author, [], fx.kp[author].privateKey);
   const acks = ackers.map((id) => createBatchAck(batch.hash, id, nowMs(), fx.kp[id].privateKey));
-  return encode("Certificate", serializeCertificate(createCertificate(round, author, batch, acks, parentHashes, fx.kp[author].privateKey)));
+  return createCertificate(round, author, batch, acks, parentHashes, fx.kp[author].privateKey);
+}
+
+function peerCert(fx, round, author, ackers, parentHashes) {
+  return encode("Certificate", serializeCertificate(makeCert(fx, round, author, ackers, parentHashes)));
+}
+
+// History a node already holds below the rounds under test (stored as-is, not re-validated).
+function seedRound(fx, round) {
+  return [B, C].map((id) => {
+    const cert = makeCert(fx, round, id, [B, C], []);
+    fx.dag.saveCertificate(cert);
+    return cert.hash;
+  });
+}
+
+// The previous round's certs, as any node that reached round r holds them.
+async function deliverPreviousRound(fx, r) {
+  const below = seedRound(fx, r - 2);
+  await fx.narwhal.handleIncomingCertificate(peerCert(fx, r - 1, B, [B, C], below));
+  await fx.narwhal.handleIncomingCertificate(peerCert(fx, r - 1, C, [C, B], below));
 }
 
 async function advanceToNextRound(fx) {
@@ -73,9 +100,7 @@ async function advanceToNextRound(fx) {
   fx.narwhal.exitSyncMode(999);
   await sleep(50);
   const r = fx.narwhal.currentRound();
-  // The previous round's certs, as any node that reached round r holds them.
-  await fx.narwhal.handleIncomingCertificate(peerCert(fx, r - 1, B, [B, C], []));
-  await fx.narwhal.handleIncomingCertificate(peerCert(fx, r - 1, C, [C, B], []));
+  await deliverPreviousRound(fx, r);
   const prev = fx.dag.getCertificatesByRound(r - 1).map((c) => c.hash);
   const own = createBatch(r, SELF, [], fx.kp[SELF].privateKey);
   fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(createBatchAck(own.hash, B, nowMs(), fx.kp[B].privateKey))));
@@ -108,6 +133,31 @@ describe("narwhal: round quorum counts only certs of the current round", () => {
   }, 10000);
 });
 
+describe("narwhal: only committee certs count toward the round quorum", () => {
+  async function outsiderPlusOne(fx) {
+    const r = await advanceToNextRound(fx);
+    const parents = fx.dag.getCertificatesByRound(r).map((c) => c.hash);
+    await fx.narwhal.handleIncomingCertificate(peerCert(fx, r + 1, OUT, [C, B], parents));
+    await fx.narwhal.handleIncomingCertificate(peerCert(fx, r + 1, C, [C, B], parents));
+    expect(fx.dag.getCertificatesByRound(r + 1)).toHaveLength(2);
+    return r;
+  }
+
+  test("a cert from a registered node outside the committee does not advance the round", async () => {
+    const fx = build();
+    const r = await outsiderPlusOne(fx);
+    expect(fx.narwhal.currentRound()).toBe(r + 1);
+    fx.narwhal.stop();
+  }, 10000);
+
+  test("before the activation the outsider's cert still counts (old rule unchanged)", async () => {
+    const fx = build({ activationMs: LEGACY });
+    const r = await outsiderPlusOne(fx);
+    expect(fx.narwhal.currentRound()).toBe(r + 2);
+    fx.narwhal.stop();
+  }, 10000);
+});
+
 describe("narwhal: own cert needs a quorum of previous-round parents", () => {
   test("a fast-forwarded node holds its seal until the previous round's certs arrive", async () => {
     const fx = build();
@@ -120,8 +170,7 @@ describe("narwhal: own cert needs a quorum of previous-round parents", () => {
     await sleep(20);
     expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeFalsy();
 
-    await fx.narwhal.handleIncomingCertificate(peerCert(fx, r - 1, B, [B, C], []));
-    await fx.narwhal.handleIncomingCertificate(peerCert(fx, r - 1, C, [C, B], []));
+    await deliverPreviousRound(fx, r);
     await sleep(20);
     const cert = fx.dag.getCertificateByAuthorRound(SELF, r);
     expect(cert).toBeTruthy();
@@ -129,7 +178,7 @@ describe("narwhal: own cert needs a quorum of previous-round parents", () => {
     fx.narwhal.stop();
   }, 10000);
 
-  test("without parents it still seals once the round timer fires (no liveness loss)", async () => {
+  test("without a parent quorum it never seals, not even after the round timer", async () => {
     const fx = build();
     fx.narwhal.start();
     fx.narwhal.exitSyncMode(999);
@@ -137,10 +186,47 @@ describe("narwhal: own cert needs a quorum of previous-round parents", () => {
     const r = fx.narwhal.currentRound();
     const own = createBatch(r, SELF, [], fx.kp[SELF].privateKey);
     fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(createBatchAck(own.hash, B, nowMs(), fx.kp[B].privateKey))));
-    await sleep(20);
-    expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeFalsy();
     await sleep(2300);
+    expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeFalsy();
+    expect(fx.narwhal.stats().metrics.seals_waiting_parents).toBeGreaterThan(0);
+    fx.narwhal.stop();
+  }, 10000);
+
+  test("before the activation it seals at once on whatever parents it holds (old rule unchanged)", async () => {
+    const fx = build({ activationMs: LEGACY });
+    fx.narwhal.start();
+    fx.narwhal.exitSyncMode(999);
+    await sleep(50);
+    const r = fx.narwhal.currentRound();
+    const own = createBatch(r, SELF, [], fx.kp[SELF].privateKey);
+    fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(createBatchAck(own.hash, B, nowMs(), fx.kp[B].privateKey))));
+    await sleep(20);
     expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeTruthy();
+    fx.narwhal.stop();
+  }, 10000);
+});
+
+describe("narwhal: a peer cert needs a quorum of previous-round committee parents", () => {
+  async function thinPeerCert(fx) {
+    fx.narwhal.start();
+    fx.narwhal.exitSyncMode(999);
+    await sleep(50);
+    const r = fx.narwhal.currentRound();
+    const below = seedRound(fx, r - 2);
+    await fx.narwhal.handleIncomingCertificate(peerCert(fx, r - 1, B, [B, C], [below[0]]));
+    return fx.dag.getCertificateByAuthorRound(B, r - 1);
+  }
+
+  test("a cert on a single parent is refused", async () => {
+    const fx = build();
+    expect(await thinPeerCert(fx)).toBeFalsy();
+    expect(fx.narwhal.stats().metrics.certs_rejected_parents).toBe(1);
+    fx.narwhal.stop();
+  }, 10000);
+
+  test("before the activation the same cert is accepted (old rule unchanged)", async () => {
+    const fx = build({ activationMs: LEGACY });
+    expect(await thinPeerCert(fx)).toBeTruthy();
     fx.narwhal.stop();
   }, 10000);
 });
@@ -151,32 +237,29 @@ function testTx(i) {
   return body;
 }
 
-describe("narwhal: the parent wait is bounded across fast-forwards", () => {
-  test("a node that keeps fast-forwarding without parents still seals one round timeout after it began waiting", async () => {
+describe("narwhal: a node that fast-forwards without parents keeps its txs", () => {
+  test("the batch it could not seal goes back to the mempool and into its next batch", async () => {
     const fx = build();
+    const tx = testTx(2);
+    expect(fx.mempool.add(tx).added).toBe(true);
     fx.narwhal.start();
     fx.narwhal.exitSyncMode(999);
     await sleep(50);
     const r = fx.narwhal.currentRound();
-    const ownBatch = (round) => fx.published.filter((m) => m.topic === "tip/mempool")
-      .map((m) => deserializeBatch(decode("Batch", m.buf))).find((b) => b.round === round && b.author_node_id === SELF);
-    const ackOwn = (round, from) => fx.narwhal.handleIncomingAck(encode("BatchAck",
-      serializeBatchAck(createBatchAck(ownBatch(round).hash, from, nowMs(), fx.kp[from].privateKey))));
+    const batches = () => fx.published.filter((m) => m.topic === "tip/mempool")
+      .map((m) => deserializeBatch(decode("Batch", m.buf))).filter((b) => b.author_node_id === SELF);
+    const first = batches().find((b) => b.round === r);
+    expect(first.txs.map((t) => t.tx_id)).toEqual([tx.tx_id]);
+    fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(createBatchAck(first.hash, B, nowMs(), fx.kp[B].privateKey))));
+    await sleep(20);
+    expect(fx.dag.getCertificateByAuthorRound(SELF, r)).toBeFalsy();
 
-    ackOwn(r, B);
-    await sleep(1150);
-    // A peer batch one round ahead fast-forwards the node and re-arms its round timer.
+    // A peer batch one round ahead fast-forwards the node past the round it could not seal.
     fx.narwhal.handleIncomingBatch(encode("Batch", serializeBatch(createBatch(r + 1, B, [], fx.kp[B].privateKey))));
     await sleep(50);
     expect(fx.narwhal.currentRound()).toBe(r + 1);
-    ackOwn(r + 1, B);
-    await sleep(20);
-    expect(fx.dag.getCertificateByAuthorRound(SELF, r + 1)).toBeFalsy();
-
-    await sleep(1000);
-    ackOwn(r + 1, C);
-    await sleep(20);
-    expect(fx.dag.getCertificateByAuthorRound(SELF, r + 1)).toBeTruthy();
+    const next = batches().find((b) => b.round === r + 1);
+    expect(next.txs.map((t) => t.tx_id)).toEqual([tx.tx_id]);
     fx.narwhal.stop();
   }, 10000);
 });

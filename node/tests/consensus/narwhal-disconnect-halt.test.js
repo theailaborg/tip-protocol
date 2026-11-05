@@ -218,7 +218,7 @@ describe("narwhal — peer disconnect halts round advance (partition-safety prop
     const peerCert = createCertificate(
       1000, PEER_ID, peerBatch,
       [peerSelfAck, selfAckOfPeerBatch],
-      [],  // no parents (round 1000 isn't 1)
+      fx.dag.getCertificatesByRound(999).map((c) => c.hash),   // the seeded round-999 parents, as a real peer holds them
       fx.peerKp.privateKey
     );
     const { serializeCertificate } = require(path.join(SRC, "consensus", "certificate-codec"));
