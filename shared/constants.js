@@ -1252,6 +1252,10 @@ const KEY_RETIREMENT_ACTIVATION_MS = 1791504000000; // 2026-10-09 00:00:00 UTC m
 // the current key could otherwise keep its window open past the owner's
 // recovery. API-enforced always; commit-enforced from the activation above.
 const KEY_ROTATION_MAX_LEAD_MS = 24 * 60 * 60 * 1000;
+// Committee-only quorums, certs on a quorum of committee parents, and recursive anchor commit
+// (Bullshark's rule, so the committed sequence depends on the DAG alone, not on when votes arrived).
+// Changes which anchors commit, so every node runs it before this epoch.
+const DETERMINISTIC_COMMIT_ACTIVATION_MS = 1796083200000; // 2026-12-01 00:00:00 UTC mainnet activation
 
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",
@@ -1319,6 +1323,7 @@ module.exports = {
   KEY_RETIREMENT_GRACE_MS,
   KEY_RETIREMENT_ACTIVATION_MS,
   KEY_ROTATION_MAX_LEAD_MS,
+  DETERMINISTIC_COMMIT_ACTIVATION_MS,
   ORG_MEMBER_ROLES,
   ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,

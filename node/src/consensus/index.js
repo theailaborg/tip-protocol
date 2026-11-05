@@ -219,6 +219,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
+    deterministicCommitActivationMs: config.deterministicCommitActivationMs,
     // Keep the cert-DAG merkle GC-aligned: re-source the sync-handler tree when
     // bullshark prunes old certs, so all nodes' roots reflect the same live set.
     onCertsPruned: () => { try { syncHandler.onCertsPruned(); } catch { /* ignore */ } },

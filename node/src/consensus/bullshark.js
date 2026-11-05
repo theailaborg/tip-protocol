@@ -29,6 +29,7 @@ const { computeQuorum } = require("./certificate");
 const { buildRotationTx } = require("./rotation-coordinator");
 const { computeStateMerkleRoot, computeTxsMerkleRoot } = require("./state-root");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { DETERMINISTIC_COMMIT_ACTIVATION_MS } = require("../../../shared/constants");
 const { shake256, canonicalJson, mldsaSign } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { computeNextRotationCommittee, epochIndexOfTime } = require("./participants");
@@ -61,7 +62,7 @@ const log = getLogger("tip.bullshark");
  *                                              dag.getNode(nodeId)?.public_key.
  * @returns {Object} Bullshark instance
  */
-function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout, onCertsPruned, certRetentionFloor = null }) {
+function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout, onCertsPruned, certRetentionFloor = null, deterministicCommitActivationMs = DETERMINISTIC_COMMIT_ACTIVATION_MS }) {
   // Track which certificates have already been ordered (by hash)
   const _orderedCertHashes = new Set();
 
@@ -90,6 +91,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     anchors_deferred_incomplete_dag: 0,  // anchor walks that parked due to missing parent certs
     anchors_unblocked_by_cert: 0,        // parked anchors that resumed after missing cert arrived
     bft_time_violations: 0,              // anchors skipped for BFT-time monotonicity violations
+    anchors_committed_linked: 0,         // anchors committed because a later committed anchor reaches them
   };
 
   // Monotonic commit sequence number (§15). One per successful anchor
@@ -243,17 +245,28 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       return;
     }
     const quorum = computeQuorum(nodeIds.length);
+    // Per anchor, from its signed BFT timestamp, so every node switches rules at the same anchor.
+    const deterministic = leaderCert.timestamp >= deterministicCommitActivationMs;
 
     let supportCount = 0;
-    for (const voteCert of voteCerts) {
-      if (_referencesAncestor(voteCert, leaderCert.hash, proposeRound)) {
-        supportCount++;
+    if (deterministic) {
+      supportCount = _committeeSupport(leaderCert, voteCerts, nodeIds);
+    } else {
+      for (const voteCert of voteCerts) {
+        if (_referencesAncestor(voteCert, leaderCert.hash, proposeRound)) {
+          supportCount++;
+        }
       }
     }
 
     if (supportCount < quorum) {
       _metrics.anchors_no_support++;
       log.debug(`Round ${voteRound}: anchor ${leader} not committed (${supportCount}/${quorum} support)`);
+      return;
+    }
+
+    if (deterministic) {
+      _commitAnchorChain(leaderCert, voteRound, supportCount);
       return;
     }
 
@@ -279,16 +292,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     // node sees the same cert with the same timestamp and makes the same
     // decision.
     const certTs = leaderCert.timestamp;
-    const floor = _lastAnchorTimestamp || CONSENSUS.BFT_TIME_GENESIS_MS;
-    if (!Number.isInteger(certTs) || certTs <= floor) {
-      _metrics.bft_time_violations++;
-      log.error(
-        `BFT-Time monotonicity violation at round ${voteRound}: ` +
-        `anchor cert.timestamp=${certTs} (leader=${leader}), floor=${floor} ` +
-        `(${_lastAnchorTimestamp ? "prev anchor" : "genesis"}). Skipping anchor commit.`
-      );
-      return;
-    }
+    if (!_bftTimeAllows(certTs, voteRound, leader)) return;
 
     // ANCHOR COMMITTED
     _metrics.anchors_committed++;
@@ -301,11 +305,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     // Persisted via consensus_meta so the value survives restart on
     // idle federations (where commit rows are sparse and the column-on-
     // commits recovery path would under-report).
-    _consensusIndex += 1;
-    if (dag.setConsensusMeta) {
-      try { dag.setConsensusMeta("last_consensus_index", _consensusIndex); }
-      catch (err) { log.warn(`Round ${voteRound}: consensus_meta write failed: ${err.message}`); }
-    }
+    _advanceConsensusIndex(voteRound);
 
     // #75 — rotation participation tally. Walk the BFT-anchored DAG
     // chain from the leader cert and increment for every author and
@@ -339,42 +339,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     // force=true skips re-parking — used by the timeout fallback to prevent
     // an infinite defer→timeout→defer loop when missing certs are GC'd by peers.
     if (missingHashes.size > 0 && !_pendingAnchorCommit && !force) {
-      _metrics.anchors_deferred_incomplete_dag++;
-      const DEFER_MS = CONSENSUS.BULLSHARK_DEFER_MS || 4000;
-      log.warn(
-        `Round ${voteRound}: anchor DAG incomplete — ${missingHashes.size} parent cert(s) missing. ` +
-        `Parking commit for up to ${DEFER_MS}ms for anti-entropy to fill gaps.`
-      );
-      const timer = setTimeout(() => {
-        if (_pendingAnchorCommit && _pendingAnchorCommit.voteRound === voteRound) {
-          const stillMissing = _pendingAnchorCommit.missingHashes.size;
-          // The missing certs were never produced (node was paused) — AE can't
-          // pull what doesn't exist. Force-committing with a truncated cert set
-          // produces a different tx set than honest peers → byzantine_fork halt.
-          // Trigger a snapshot resync instead so we pull the correct committed
-          // state from a peer rather than writing divergent state locally.
-          if (stillMissing > 0) {
-            // NEVER force-commit a truncated wave: it produces a different tx
-            // set than peers (byzantine_fork). Resync when wired; otherwise
-            // leave the anchor unparked for gossip/AE to retry with full certs.
-            _pendingAnchorCommit = null;
-            if (typeof onMissingCertsTimeout === "function") {
-              log.warn(
-                `Round ${voteRound}: deferred anchor timed out with ${stillMissing} cert(s) permanently ` +
-                `missing , triggering snapshot resync instead of force-committing divergent state`
-              );
-              onMissingCertsTimeout(voteRound, stillMissing);
-            } else {
-              log.error(`Round ${voteRound}: deferred anchor timed out with ${stillMissing} cert(s) missing and no resync handler , holding commit, retrying on next cert/round`);
-            }
-          } else {
-            log.warn(`Round ${voteRound}: deferred anchor timed out , committing (certs arrived)`);
-            _pendingAnchorCommit = null;
-            _checkAnchorCommit(voteRound, { force: true });
-          }
-        }
-      }, DEFER_MS);
-      _pendingAnchorCommit = { voteRound, anchorCert: leaderCert, missingHashes, timer };
+      _parkAnchorCommit(voteRound, leaderCert, missingHashes);
       return;
     }
 
@@ -383,6 +348,127 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       clearTimeout(_pendingAnchorCommit.timer);
       _pendingAnchorCommit = null;
     }
+
+    _applyAnchor(leaderCert, voteRound, leader, nodeIds, supportCount, anchoredCerts);
+  }
+
+  function _bftTimeAllows(certTs, voteRound, leader) {
+    const floor = _lastAnchorTimestamp || CONSENSUS.BFT_TIME_GENESIS_MS;
+    if (Number.isInteger(certTs) && certTs > floor) return true;
+    _metrics.bft_time_violations++;
+    log.error(
+      `BFT-Time monotonicity violation at round ${voteRound}: ` +
+      `anchor cert.timestamp=${certTs} (leader=${leader}), floor=${floor} ` +
+      `(${_lastAnchorTimestamp ? "prev anchor" : "genesis"}). Skipping anchor commit.`
+    );
+    return false;
+  }
+
+  function _advanceConsensusIndex(voteRound) {
+    _consensusIndex += 1;
+    if (dag.setConsensusMeta) {
+      try { dag.setConsensusMeta("last_consensus_index", _consensusIndex); }
+      catch (err) { log.warn(`Round ${voteRound}: consensus_meta write failed: ${err.message}`); }
+    }
+  }
+
+  function _parkAnchorCommit(voteRound, leaderCert, missingHashes) {
+    _metrics.anchors_deferred_incomplete_dag++;
+    const DEFER_MS = CONSENSUS.BULLSHARK_DEFER_MS || 4000;
+    log.warn(
+      `Round ${voteRound}: anchor DAG incomplete, ${missingHashes.size} parent cert(s) missing. ` +
+      `Parking commit for up to ${DEFER_MS}ms for anti-entropy to fill gaps.`
+    );
+    const timer = setTimeout(() => {
+      if (_pendingAnchorCommit && _pendingAnchorCommit.voteRound === voteRound) {
+        const stillMissing = _pendingAnchorCommit.missingHashes.size;
+        // The missing certs were never produced (node was paused), so AE can't
+        // pull what doesn't exist. Force-committing with a truncated cert set
+        // produces a different tx set than honest peers → byzantine_fork halt.
+        // Trigger a snapshot resync instead so we pull the correct committed
+        // state from a peer rather than writing divergent state locally.
+        if (stillMissing > 0) {
+          // NEVER force-commit a truncated wave: it produces a different tx
+          // set than peers (byzantine_fork). Resync when wired; otherwise
+          // leave the anchor unparked for gossip/AE to retry with full certs.
+          _pendingAnchorCommit = null;
+          if (typeof onMissingCertsTimeout === "function") {
+            log.warn(
+              `Round ${voteRound}: deferred anchor timed out with ${stillMissing} cert(s) permanently ` +
+              `missing , triggering snapshot resync instead of force-committing divergent state`
+            );
+            onMissingCertsTimeout(voteRound, stillMissing);
+          } else {
+            log.error(`Round ${voteRound}: deferred anchor timed out with ${stillMissing} cert(s) missing and no resync handler , holding commit, retrying on next cert/round`);
+          }
+        } else {
+          log.warn(`Round ${voteRound}: deferred anchor timed out , committing (certs arrived)`);
+          _pendingAnchorCommit = null;
+          _checkAnchorCommit(voteRound, { force: true });
+        }
+      }
+    }, DEFER_MS);
+    _pendingAnchorCommit = { voteRound, anchorCert: leaderCert, missingHashes, timer };
+  }
+
+  // Only committee members vote, once each: the quorum is sized on the committee, and two committee
+  // quorums always share an honest member, which a vote from outside the committee does not.
+  function _committeeSupport(anchorCert, voteCerts, committee) {
+    const members = new Set(committee);
+    const voters = new Set();
+    for (const voteCert of voteCerts) {
+      if (!members.has(voteCert.author_node_id) || voters.has(voteCert.author_node_id)) continue;
+      if (_referencesAncestor(voteCert, anchorCert.hash, anchorCert.round)) voters.add(voteCert.author_node_id);
+    }
+    return voters.size;
+  }
+
+  // Bullshark's commit rule: before an anchor, every earlier uncommitted anchor it reaches commits, oldest
+  // first. Which anchors commit is then a function of the DAG, not of when each vote certificate arrived.
+  function _commitAnchorChain(leaderCert, voteRound, supportCount) {
+    const { missingHashes } = _walkAnchoredCertChain(leaderCert, { mark: false });
+    if (missingHashes.size > 0) {
+      // Never on a partial history: the chain and every walk below must read the same DAG on every node.
+      if (!_pendingAnchorCommit) _parkAnchorCommit(voteRound, leaderCert, missingHashes);
+      return;
+    }
+    if (_pendingAnchorCommit && _pendingAnchorCommit.voteRound <= voteRound) {
+      clearTimeout(_pendingAnchorCommit.timer);
+      _pendingAnchorCommit = null;
+    }
+
+    const chain = [leaderCert];
+    let head = leaderCert;
+    for (let round = leaderCert.round - 2; round > _lastCommittedRound; round -= 2) {
+      const leader = _getLeader(round);
+      const prev = leader ? dag.getCertificateByAuthorRound(leader, round) : null;
+      if (!prev || _orderedCertHashes.has(prev.hash)) continue;
+      if (_referencesAncestor(head, prev.hash, round)) {
+        chain.push(prev);
+        head = prev;
+      }
+    }
+
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const anchor = chain[i];
+      const anchorVoteRound = anchor.round + 1;
+      const leader = anchor.author_node_id;
+      const committee = getNodeIds(anchorVoteRound);
+      const support = i === 0 ? supportCount : _committeeSupport(anchor, dag.getCertificatesByRound(anchorVoteRound), committee);
+      if (!_bftTimeAllows(anchor.timestamp, anchorVoteRound, leader)) continue;
+
+      _metrics.anchors_committed++;
+      if (i > 0) _metrics.anchors_committed_linked++;
+      log.debug(`Round ${anchorVoteRound}: anchor COMMITTED, leader ${leader}, support ${support}/${committee.length}${i > 0 ? ", reached by the anchor of round " + voteRound : ""}`);
+      _advanceConsensusIndex(anchorVoteRound);
+      const { certs } = _walkAnchoredCertChain(anchor);
+      _applyAnchor(anchor, anchorVoteRound, leader, committee, support, certs);
+    }
+  }
+
+  // Apply one committed anchor's walked certs: credits, rotation boundary, txs and commit row.
+  function _applyAnchor(leaderCert, voteRound, leader, nodeIds, supportCount, anchoredCerts) {
+    const certTs = leaderCert.timestamp;
 
     // Mark collected certs as ordered now (complete walk or forced commit).
     for (const cert of anchoredCerts) {
@@ -938,7 +1024,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    *     counted, so it can accumulate participation toward the
    *     threshold for next-rotation admission.
    */
-  function _walkAnchoredCertChain(anchorCert) {
+  function _walkAnchoredCertChain(anchorCert, { mark = true } = {}) {
     const toVisit = [anchorCert];
     const visited = new Set();
     const collectedCerts = [];
@@ -975,7 +1061,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
     // Only mark ordered if DAG is complete — prevents partial walks from
     // poisoning the set and blocking a future complete walk.
-    if (missingHashes.size === 0) {
+    if (mark && missingHashes.size === 0) {
       for (const cert of collectedCerts) {
         _orderedCertHashes.add(cert.hash);
       }
