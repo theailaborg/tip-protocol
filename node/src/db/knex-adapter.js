@@ -746,12 +746,20 @@ class KnexAdapter {
   // final SQL state matches the mirror. Failures are swallowed per-write so a
   // single bad write doesn't poison the chain for everyone behind it.
   _ff(fn) {
-    // Bulk install: run the write NOW so _dbInsert buffers the row for batchInsert.
-    // Inserts-only into cleared tables, so no ordering hazard vs the _ffChain.
-    if (this._bulkInstall) { fn(); return; }
+    // Bulk install: run the write NOW so _dbInsert buffers the row for batchInsert. Anything else
+    // it returns (a lazy delete builder, an async write) must still run, and flush() awaits it.
+    if (this._bulkInstall) {
+      const pending = fn();
+      if (pending && typeof pending.then === "function") this._chainWrite(() => pending);
+      return;
+    }
     // Inside runInTransaction(fn): buffer the write so it joins the single
     // transaction flushed afterwards, instead of firing on its own connection.
     if (this._txBuffer) { this._txBuffer.push(fn); return; }
+    this._chainWrite(fn);
+  }
+
+  _chainWrite(fn) {
     this._ffPendingSince.push(nowMs());
     this._ffChain = (this._ffChain || Promise.resolve())
       .then(() => fn())
@@ -1762,7 +1770,30 @@ class KnexAdapter {
 
   saveCommit(rec) {
     this.mirror.saveCommit(rec);
-    const row = {
+    const row = this._commitRow(rec);
+    this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
+  }
+
+  // Snapshot install. Awaited in one transaction rather than queued: bulk mode runs _ff writes
+  // unawaited, and a delete racing the buffered inserts could leave stale rows in Postgres.
+  async replaceCommits(recs) {
+    this.mirror.replaceCommits(recs);
+    await this.flush();
+    try {
+      await this.knex.transaction(async (trx) => {
+        await trx("commits").del();
+        for (let i = 0; i < recs.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+          await trx("commits").insert(recs.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS).map(r => this._commitRow(r)));
+        }
+      });
+    } catch (err) {
+      this.log.error(`KnexAdapter commit history replace failed , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
+  }
+
+  _commitRow(rec) {
+    return {
       round: rec.round,
       anchor_cert_hash: rec.anchor_cert_hash,
       leader_node_id: rec.leader_node_id,
@@ -1779,7 +1810,6 @@ class KnexAdapter {
       anchor_batch_hash: rec.anchor_batch_hash || null,
       local_inserted_at: nowMs(),
     };
-    this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
   }
 
   getCommit(round) { return this.mirror.getCommit(round); }
@@ -1838,6 +1868,19 @@ class KnexAdapter {
   pruneSupersededContentTxs() {
     const ids = this.mirror.pruneSupersededContentTxs();
     if (ids.length > 0) this._ff(() => this._k("transactions").whereIn("tx_id", ids).delete());
+    return ids;
+  }
+  async pruneTransactionsExcept(keepIds) {
+    const ids = this.mirror.pruneTransactionsExcept(keepIds);
+    await this.flush();
+    try {
+      for (let i = 0; i < ids.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+        await this._k("transactions").whereIn("tx_id", ids.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS)).delete();
+      }
+    } catch (err) {
+      this.log.error(`KnexAdapter tx history prune failed , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
     return ids;
   }
   deleteMempoolTxs(txIds) {

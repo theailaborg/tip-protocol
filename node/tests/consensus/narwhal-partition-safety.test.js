@@ -177,6 +177,8 @@ describe("narwhal — 4-node partition halts both halves (no split-brain)", () =
     // self's cert seals because acks (3) ≥ quorum (3). Confirms the prior
     // test's "no advance" outcome is from missing acks, not a harness bug.
     const fx = build4NodeNarwhal({ currentRound: 1000 });
+    // Round 999's certs, as any node that reached round 1000 holds them (seal needs a parent quorum).
+    for (const id of [SELF_ID, PEER_B_ID, PEER_C_ID, PEER_D_ID]) _seedProvenCertHistory(fx.dag, id, 999, 999);
 
     fx.narwhal.start();
     fx.narwhal.exitSyncMode(999);

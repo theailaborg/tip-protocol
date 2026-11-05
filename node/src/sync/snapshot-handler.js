@@ -362,6 +362,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       ? Number((bullshark.stats() || {}).consensusIndex || 0)
       : Number(latest.consensus_index || 0);
 
+    // History is cut at the header: txs and commits added while the stream is in flight would put
+    // the joiner's history ahead of its state, and its catch-up then skips those anchors.
+    const txIdsAtCut = new Set();
+    for (const tx of dag.iterateAllTransactions()) txIdsAtCut.add(tx.tx_id);
+
     // Total rows for the joiner's install % (display-only, never hashed/signed);
     // the tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
     let _snapTotalRows = 0;
@@ -483,6 +488,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // hash and store in SnapshotTxRow.canonical_json.
         const txRoot = createTxsFullRootBuilder();
         for (const tx of dag.iterateAllTransactions()) {
+          if (!txIdsAtCut.has(tx.tx_id)) continue;
           yield _frameFullHistoryRow(K.TX, "SnapshotTxRow", canonicalJson(canonTx(tx)), txRoot);
           txRowsSent++;
           await _breathe();
@@ -490,11 +496,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         txsFullRoot = txRoot.finalize();
         yield _framePhaseEnd(K.TX, txRowsSent, txsFullRoot);
 
-        // Phase C: commits history except latest (#49). Latest already
+        // Phase C: commits history below the header round (#49). Latest already
         // rides in SnapshotHeader — including it twice would double-count
         // in the receiver's commits table and break the install.
         const commitRoot = createCommitsFullRootBuilder();
         for (const c of dag.iterateAllCommitsExcept(latest.round)) {
+          if (c.round > latest.round) continue;   // past the cut, see txIdsAtCut
           yield _frameFullHistoryRow(K.COMMIT, "SnapshotCommitRow", canonicalJson(canonCommit(c)), commitRoot);
           commitRowsSent++;
           await _breathe();
@@ -708,6 +715,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const rotationRows = [];                  // few + tiny; chain-of-trust needs all
       const rpRows = [];                        // few; installed at RP boundary
       const seen = { state: 0, tx: 0, commit: 0, rotation: 0, cert: 0, rp: 0 };
+      const streamedTxIds = new Set();          // reconcile keep-set for tx history
+      const commitRows = [];                    // replaces the local commit history at finalize
+      const commitRounds = new Set();
+      const commitIndexes = new Set();
       const phaseVerified = new Set();          // which phase trailers arrived
       let header = null, end = null;
       let verifiedRotations = [];
@@ -823,6 +834,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           }
           case K.TX: {
             const tx = _decodeFullRow(proto, "SnapshotTxRow", txsRoot, "tx");
+            streamedTxIds.add(tx.tx_id);
             enqueue(() => { if (_installTxRow(tx)) txInstalled++; });
             seen.tx++;
             await maybeFlush();
@@ -830,9 +842,20 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           }
           case K.COMMIT: {
             const c = _decodeFullRow(proto, "SnapshotCommitRow", commitsRoot, "commit");
-            enqueue(() => dag.saveCommit(c));
+            const cRound = Number(c.round);
+            const cIndex = Number(c.consensus_index || 0);
+            // Refused at the first such row: the history must end below the header (a peer without
+            // the cut streams later rows) and name each round and anchor index once.
+            if (cRound >= Number(header.round)) {
+              throw new Error(`snapshot carries a commit at round ${cRound}, at or past its header round ${Number(header.round)}: not cut at the header`);
+            }
+            if (commitRounds.has(cRound) || (cIndex > 0 && commitIndexes.has(cIndex))) {
+              throw new Error(`snapshot commit history repeats round ${cRound} or consensus_index ${cIndex}`);
+            }
+            commitRounds.add(cRound);
+            if (cIndex > 0) commitIndexes.add(cIndex);
+            commitRows.push(c);
             seen.commit++;
-            await maybeFlush();
             break;
           }
           case K.ROTATION: {
@@ -1060,6 +1083,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         throw new Error(`peer_consensus_index (${peerConsensusIndex}) < snapshot consensus_index (${snapshotConsensusIndex}) — peer is lying about its anchor count`);
       }
 
+      if (commitIndexes.has(snapshotConsensusIndex)) {
+        throw new Error(`snapshot commit history repeats the header's consensus_index ${snapshotConsensusIndex}`);
+      }
+
       // ── Reconcile ─────────────────────────────────────────────────────
       // Delete local rows the peer didn't stream: the old wipe's deletion
       // exactness without its destructive window. Runs ONLY after attestation,
@@ -1068,6 +1095,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       if (prunedRows.length > 0) {
         await dag.flush();
         log.notice(`Snapshot: reconcile pruned ${prunedRows.length} stale local row(s) absent from the snapshot`);
+      }
+      // A streamed rotation tx skipped as a duplicate of ours (same rotation, same payload) stands
+      // for our own copy, so that copy stays.
+      for (const tx of dag.getTxsByType(TX_TYPES.COMMITTEE_ROTATION)) {
+        const rn = tx.data?.rotation_number;
+        const installedRotation = rn != null ? dag.getCommitteeRotation(rn) : null;
+        if (installedRotation && installedRotation.payload_hash === tx.data?.payload_hash) streamedTxIds.add(tx.tx_id);
+      }
+      const prunedTxs = await dag.pruneTransactionsExcept(streamedTxIds);
+      if (prunedTxs.length > 0) {
+        log.notice(`Snapshot: reconcile pruned ${prunedTxs.length} local tx row(s) absent from the snapshot`);
       }
       // Tx history is a union of local + peer rows: local REGISTER_CONTENT
       // copies superseded by the canonical registration (content.tx_id) are
@@ -1095,7 +1133,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // phase root have verified. Clearing the crash marker (durably, AFTER the
       // header commit is durable) is the instant the install becomes a
       // trusted checkpoint , before this, a crash stays in syncing and resyncs.
-      dag.runInTransaction(() => { _installHeaderCommitRow(header); });
+      await dag.replaceCommits([...commitRows, _headerCommitRecord(header)]);
       await dag.flush();
       dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
       await dag.flush();
@@ -1134,7 +1172,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       resetRegisteredAgain(dag);
       if (typeof onSnapshotInstalled === "function") {
         try {
-          onSnapshotInstalled(peerCommittedRound);
+          onSnapshotInstalled(Math.max(peerCommittedRound, snapshotRound), Math.max(peerConsensusIndex, snapshotConsensusIndex));
         } catch (err) {
           log.error(`Snapshot: onSnapshotInstalled callback failed: ${err.message} — node may experience BFT-time violations or stale pending commits until restart`);
         }
@@ -1281,10 +1319,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // the joiner stays serve-capable after the anchor cert is GC'd. BFT-Time
   // int64 fields coerce protobuf Long → Number.
   function _installHeaderCommitRow(header) {
+    dag.saveCommit(_headerCommitRecord(header));
+  }
+
+  function _headerCommitRecord(header) {
     const _toInt = (v) => (typeof v === "object" && v !== null) ? Number(v.toString()) : Number(v || 0);
     const headerAnchorBatchHash = header.anchorBatchHash && header.anchorBatchHash.length
       ? bytesToHex(header.anchorBatchHash) : null;
-    dag.saveCommit({
+    return {
       round: Number(header.round),
       anchor_cert_hash: bytesToHex(header.anchorCertHash),
       anchor_batch_hash: headerAnchorBatchHash,
@@ -1299,7 +1341,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       ack_signatures: (header.ackSignatures || []).map(bytesToHex),
       ack_signed_ats: (header.ackSignedAts || []).map(_toInt),
       cert_timestamp: _toInt(header.certTimestamp),
-    });
+    };
   }
 
   function _installSnapshot(header, queues, snapBytes) {

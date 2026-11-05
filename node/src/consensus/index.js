@@ -219,6 +219,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
+    deterministicCommitActivationMs: config.deterministicCommitActivationMs,
     // Keep the cert-DAG merkle GC-aligned: re-source the sync-handler tree when
     // bullshark prunes old certs, so all nodes' roots reflect the same live set.
     onCertsPruned: () => { try { syncHandler.onCertsPruned(); } catch { /* ignore */ } },
@@ -380,10 +381,14 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     // can re-detect a stale deferred commit or BFT-time violation (SI-2 / CI-1).
     // peerCommittedRound (not snapshotRound) is passed so _lastCommittedRound
     // advances to the true peer head (SI-5).
-    onSnapshotInstalled: (peerCommittedRound) => {
+    onSnapshotInstalled: (boundaryRound, consensusIndex) => {
       if (bullshark) {
-        if (typeof bullshark.cancelPendingCommit === "function") {
-          bullshark.cancelPendingCommit(peerCommittedRound || 0);
+        // Exact, not only forward: commits made past the snapshot must be redone, and new ones
+        // numbered from the network's anchor count (a lower local count collides on UNIQUE(consensus_index)).
+        if (typeof bullshark.alignToSnapshot === "function") {
+          bullshark.alignToSnapshot(boundaryRound || 0, consensusIndex || 0);
+        } else if (typeof bullshark.cancelPendingCommit === "function") {
+          bullshark.cancelPendingCommit(boundaryRound || 0);
         }
         if (typeof bullshark.resetBftTimeFloor === "function") {
           bullshark.resetBftTimeFloor();

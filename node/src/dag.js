@@ -1301,6 +1301,12 @@ class MemoryStore {
     if (this._commits.has(rec.round)) return; // idempotent like INSERT OR IGNORE
     this._commits.set(rec.round, { ...rec, committee: [...(rec.committee || [])] });
   }
+  // Snapshot install: the attested history replaces the local one. saveCommit's insert-or-ignore
+  // would keep a joiner's own stale rows, so it advertises a wrong root after a correct install.
+  replaceCommits(recs) {
+    this._commits.clear();
+    for (const rec of recs) this.saveCommit(rec);
+  }
   getCommit(round) { return this._commits.get(round) || null; }
   getLatestCommit() {
     let latest = null;
@@ -1892,6 +1898,13 @@ class MemoryStore {
       const rec = this._content.get(ctid);
       if (rec && rec.tx_id && rec.tx_id !== txId) { this._txs.delete(txId); removed.push(txId); }
     }
+    return removed;
+  }
+  // Snapshot install: drop tx rows the attested history lacks. Catch-up skips a tx it already holds
+  // as committed, so a row from past the cut would never have its effects applied.
+  pruneTransactionsExcept(keepIds) {
+    const removed = [...this._txs.keys()].filter(id => !keepIds.has(id));
+    for (const id of removed) this._txs.delete(id);
     return removed;
   }
   clearStaleMempoolTxs() { /* no-op for in-memory tests */ }
@@ -3949,6 +3962,12 @@ class SQLiteStore {
       Number(rec.cert_timestamp || 0),           // BFT-Time: median of acks.signed_at on the anchor cert
     );
   }
+  replaceCommits(recs) {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM commits").run();
+      for (const rec of recs) this.saveCommit(rec);
+    })();
+  }
   getCommit(round) {
     const row = this._stmts.getCommit.get(round);
     return row ? this._parseCommit(row) : null;
@@ -4407,6 +4426,12 @@ class SQLiteStore {
     const del = this.db.prepare("DELETE FROM transactions WHERE tx_id=?");
     for (const r of rows) del.run(r.tx_id);
     return rows.map(r => r.tx_id);
+  }
+  pruneTransactionsExcept(keepIds) {
+    const removed = this.db.prepare("SELECT tx_id FROM transactions").all().map(r => r.tx_id).filter(id => !keepIds.has(id));
+    const del = this.db.prepare("DELETE FROM transactions WHERE tx_id=?");
+    this.db.transaction(() => { for (const id of removed) del.run(id); })();
+    return removed;
   }
   clearStaleMempoolTxs(beforeUnixSec) {
     this._stmts.clearMempoolBefore.run(beforeUnixSec);
@@ -5060,6 +5085,7 @@ function _buildDagHandle(store, config) {
 
     // ── Commit checkpoints (§15 Bullshark anchor commits) ───────────────
     saveCommit: (rec) => store.saveCommit(rec),
+    replaceCommits: (recs) => store.replaceCommits(recs),
     getCommit: (round) => store.getCommit(round),
     getLatestCommit: () => store.getLatestCommit(),
     getCommitsFromRound: (fromRound) => store.getCommitsFromRound(fromRound),
@@ -5155,6 +5181,7 @@ function _buildDagHandle(store, config) {
     deleteMempoolTx: (txId) => store.deleteMempoolTx(txId),
     deleteMempoolTxs: (txIds) => store.deleteMempoolTxs(txIds),
     pruneSupersededContentTxs: () => typeof store.pruneSupersededContentTxs === "function" ? store.pruneSupersededContentTxs() : [],
+    pruneTransactionsExcept: (keepIds) => store.pruneTransactionsExcept(keepIds),
     clearStaleMempoolTxs: (before) => store.clearStaleMempoolTxs(before),
     mempoolCount: () => store.mempoolCount(),
 

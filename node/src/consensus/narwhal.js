@@ -30,12 +30,12 @@ const { nowMs } = require("../../../shared/time");
 const { safeSetInterval } = require("../safe-timer");
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
-const { SNAPSHOT_INSTALL_MARKER_KEY, BATCH_TX_SOFT_CAP } = require("../../../shared/constants");
+const { SNAPSHOT_INSTALL_MARKER_KEY, BATCH_TX_SOFT_CAP, DETERMINISTIC_COMMIT_ACTIVATION_MS } = require("../../../shared/constants");
 const {
   createBatch, verifyBatch,
   createBatchAck, verifyBatchAck,
   createCertificate, verifyCertificate,
-  computeQuorum, bftHaltThreshold,
+  computeQuorum, bftHaltThreshold, computeMedianTimestamp,
 } = require("./certificate");
 const {
   serializeBatch, deserializeBatch,
@@ -100,6 +100,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   const _peerBatches = new Map();                   // nodeId → batch
   const _batchAcks = new Map();                     // batchHash → [ack, ack, ...]
   const _roundCertificates = new Map();             // nodeId → certificate
+  let _roundCertificatesRound = 0;                  // round _roundCertificates was loaded for
   let _myCertificateCreated = false;
 
   // CertificateWaiter: peer certs whose parent hashes aren't in our DAG yet.
@@ -159,6 +160,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // no user traffic, so its batches are always empty, and failing to certify
     // them is exactly what keeps it out of the committee.
     my_batches_uncertified: 0,
+    my_batches_superseded: 0,
+    seals_waiting_parents: 0,
+    certs_rejected_parents: 0,
 
     // Rounds where we did seal our own certificate. With rounds_advanced this
     // gives the seal rate, the single number that says whether a registered
@@ -199,6 +203,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
   const nodeId = config.nodeRegisteredId || config.nodeId;
   const privateKey = config.nodePrivateKey;
+  const _rulesFromMs = Number.isFinite(config.deterministicCommitActivationMs)
+    ? config.deterministicCommitActivationMs : DETERMINISTIC_COMMIT_ACTIVATION_MS;
+  // Round timing switches with the commit rule: a fleet mixing round timings under the old rule forked (2026-11-04).
+  const _roundRulesActive = () => nowMs() >= _rulesFromMs;
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -344,7 +352,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         _tryAdvanceRound();
 
         // If still stuck, enter the retry loop.
-        if (_running && _roundCertificates.size < _getQuorum()) {
+        if (_running && _roundQuorumCount() < _getQuorum()) {
           _retryCount++;
           _scheduleRetry();
         }
@@ -393,7 +401,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _tryCreateCertificate();
       _tryAdvanceRound();
       // Keep retrying if still stuck
-      if (_running && _roundCertificates.size < _getQuorum()) {
+      if (_running && _roundQuorumCount() < _getQuorum()) {
         _scheduleRetry();
       }
     }, CONSENSUS.ROUND_TIMEOUT_MS);
@@ -452,6 +460,46 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
   }
 
+  // Re-insert in reverse so the batch's first tx ends up at the mempool head.
+  function _requeueTxs(txs) {
+    let requeued = 0;
+    for (let i = txs.length - 1; i >= 0; i--) {
+      const r = mempool.addFront(txs[i], nowMs());
+      if (r && r.added) requeued++;
+    }
+    return requeued;
+  }
+
+  // Quorum counts only certs of the current round: leftovers from the round just completed
+  // would let a single early peer cert advance it (far-peer alternation, 2026-11-04).
+  function _loadRoundCertificates() {
+    _roundCertificates.clear();
+    for (const cert of dag.getCertificatesByRound(_currentRound)) {
+      _roundCertificates.set(cert.author_node_id, cert);
+    }
+    _roundCertificatesRound = _currentRound;
+  }
+
+  // Only committee certs count toward the round quorum, which is sized on the committee.
+  function _roundQuorumCount() {
+    if (!_roundRulesActive()) return _roundCertificates.size;
+    const committee = new Set(_getCommittee(_currentRound));
+    let count = 0;
+    for (const author of _roundCertificates.keys()) if (committee.has(author)) count++;
+    return count;
+  }
+
+  // Bullshark's safety rests on every cert referencing a quorum of the previous round's committee:
+  // that overlap is what lets each later anchor reach every anchor some node committed directly.
+  function _hasParentQuorum(round, parents) {
+    const committee = new Set(_getCommittee(round - 1));
+    const authors = new Set();
+    for (const p of parents) {
+      if (p && p.round === round - 1 && committee.has(p.author_node_id)) authors.add(p.author_node_id);
+    }
+    return authors.size >= computeQuorum(committee.size);
+  }
+
   function _resetRoundState() {
     // #64: if our own batch never formed a cert at this round, return
     // its txs to the FRONT of the mempool so they get re-batched at
@@ -468,14 +516,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       const orphanedTxs = _myBatch.txs || [];
       _metrics.my_batches_uncertified++;
       if (orphanedTxs.length > 0) {
-        let requeued = 0;
-        // Re-insert in REVERSE order so the first tx of the original
-        // batch ends up at the front of the queue (each addFront
-        // prepends — last addFront becomes the new head).
-        for (let i = orphanedTxs.length - 1; i >= 0; i--) {
-          const r = mempool.addFront(orphanedTxs[i], nowMs());
-          if (r && r.added) requeued++;
-        }
+        const requeued = _requeueTxs(orphanedTxs);
         _metrics.my_batches_orphaned++;
         log.warn(`Round ${_myBatch.round} advanced without certifying my own batch — front-requeued ${requeued}/${orphanedTxs.length} txs to mempool`);
       }
@@ -488,7 +529,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _myBatch = null;
     _peerBatches.clear();
     _batchAcks.clear();
-    _roundCertificates.clear();
+    if (!_roundRulesActive()) {
+      _roundCertificates.clear();
+      _roundCertificatesRound = 0;
+    } else if (_roundCertificatesRound !== _currentRound) {
+      // Same round: the set is current (gossip certs are added as they land), skip the rescan.
+      _loadRoundCertificates();
+    }
     _myCertificateCreated = false;
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
     _retryCount = 0;
@@ -897,6 +944,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // one and re-broadcast to shake off any GossipSub loss.
     const existingOwn = dag.getCertificateByAuthorRound(nodeId, _currentRound);
     if (existingOwn) {
+      // A cert sealed after advancing carries an earlier batch under this round's label; the batch
+      // cut for this round can then never seal, so its txs go back to the mempool instead of vanishing.
+      if (existingOwn.batch?.hash !== _myBatch.hash) {
+        const sealed = new Set((existingOwn.batch?.txs || []).map(t => t.tx_id));
+        const orphaned = (_myBatch.txs || []).filter(t => !sealed.has(t.tx_id));
+        _metrics.my_batches_superseded++;
+        if (orphaned.length > 0) {
+          const requeued = _requeueTxs(orphaned);
+          log.warn(`Round ${_currentRound}: own cert already sealed an earlier batch, front-requeued ${requeued}/${orphaned.length} txs to mempool`);
+        }
+      }
       log.info(`Round ${_currentRound}: own cert exists from prior session — reusing instead of re-signing`);
       _roundCertificates.set(nodeId, existingOwn);
       _myCertificateCreated = true;
@@ -913,10 +971,15 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return;
     }
 
-    // Parent certificate hashes from previous round
-    const parentHashes = _currentRound > 1
-      ? dag.getCertificatesByRound(_currentRound - 1).map(c => c.hash)
-      : [];
+    // From the activation, judged by this cert's own timestamp as receivers judge it, a node short of a
+    // parent quorum (a fast-forwarded one) waits for the parents instead of sealing a cert peers refuse.
+    const parentCerts = _currentRound > 1 ? dag.getCertificatesByRound(_currentRound - 1) : [];
+    if (_currentRound > 1 && computeMedianTimestamp(acks.map(a => a.signed_at)) >= _rulesFromMs
+      && !_hasParentQuorum(_currentRound, parentCerts)) {
+      _metrics.seals_waiting_parents++;
+      return;
+    }
+    const parentHashes = parentCerts.map(c => c.hash);
 
     const cert = createCertificate(
       _currentRound, nodeId, _myBatch, acks, parentHashes, privateKey
@@ -1079,6 +1142,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
    * dag.getCertificate() guard in handleIncomingCertificate.
    */
   function _processVerifiedCertificate(cert) {
+    // The waiter only gets here once every parent is in the DAG, so the parent authors are known.
+    if (cert.round > 1 && cert.timestamp >= _rulesFromMs
+      && !_hasParentQuorum(cert.round, (cert.parent_hashes || []).map(h => dag.getCertificate(h)))) {
+      _metrics.certs_rejected_parents++;
+      log.warn(`Rejected certificate from ${cert.author_node_id} round ${cert.round}: fewer than a quorum of round ${cert.round - 1} committee parents`);
+      return;
+    }
     _saveCertAndNotify(cert);
 
     // Track if current round — peer is in sync and actively participating.
@@ -1088,6 +1158,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _roundCertificates.set(cert.author_node_id, cert);
       _tryAdvanceRound();
     } else if (cert.round < _currentRound && cert.round > 0 && onCommit) {
+      if (cert.round === _currentRound - 1) _tryCreateCertificate();
       // Late-cert anchor re-trigger.
       //
       // Quorum for round-advance (2f+1 of committee) can be met before all
@@ -1201,11 +1272,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_byzantineForkHalt) return;
 
     const quorum = _getQuorum();
-    if (_roundCertificates.size < quorum) return;
+    const certCount = _roundQuorumCount();
+    if (certCount < quorum) return;
 
     _metrics.rounds_advanced++;
     _lastRoundAdvanceAt = nowMs();
-    log.debug(`Round ${_currentRound}: advancing (${_roundCertificates.size}/${_getCommittee().length} certificates)`);
+    log.debug(`Round ${_currentRound}: advancing (${certCount}/${_getCommittee().length} certificates)`);
 
     // Clear timers
     if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
@@ -1223,6 +1295,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Advance
     _currentRound++;
+    if (_roundRulesActive()) _loadRoundCertificates();
 
     // §1 votes_seen auto-prune. We only need the last few rounds' commitments
     // (old rounds can't be re-entered). Pruning here — tied to round advance
