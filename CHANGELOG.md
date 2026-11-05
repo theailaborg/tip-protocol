@@ -9,6 +9,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+**Node 2.9.3: an email can seal its sender and its Bcc, privately**
+- `extras.email` takes two more optional seals beside `recipients`, each a
+  64-char lowercase hex commitment computed by the client: `from`, the
+  sender's address salted by the email's text (only someone holding the email
+  can test it), and `all`, To, Cc and Bcc under a secret only the sender
+  holds, so nobody can test a Bcc address, a To or Cc recipient included. The
+  node never sees an address.
+- `v` stays 1 and any other key is still refused (`extras_email_invalid`).
+  API time only, like the 2.9.2 gate, so replay never splits the network.
+- Every node must run 2.9.3 before a client sends `from` or `all`: an older
+  node refuses the registration as having unknown keys.
+- `GET /v1/content` list rows carry `is_email`, so a creator's content list
+  can label emails and leave them out of "no link yet" (an email has no link
+  by design) without fetching each record.
+
 ### Fixed
 
 **Node 2.8.2: a flagged post is no longer reassigned to reviewers forever**

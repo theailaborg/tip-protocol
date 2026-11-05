@@ -1155,6 +1155,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       registered_urls: Array.isArray(c.registered_urls) ? c.registered_urls : [],
       parent_url: c.parent_url || null,
       registered_at: c.registered_at,
+      // 2.9.3: an email (extras.email) has no link by design, so a list of
+      // someone's records can label it and leave it out of "no link yet"
+      // without fetching each record. The marker is already public.
+      is_email: contentRegisterSchema.isEmailExtras(c.extras),
     };
   }
 
