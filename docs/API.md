@@ -256,7 +256,7 @@ List content, newest first. Cursor-paginated, public.
 
 Query params (all optional): `author`, `origin`, `status`, `has_media`, `limit` (1-100, default 20), `cursor` (opaque token from a prior response's `next_cursor`).
 
-**Response 200:** `{ "items": [ ...slim rows... ], "next_cursor": "..." | null }`. Each row carries `ctid`, `author_tip_id`, `origin_code`, `status`, `prescan_status`, `prescan_tier`, `media_count`, `registered_urls`, `registered_at`.
+**Response 200:** `{ "items": [ ...slim rows... ], "next_cursor": "..." | null }`. Each row carries `ctid`, `author_tip_id`, `origin_code`, `status`, `prescan_status`, `prescan_tier`, `media_count`, `registered_urls`, `registered_at`, and (node 2.9.3) `is_email`, true for an email registration, which has no link by design.
 
 #### `POST /v1/content/:ctid/dispute`
 File a dispute against a content origin declaration.

@@ -22,6 +22,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   API time only, like the 2.9.2 gate, so replay never splits the network.
 - Every node must run 2.9.3 before a client sends `from` or `all`: an older
   node refuses the registration as having unknown keys.
+- `GET /v1/content` list rows carry `is_email`, so a creator's content list
+  can label emails and leave them out of "no link yet" (an email has no link
+  by design) without fetching each record.
 
 ### Fixed
 
