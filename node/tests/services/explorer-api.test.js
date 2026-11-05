@@ -161,6 +161,21 @@ describe("contentService.list", () => {
     expect(typeof out.next_cursor).toBe("string");
   });
 
+  // 2.9.3: an email row says so, so a creator's list can label it and leave
+  // it out of "no link yet" without fetching the record (extras stays out).
+  test("an email row carries is_email, other rows is_email false, and extras stays out", () => {
+    const store = new MemoryStore();
+    store.saveContent({ ..._row(7), registered_urls: [], extras: { email: { v: 1, recipients: "c3".repeat(32) } } });
+    store.saveContent(_row(8));
+    const svc = createContentService({ dag: { listContent: (o) => store.listContent(o) }, scoring: { getScore: () => ({ score: 0, tier: { name: "x" } }) }, config: {}, submitTx: () => { } });
+    const rows = svc.list({ limit: "5" }).items;
+    const email = rows.find((r) => r.registered_urls.length === 0);
+    const post = rows.find((r) => r.registered_urls.length === 1);
+    expect(email.is_email).toBe(true);
+    expect(post.is_email).toBe(false);
+    expect(email.extras).toBeUndefined();
+  });
+
   test("cursor round-trips to the next page with no overlap", () => {
     const p1 = service.list({ limit: "3" });
     const p2 = service.list({ limit: "3", cursor: p1.next_cursor });

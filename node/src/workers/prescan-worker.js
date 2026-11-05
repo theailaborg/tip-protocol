@@ -201,6 +201,16 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       return;
     }
 
+    // Email registrations are private and never reach the AI origin
+    // classifier: content-service enqueues them with no text and
+    // payload.email=true. They complete at once with the same verdict a
+    // locally-skipped origin gets, so nothing retries, waits or is left
+    // pending for the failover trigger.
+    if (payload.email === true) {
+      _submitSkipped(job, payload, {});
+      return;
+    }
+
     // Dev-only short-circuit. When TIP_DEV_FORCE_PRESCAN_TIER is set in a
     // non-production environment, bypass the external classifier entirely
     // and use the local heuristic preScanContent (which respects the env
@@ -261,26 +271,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // intentional policy skip — downstream distinguishes via
     // classifier_providers_used="skipped_locally" instead.
     if (skipped) {
-      const probability = 0.5;
-      const tier = prescanCompletedSchema.tierFromProbability(probability);
-      const flagged = tier === "high" || tier === "critical";
-      _submitPrescanCompleted({
-        ctid: job.ctid,
-        probability,
-        tier,
-        flagged,
-        overall_degraded: false,
-        content_type: contentType,
-        content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
-        modality_results: [],
-        media_results: mediaResults,
-        classifier_version: classifierVersion || "n/a",
-        classifier_providers_used: providersUsed || "skipped_locally",
-        completed_at: now(),
-        failed: false,
-        failure_reason: null,
-      });
-      jobs.markDone(job.job_id);
+      _submitSkipped(job, payload, { mediaResults, providersUsed, classifierVersion });
       return;
     }
 
@@ -362,6 +353,32 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       failure_reason: null,
     };
     _submitPrescanCompleted(data);
+    jobs.markDone(job.job_id);
+  }
+
+  // Clean "skipped" verdict: the classifier deliberately did not run (a
+  // locally-skipped origin, a document-only post, an email). One builder so
+  // every skip commits the same PRESCAN_COMPLETED shape.
+  function _submitSkipped(job, payload, { mediaResults = [], providersUsed, classifierVersion }) {
+    const probability = 0.5;
+    const tier = prescanCompletedSchema.tierFromProbability(probability);
+    const flagged = tier === "high" || tier === "critical";
+    _submitPrescanCompleted({
+      ctid: job.ctid,
+      probability,
+      tier,
+      flagged,
+      overall_degraded: false,
+      content_type: payload.content_type,
+      content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
+      modality_results: [],
+      media_results: mediaResults,
+      classifier_version: classifierVersion || "n/a",
+      classifier_providers_used: providersUsed || "skipped_locally",
+      completed_at: now(),
+      failed: false,
+      failure_reason: null,
+    });
     jobs.markDone(job.job_id);
   }
 

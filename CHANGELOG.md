@@ -9,6 +9,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+**Node 2.9.3: an email can seal its sender and its Bcc, privately**
+- `extras.email` takes two more optional seals beside `recipients`, each a
+  64-char lowercase hex commitment computed by the client: `from`, the
+  sender's address salted by the email's text (only someone holding the email
+  can test it), and `all`, To, Cc and Bcc under a secret only the sender
+  holds, so nobody can test a Bcc address, a To or Cc recipient included. The
+  node never sees an address.
+- `v` stays 1 and any other key is still refused (`extras_email_invalid`).
+  API time only, like the 2.9.2 gate, so replay never splits the network.
+- Every node must run 2.9.3 before a client sends `from` or `all`: an older
+  node refuses the registration as having unknown keys.
+- `GET /v1/content` list rows carry `is_email`, so a creator's content list
+  can label emails and leave them out of "no link yet" (an email has no link
+  by design) without fetching each record.
+
 ### Fixed
 
 **Node 2.8.2: a flagged post is no longer reassigned to reviewers forever**
@@ -30,6 +47,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   isolated cluster (warning-logged).
 
 ### Added
+
+**Node 2.9.2: email registrations stay out of the classifier**
+- An email registers as ordinary CNA-2.2 text (`content` is the subject, a
+  newline, then the body) with `extras.email` in the signed extras, either
+  `{ v: 1 }` or `{ v: 1, recipients }`, where `recipients` is a salted
+  commitment to the To and Cc addresses made on the client. The node never
+  sees the addresses. Any other shape is refused with
+  `400 extras_email_invalid`.
+- The node uses an email's text only to recompute `content_hash`. Its prescan
+  job carries no text and an `email` flag, and the worker completes it at once
+  with the verdict a locally skipped origin gets (probability 0.5, tier low,
+  `skipped_locally`), so the text never reaches the AI origin classifier, a
+  retry or the failover trigger. A text or document fingerprint item sent with
+  an email is dropped before ingest and near-duplicate lookup; image, video
+  and audio items are indexed as before. No log line carries the text.
+- No consensus change: `REGISTER_CONTENT` and `PRESCAN_COMPLETED` keep their
+  shapes, and the marker is checked only on the node that receives the
+  registration. Clients should send email registrations only to nodes on
+  2.9.2 or later, since an older node scans the text like any post.
 
 **Node 2.9.1: plans limit how many pages of a document are fingerprinted**
 - The operator's billing service sets the limit per TIP-ID (Free 300, Creator

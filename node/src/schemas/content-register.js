@@ -316,6 +316,10 @@ function validateRequest(body, deps) {
   // contents legitimately point at the same parent.
   if (body.parent_url != null) validateCanonicalUrl(body.parent_url, "parent_url");
 
+  // extras.email (optional): marks an email registration, whose text stays
+  // out of the AI origin classifier and the text indexes.
+  _validateEmailExtras(body.extras);
+
   // authors[] shape — ≥1 entry, each carrying a tip://id/... string —
   // checked here so we can confidently DAG-look-up every author below.
   if (!Array.isArray(body.authors) || body.authors.length === 0) {
@@ -392,6 +396,48 @@ function _normalizeExtras(input) {
     throw schemaError(400, "extras must be an object (use {} for empty)", "extras_invalid");
   }
   return input;
+}
+
+// Each seal is a client-side commitment, 64 lowercase hex: recipients (To and
+// Cc), from (the sender's address) and all (To, Cc and Bcc with a secret only
+// the sender holds, so Bcc stays private). The node never sees an address.
+const EMAIL_SEALS = ["recipients", "from", "all"];
+const EMAIL_EXTRAS_KEYS = new Set(["v", ...EMAIL_SEALS]);
+
+/**
+ * True when the signed extras mark an email registration
+ * (`extras.email` is a plain object). Call after validateRequest, which
+ * has already checked the marker's shape.
+ */
+function isEmailExtras(extras) {
+  const e = extras && typeof extras === "object" ? extras.email : undefined;
+  return !!e && typeof e === "object" && !Array.isArray(e);
+}
+
+/**
+ * Shape of the email marker: `{ v: 1 }` plus any of the optional seals
+ * `recipients`, `from` and `all`, each the client's commitment (64 lowercase
+ * hex; the node never sees the addresses). recipients covers To and Cc, from
+ * the sender's address, all To, Cc and Bcc with a secret only the sender
+ * holds (2.9.3). API time only: _normalizeExtras also runs on consensus
+ * replay, and a check there would refuse txs that older nodes committed.
+ */
+function _validateEmailExtras(extras) {
+  if (!extras || typeof extras !== "object" || Array.isArray(extras)) return;
+  if (!Object.prototype.hasOwnProperty.call(extras, "email")) return;
+  const e = extras.email;
+  const invalid = (what) => schemaError(400, `extras.email ${what}`, "extras_email_invalid");
+  if (!e || typeof e !== "object" || Array.isArray(e)) {
+    throw invalid("must be an object like { v: 1 } or { v: 1, recipients, from, all }");
+  }
+  const unknown = Object.keys(e).filter((k) => !EMAIL_EXTRAS_KEYS.has(k));
+  if (unknown.length) throw invalid(`has unknown keys: ${unknown.join(", ")} (allowed: v, ${EMAIL_SEALS.join(", ")})`);
+  if (e.v !== 1) throw invalid("v must be the integer 1");
+  for (const k of EMAIL_SEALS) {
+    if (e[k] !== undefined && (typeof e[k] !== "string" || !/^[0-9a-f]{64}$/.test(e[k]))) {
+      throw invalid(`${k} must be a 64-char lowercase hex string`);
+    }
+  }
 }
 
 /**
@@ -854,6 +900,7 @@ module.exports = {
   validateRegisteredUrls,
   validateCanonicalUrl,
   resolveSigner,
+  isEmailExtras,
   buildSigningPayload,
   mediaCanonicalHash,
   fingerprintsCommit,

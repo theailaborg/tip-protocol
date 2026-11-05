@@ -930,3 +930,67 @@ describe("tick: documents are not scanned", () => {
     expect(prescanCompletedSchema.verifyTx(submitter.txs[0], dag)).toEqual({ ok: true });
   });
 });
+
+// ── email: never sent to the classifier, completes like a skipped origin ──
+describe("tick: email registrations are not scanned", () => {
+  const prescanCompletedSchema = require(path.resolve(__dirname, "../../src/schemas/prescan-completed"));
+  // Fields that legitimately differ between two otherwise identical verdicts.
+  const shape = ({ ctid, completed_at, ...rest }) => rest;
+
+  test("email job → no classifier call, the non-OH skipped verdict, job done", async () => {
+    const clock = makeClock();
+    const calls = [];
+    const { dag, jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: (args) => { calls.push(args); return R({ modalities: [{ modality: "text", probability: 0.99 }] }); },
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "", email: true, origin_code: "OH", content_type: "text" } });
+    const r = await worker.tick();
+    expect(r.outcome).toBe("completed");
+    expect(calls).toHaveLength(0);
+    expect(submitter.txs).toHaveLength(1);
+    const d = submitter.txs[0].data;
+    expect(d).toMatchObject({
+      ctid: CTID, probability: 0.5, tier: "low", flagged: false,
+      overall_degraded: false, failed: false, failure_reason: null,
+      modality_results: [], media_results: [],
+      classifier_providers_used: "skipped_locally", classifier_version: "n/a",
+      content_type: "text",
+    });
+    expect(prescanCompletedSchema.verifyTx(submitter.txs[0], dag)).toEqual({ ok: true });
+    expect(jobs.getByCtid(CTID)).toBeNull(); // done, nothing left for a retry or the failover trigger
+  });
+
+  test("email verdict has exactly the shape of a locally-skipped non-OH verdict", async () => {
+    const run = async (payload) => {
+      const clock = makeClock();
+      const { jobs, submitter, worker } = await setup({
+        now: clock.now,
+        classifierHandler: (args) => (args.originCode === "OH" ? R({ modalities: [{ modality: "text", probability: 0.1 }] }) : R({ skipped: true })),
+      });
+      jobs.enqueue({ ctid: CTID, payload });
+      await worker.tick();
+      return submitter.txs[0].data;
+    };
+    const skipped = await run({ text: "x", origin_code: "AG", content_type: "text" });
+    const email = await run({ text: "", email: true, origin_code: "OH", content_type: "text" });
+    expect(Object.keys(email).sort()).toEqual(Object.keys(skipped).sort());
+    expect(shape(email)).toEqual(shape(skipped));
+  });
+
+  test("an email job is never retried, even with a classifier that would fail", async () => {
+    const clock = makeClock();
+    let called = 0;
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      maxBacklog: 1_000_000, // below the cap a failing call would be re-queued
+      classifierHandler: () => { called += 1; throw new Error("classifier down"); },
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "", email: true, origin_code: "OH", content_type: "text" } });
+    await worker.tick();
+    expect(called).toBe(0);
+    expect(submitter.txs).toHaveLength(1);
+    expect(submitter.txs[0].data.failed).toBe(false);
+    expect(jobs.getByCtid(CTID)).toBeNull();
+  });
+});

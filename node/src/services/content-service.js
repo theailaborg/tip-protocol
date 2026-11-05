@@ -93,7 +93,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   // succeeds; the failover trigger will eventually pick the content up
   // if PRESCAN_COMPLETED never arrives. No-op when prescanJobs isn't
   // wired (legacy paths / certain test setups).
-  function _enqueuePrescanJob({ ctid, content, origin_code, signer_tip_id, ctypeResolution, media }) {
+  //
+  // Email registrations are private: the job carries no text and an
+  // `email` flag, and the worker completes it with the skipped verdict
+  // without calling the AI origin classifier. The queue row is the one
+  // place a registration's text would otherwise be kept.
+  function _enqueuePrescanJob({ ctid, content, origin_code, signer_tip_id, ctypeResolution, media, email = false }) {
     if (!prescanJobs) return;
     try {
       const verifiedOhCount = dag.getContentByAuthor(signer_tip_id)
@@ -102,7 +107,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       prescanJobs.enqueue({
         ctid,
         payload: {
-          text: content || "",
+          text: email ? "" : (content || ""),
+          ...(email ? { email: true } : {}),
           origin_code,
           content_type: ctypeResolution.contentType,
           content_type_meta: {
@@ -122,13 +128,24 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     }
   }
 
+  // An email's text never enters the text indexes. Clients send no text
+  // fingerprint for email; one that arrives anyway (a text item, or a
+  // document item, which carries text and passages) is dropped here. Its slot
+  // becomes null so the remaining items keep their component index.
+  function _withoutTextItems(items) {
+    return items.map(it => {
+      const kind = it && it.perceptual && it.perceptual.kind;
+      return kind === "text" || kind === "document" ? null : it;
+    });
+  }
+
   // Ingest the client's perceptual fingerprints envelope into the off-DAG
   // near-dup index, locally on this node. The envelope was already shape- and
   // commit-verified in validateRequest. Recover the ordered items[] and ingest
   // each component's `perceptual` object keyed by position. Per-component
   // fire-and-forget (async, off-DAG, advisory) — a failure must not affect the
   // registration. No-op when the request carried no fingerprints.
-  function _ingestRequestFingerprints(ctid, fingerprints, createdAt, mediaCount, owner) {
+  function _ingestRequestFingerprints(ctid, fingerprints, createdAt, mediaCount, owner, email = false) {
     // A media registration that lands with fewer media fingerprints than media
     // items is invisible to near-duplicate matching, and today it fails
     // silently — the only way to notice is joining content against phash_code
@@ -149,6 +166,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       log.warn(`perceptual ingest: recover failed for ${ctid}: ${err.error || err.message}`);
       return;
     }
+    if (email) items = _withoutTextItems(items);
     const mediaFps = items.filter(it => it?.perceptual && it.perceptual.kind !== "text").length;
     if (mediaCount > mediaFps) {
       log.warn(`perceptual: ${ctid} has ${mediaCount} media but only ${mediaFps} media fingerprint(s) — ${mediaCount - mediaFps} dropped`);
@@ -202,7 +220,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   // Advisory two-layer near-dup lookup: step 0 exact content_hash (committed +
   // mempool-pending), step 1 perceptual via the request's fingerprint envelope.
   // Never blocks: every failure degrades to "no warning".
-  async function _findNearDuplicates({ ctid, contentHash, fingerprints, owner }) {
+  async function _findNearDuplicates({ ctid, contentHash, fingerprints, owner, email = false }) {
     const out = [];
     const seen = new Set([ctid]); // never report the registration itself
     // step 0a , committed exact matches (indexed content_hash lookup;
@@ -250,7 +268,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // step 1 , perceptual near-dups from the request's own envelope.
     if (fingerprints != null) {
       try {
-        const items = contentRegisterSchema.parseFingerprintItems(fingerprints);
+        const parsed = contentRegisterSchema.parseFingerprintItems(fingerprints);
+        const items = email ? _withoutTextItems(parsed) : parsed;
         const hits = await matchFingerprintItems(dag, items, { excludeCtid: ctid, owner });
         for (const hit of hits) {
           // An exact hit is the stronger signal , don't double-report.
@@ -360,6 +379,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     if (!contentRegisterSchema.verifySignature(canonicalPayload, signature, identity.public_key)) {
       throw schemaError(403, "Content signature verification failed", "signature_invalid");
     }
+    // Email registration, read from the signed extras (shape checked in
+    // validateRequest). The text was needed above for content_hash; from
+    // here on it reaches no classifier, index or table.
+    const email = contentRegisterSchema.isEmailExtras(canonicalPayload.extras);
 
     // ── Async prescan ───────────────────────────────────────────────────
     // Resolve content_type (publisher's signed hint → server-derived from
@@ -504,7 +527,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // The record's owner as commit-handler will store it (primary byline, else signer).
     const owner = (canonicalPayload.authors[0] && canonicalPayload.authors[0].tip_id) || signer_tip_id;
     const nearDuplicates = await _findNearDuplicates({
-      ctid, contentHash: contentHashFull, fingerprints: body.fingerprints, owner,
+      ctid, contentHash: contentHashFull, fingerprints: body.fingerprints, owner, email,
     });
     if (nearDuplicates.length > 0) {
       log.info(`Near-duplicate warning for ${ctid}: ${nearDuplicates.length} match(es), best: ${nearDuplicates[0].ctid} (${nearDuplicates[0].match_type})`);
@@ -515,11 +538,11 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // validateRequest), never on tx.data — so only this receiving node indexes
     // it for now. Fire-and-forget: advisory, must not delay the response;
     // reject-tier items skip themselves in buildIngestRows.
-    _ingestRequestFingerprints(ctid, body.fingerprints, registeredAt, resolvedMedia.length, owner);
+    _ingestRequestFingerprints(ctid, body.fingerprints, registeredAt, resolvedMedia.length, owner, email);
 
     _enqueuePrescanJob({
       ctid, content, origin_code, signer_tip_id, ctypeResolution,
-      media: resolvedMedia,
+      media: resolvedMedia, email,
     });
 
     const status = CONTENT_STATUS.PENDING_PRESCAN;
@@ -1132,6 +1155,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       registered_urls: Array.isArray(c.registered_urls) ? c.registered_urls : [],
       parent_url: c.parent_url || null,
       registered_at: c.registered_at,
+      // 2.9.3: an email (extras.email) has no link by design, so a list of
+      // someone's records can label it and leave it out of "no link yet"
+      // without fetching each record. The marker is already public.
+      is_email: contentRegisterSchema.isEmailExtras(c.extras),
     };
   }
 
