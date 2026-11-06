@@ -195,6 +195,104 @@ describe("contentService.list", () => {
   });
 });
 
+// ── 2.9.6: My Content sections, date range, search, summary ────────────────
+
+describe("contentService.list: sections, dates, search and summary", () => {
+  const { createContentService } = require(path.join(SRC, "services/content-service"));
+  const { MemoryStore } = require(path.join(SRC, "dag"));
+
+  function svcWith(rows) {
+    const store = new MemoryStore();
+    rows.forEach((r) => store.saveContent(r));
+    const dag = { listContent: (o) => store.listContent(o), summarizeContent: (o) => store.summarizeContent(o) };
+    return createContentService({ dag, scoring: { getScore: () => ({ score: 0, tier: { name: "x" } }) }, config: {}, submitTx: () => { } });
+  }
+  const email = (i) => ({ ..._row(i), registered_urls: [], extras: { email: { v: 1 } } });
+  const titled = (i, title) => ({ ..._row(i), extras: { title } });
+
+  test("applied echoes the normalized filters, so a client can tell this node honored them", () => {
+    const svc = svcWith([_row(0)]);
+    expect(svc.list({}).applied).toEqual({ kind: null, from: null, to: null, q: null });
+    expect(svc.list({ author: AUTHOR_A, kind: "EMAIL", from: "10", to: "20", q: "  LinkedIn " }).applied)
+      .toEqual({ kind: "email", from: 10, to: 20, q: "linkedin" });
+  });
+
+  test("kind splits emails from posts and pages within the section", () => {
+    const svc = svcWith([email(0), _row(1), email(2), _row(3), email(4)]);
+    const posts = svc.list({ author: AUTHOR_A, kind: "post" });
+    expect(posts.items.map((r) => r.is_email)).toEqual([false, false]);
+    const p1 = svc.list({ author: AUTHOR_A, kind: "email", limit: "2" });
+    expect(p1.items).toHaveLength(2);
+    const p2 = svc.list({ author: AUTHOR_A, kind: "email", limit: "2", cursor: p1.next_cursor });
+    expect(p2.items).toHaveLength(1);
+    expect(p2.next_cursor).toBeNull();
+    expect([...p1.items, ...p2.items].every((r) => r.is_email)).toBe(true);
+  });
+
+  test("a row carries its public title, capped; no title means null", () => {
+    const svc = svcWith([titled(0, "Coffee truck story"), titled(1, "x".repeat(900)), _row(2), titled(3, 7)]);
+    const rows = svc.list({ author: AUTHOR_A }).items;
+    const by = (i) => rows.find((r) => r.registered_urls[0] === `https://example.com/${i}`);
+    expect(by(0).title).toBe("Coffee truck story");
+    expect(by(1).title).toHaveLength(300);
+    // An emoji at the cut is kept whole or dropped, never split.
+    const emoji = svcWith([titled(0, "x".repeat(299) + "\u{1F600}tail")]).list({ author: AUTHOR_A }).items[0].title;
+    expect(Array.from(emoji)).toHaveLength(300);
+    expect(emoji.endsWith("\u{1F600}")).toBe(true);
+    expect(by(2).title).toBeNull();
+    expect(by(3).title).toBeNull();
+    expect(svc.list({ author: AUTHOR_A, q: "truck" }).items.map((r) => r.title)).toEqual(["Coffee truck story"]);
+  });
+
+  test("summary rides on the page only when asked, counts per month, and ignores the page's own filters", () => {
+    const svc = svcWith([email(0), _row(1), _row(2)]);
+    expect(svc.list({ author: AUTHOR_A }).summary).toBeUndefined();
+    const out = svc.list({ author: AUTHOR_A, kind: "email", include: "summary", tz: "America/New_York" });
+    expect(out.items).toHaveLength(1);
+    expect(out.summary).toMatchObject({ total: 3, posts: 2, emails: 1, latest_at: _row(2).registered_at });
+    expect(out.summary.months).toHaveLength(1);
+    expect(out.summary.months[0]).toMatchObject({ posts: 2, emails: 1 });
+    expect(out.summary.tz).toBe("America/New_York");
+  });
+
+  // Chrome reports "Etc/Unknown" when it cannot tell, and a browser can know a
+  // zone newer than the node's ICU. Either must not cost the person their list.
+  test("a well-formed zone the node does not know counts in UTC instead of failing the page", () => {
+    const svc = svcWith([email(0), _row(1)]);
+    for (const tz of ["Etc/Unknown", "Mars/Olympus", "-300"]) {
+      const out = svc.list({ author: AUTHOR_A, include: "summary", tz });
+      expect(out.items).toHaveLength(2);
+      expect(out.summary).toMatchObject({ total: 2, tz: "UTC" });
+    }
+  });
+
+  test("invalid section, date, search and summary values → 400 codes", () => {
+    const svc = svcWith([_row(0)]);
+    const bad = (q, code) => expect(() => svc.list(q)).toThrow(expect.objectContaining({ code }));
+    bad({ kind: "video" }, "kind_invalid");
+    bad({ from: "yesterday" }, "from_invalid");
+    bad({ to: "-1" }, "to_invalid");
+    bad({ from: "1.5" }, "from_invalid");
+    bad({ from: " " }, "from_invalid");
+    bad({ from: "1e3" }, "from_invalid");
+    bad({ from: "0x10" }, "from_invalid");
+    bad({ from: "20", to: "20" }, "range_invalid");
+    bad({ author: AUTHOR_A, q: "a" }, "q_invalid");
+    bad({ author: AUTHOR_A, q: "x".repeat(101) }, "q_invalid");
+    // Search never runs across the whole registry.
+    bad({ q: "budget" }, "q_needs_author");
+    bad({ include: "summary" }, "summary_needs_author");
+    bad({ bylined: AUTHOR_A, include: "summary" }, "summary_needs_author");
+    bad({ author: AUTHOR_A, tz: "x".repeat(65) }, "tz_invalid");
+    bad({ author: AUTHOR_A, tz: "America/New York" }, "tz_invalid");
+    bad({ author: AUTHOR_A, tz: "America/New_York; DROP" }, "tz_invalid");
+    // Blank values mean "no filter", like the older params.
+    expect(svc.list({ kind: "", from: "", to: "", q: "   ", include: "" }).items).toHaveLength(1);
+    // Search inside a byline list is allowed.
+    expect(svc.list({ bylined: AUTHOR_B, q: "ex" }).items).toEqual([]);
+  });
+});
+
 // ── schema: cursor encode/decode symmetry ──────────────────────────────────
 
 describe("content-list schema cursor", () => {

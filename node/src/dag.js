@@ -34,6 +34,7 @@ const { shake256 } = require("../../shared/crypto");
 const { createSMT } = require("../../shared/smt");
 const { STATE_PK, stateLeafKey } = require("./consensus/state-root");
 const { nowMs } = require("../../shared/time");
+const monthBuckets = require("./lib/month-buckets");
 const { TX_TYPES, PRESCAN_REVIEW_STATES, PENDING_OWNER_HEAD_TTL_MS, UPLOAD_SESSION_STATE, TEXT_LSH, DOCUMENT_MATCH } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
 const { subjectTipId, subjectTipIds } = require("./tx-attribution");
@@ -261,6 +262,30 @@ function _canonPlatformLink(r) {
 function _isBylined(c, tipId) {
   return c.author_tip_id !== tipId && Array.isArray(c.authors) && c.authors.some(a => a && a.tip_id === tipId);
 }
+
+// My Content sections and search (2.9.6). Every store must return the same
+// rows, so the JS here mirrors the SQL in SQLiteStore byte for byte:
+//   email  extras.email is an object (content-register isEmailExtras)
+//   search ASCII-folded substring of the ctid, the JSON-encoded
+//          registered_urls column, or a string extras.title
+function _isEmailRec(c) {
+  const e = c.extras && typeof c.extras === "object" ? c.extras.email : undefined;
+  return !!e && typeof e === "object" && !Array.isArray(e);
+}
+function _asciiLower(s) {
+  return String(s).replace(/[A-Z]+/g, m => m.toLowerCase());
+}
+function _searchHit(c, q) {
+  const title = c.extras && typeof c.extras === "object" && typeof c.extras.title === "string" ? c.extras.title : "";
+  return _asciiLower(c.ctid).includes(q)
+    || _asciiLower(JSON.stringify(Array.isArray(c.registered_urls) ? c.registered_urls : [])).includes(q)
+    || _asciiLower(title).includes(q);
+}
+// extras is always JSON.stringify'd by saveContent; json_valid still guards a
+// hand-edited row so one bad cell cannot fail the whole query. CASE (not AND)
+// because SQLite only promises CASE evaluates in order.
+const SQL_IS_EMAIL = "coalesce(CASE WHEN json_valid(extras) THEN json_type(extras, '$.email') = 'object' END, 0)";
+const SQL_TITLE = "coalesce(CASE WHEN json_valid(extras) THEN CASE WHEN json_type(extras, '$.title') = 'text' THEN json_extract(extras, '$.title') END END, '')";
 
 // Org members: every column participates in state_merkle_root. One row per
 // invite (pk = invite_tx_id); status walks invited -> active -> removed, or
@@ -772,7 +797,7 @@ class MemoryStore {
   // query. Cursor is an exclusive (registered_at, ctid) tuple; the
   // composite tiebreak makes pagination stable when several rows share
   // a timestamp.
-  listContent({ author = null, bylined = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, bylined = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, kind = null, from = null, to = null, q = null, limit = 20, cursor = null } = {}) {
     let rows = [...this._content.values()];
     if (author) rows = rows.filter(c => c.author_tip_id === author);
     if (bylined) rows = rows.filter(c => _isBylined(c, bylined));
@@ -781,6 +806,11 @@ class MemoryStore {
     if (hasMedia === true) rows = rows.filter(c => Array.isArray(c.media) && c.media.length > 0);
     if (url) rows = rows.filter(c => Array.isArray(c.registered_urls) && c.registered_urls.includes(url));
     if (parentUrl) rows = rows.filter(c => c.parent_url === parentUrl);
+    if (kind === "email") rows = rows.filter(c => _isEmailRec(c));
+    if (kind === "post") rows = rows.filter(c => !_isEmailRec(c));
+    if (from !== null) rows = rows.filter(c => c.registered_at >= from);
+    if (to !== null) rows = rows.filter(c => c.registered_at < to);
+    if (q) rows = rows.filter(c => _searchHit(c, q));
     rows.sort((a, b) => (b.registered_at - a.registered_at) || (a.ctid < b.ctid ? 1 : -1));
     if (cursor) {
       rows = rows.filter(c =>
@@ -788,6 +818,17 @@ class MemoryStore {
         || (c.registered_at === cursor.t && c.ctid < cursor.c));
     }
     return rows.slice(0, limit + 1);
+  }
+  // My Content summary: one author's records counted per calendar month in
+  // the reader's time zone, posts and emails apart. Unfiltered on purpose;
+  // it is the index the filters navigate. lib/month-buckets does the
+  // counting for every store, so they cannot disagree.
+  summarizeContent({ author, tz = "UTC" }) {
+    const rows = [];
+    for (const c of this._content.values()) {
+      if (c.author_tip_id === author) rows.push({ t: c.registered_at, e: _isEmailRec(c) });
+    }
+    return monthBuckets.summarize(rows, tz);
   }
   // M6 retention sweep — parity with SqliteStore.getContentWithMediaBefore.
   getContentWithMediaBefore(cutoffMs) {
@@ -3601,7 +3642,7 @@ class SQLiteStore {
   // Explorer list — see MemoryStore.listContent for the contract.
   // Filters vary per call, so the statement is built dynamically; the
   // (status, author, origin) columns are indexed.
-  listContent({ author = null, bylined = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, bylined = null, origin = null, status = null, hasMedia = null, url = null, parentUrl = null, kind = null, from = null, to = null, q = null, limit = 20, cursor = null } = {}) {
     const where = [];
     const params = [];
     if (author) { where.push("author_tip_id = ?"); params.push(author); }
@@ -3632,6 +3673,16 @@ class SQLiteStore {
       params.push('"' + jsonInner + '"');
     }
     if (parentUrl) { where.push("parent_url = ?"); params.push(parentUrl); }
+    if (kind === "email") where.push(`${SQL_IS_EMAIL} = 1`);
+    if (kind === "post") where.push(`${SQL_IS_EMAIL} = 0`);
+    if (from !== null) { where.push("registered_at >= ?"); params.push(from); }
+    if (to !== null) { where.push("registered_at < ?"); params.push(to); }
+    if (q) {
+      // instr(), not LIKE: no wildcard characters to escape. lower() folds
+      // ASCII only, which is what _asciiLower does in MemoryStore.
+      where.push(`(instr(lower(tip_ctid), ?) > 0 OR instr(lower(coalesce(registered_urls, '[]')), ?) > 0 OR instr(lower(${SQL_TITLE}), ?) > 0)`);
+      params.push(q, q, q);
+    }
     if (cursor) {
       where.push("(registered_at < ? OR (registered_at = ? AND tip_ctid < ?))");
       params.push(cursor.t, cursor.t, cursor.c);
@@ -3640,6 +3691,13 @@ class SQLiteStore {
       ORDER BY registered_at DESC, tip_ctid DESC LIMIT ?`;
     params.push(limit + 1);
     return this.db.prepare(sql).all(...params).map(r => this._hydrateContent(r));
+  }
+  // See MemoryStore.summarizeContent. Two narrow columns over the author's
+  // rows (idx_content_author_time), counted by lib/month-buckets.
+  summarizeContent({ author, tz = "UTC" }) {
+    const rows = this.db.prepare(`SELECT registered_at AS t, ${SQL_IS_EMAIL} AS e FROM content WHERE author_tip_id = ?`)
+      .all(author).map(r => ({ t: r.t, e: r.e === 1 }));
+    return monthBuckets.summarize(rows, tz);
   }
   // M6 — content rows registered before `cutoffMs` that carry media[].
   getContentWithMediaBefore(cutoffMs) {
@@ -4999,6 +5057,7 @@ function _buildDagHandle(store, config) {
     // Register-time near-duplicate warning (exact normalized content_hash).
     getContentByHash: (h) => store.getContentByHash(h),
     listContent: (opts) => store.listContent(opts),
+    summarizeContent: (opts) => store.summarizeContent(opts),
     // M6 — used by the periodic media-retention sweep.
     getContentWithMediaBefore: (cutoffMs) => store.getContentWithMediaBefore(cutoffMs),
     getReferencedMediaIds: () => store.getReferencedMediaIds(),

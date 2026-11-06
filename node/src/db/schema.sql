@@ -87,6 +87,8 @@ CREATE INDEX IF NOT EXISTS `idx_committee_history_round` on `committee_history` 
 
 CREATE INDEX IF NOT EXISTS `idx_content_author` on `content` (`author_tip_id`);
 
+CREATE INDEX IF NOT EXISTS `idx_content_author_time` on `content` (`author_tip_id`, `registered_at`, `tip_ctid`);
+
 CREATE INDEX IF NOT EXISTS `idx_content_content_hash` on `content` (`content_hash`);
 
 CREATE INDEX IF NOT EXISTS `idx_content_origin` on `content` (`origin_code`);
