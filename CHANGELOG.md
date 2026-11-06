@@ -12,8 +12,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 **Node 2.9.5: every new email record seals its sender, recipients and attachments**
-- From `EMAIL_SEALS_REQUIRED_ACTIVATION_MS` (placeholder 2026-11-20 00:00 UTC, set at
-  release after the VP and plugin always send them; override
+- From `EMAIL_SEALS_REQUIRED_ACTIVATION_MS`, 2026-11-20 00:00 UTC (two weeks for the
+  plugin's store review and user updates; override
   `TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS`, test cluster only), checked at API time and
   at commit: a new email must carry `from`, `recipients` or `all` (a Bcc-only email has
   `all` alone), and `attachments` (an empty list when there are no files), or it is
