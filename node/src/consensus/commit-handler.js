@@ -1111,6 +1111,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     return Math.max(Number.isFinite(txMs) ? txMs : 0, Number.isFinite(certTimestamp) ? certTimestamp : 0);
   }
 
+  // A claim of an open review names the review, not the post.
+  function _reviewCtid(d) {
+    return d.ctid || dag.getPrescanReview(d.review_id)?.ctid || null;
+  }
+
   function _statefulCheck(tx, now, commitRound = 0, certTimestamp = 0) {
     const d = tx.data || {};
     switch (tx.tx_type) {
@@ -1134,7 +1139,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const r = rules.canRegisterContent(dag, {
           signer_tip_id: d.signer_tip_id, ctid: d.ctid, origin_code: d.origin_code,
           registered_urls: d.registered_urls, at_ms: _siteAt(now, certTimestamp),
-          url_takeovers: d.url_takeovers,
+          url_takeovers: d.url_takeovers, extras: d.extras, parent_url: d.parent_url,
         });
         if (!r.valid) return { valid: false, error: r.error.message };
         // Authors: DAG presence, type and org roster, activation-gated.
@@ -1143,7 +1148,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       }
 
       case TX_TYPES.CONTENT_VERIFIED: {
-        const r = rules.canVerify(dag, { ctid: d.ctid, verifier_tip_id: d.verifier_tip_id }, { now });
+        const r = rules.canVerify(dag, { ctid: d.ctid, verifier_tip_id: d.verifier_tip_id }, { now, gateAt: _siteAt(now, certTimestamp) });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
@@ -1189,8 +1194,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // Cascade-issued disputes (auto: true, e.g. REVOKE_VP cascade) bypass
         // the disputer-score / state predicates because the issuer is the node
         // itself, not a TIP-ID with a score. They still pass through dedup.
-        if (d.auto) return { valid: true };
-        const r = rules.canDispute(dag, scoring, { ctid: d.ctid, disputer_tip_id: d.disputer_tip_id }, { now });
+        if (d.auto) {
+          const a = rules.canAutoDispute(dag, { ctid: d.ctid }, { at_ms: _siteAt(now, certTimestamp) });
+          return a.valid ? { valid: true } : { valid: false, error: a.error.message };
+        }
+        const r = rules.canDispute(dag, scoring, { ctid: d.ctid, disputer_tip_id: d.disputer_tip_id }, { now, gateAt: _siteAt(now, certTimestamp) });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
@@ -1256,6 +1264,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         if (!dag.getContent(d.ctid)) {
           return { valid: false, error: `Content not found: ${d.ctid}` };
         }
+        const email = rules.canReviewContent(dag, { ctid: d.ctid }, { at_ms: _siteAt(now, certTimestamp) });
+        if (!email.valid) return { valid: false, error: email.error.message };
         const existing = dag.getOpenPrescanReviewByCtid(d.ctid);
         if (existing && existing.review_id !== d.review_id) {
           return {
@@ -1279,6 +1289,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         if (d.auto && !_reviewCapActive(certTimestamp)) {
           return { valid: false, error: `auto review confirm for ${d.ctid} before the no-show cap activation` };
         }
+        const email = rules.canReviewContent(dag, { ctid: _reviewCtid(d) }, { at_ms: _siteAt(now, certTimestamp) });
+        if (!email.valid) return { valid: false, error: email.error.message };
         const r = prescanReviewConfirmedSchema.verifyTx(tx, dag);
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
@@ -1290,8 +1302,15 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         if (!_reviewCapActive(certTimestamp)) {
           return { valid: false, error: `review claim for ${d.review_id} before the review desk activation` };
         }
+        const email = rules.canReviewContent(dag, { ctid: _reviewCtid(d) }, { at_ms: _siteAt(now, certTimestamp) });
+        if (!email.valid) return { valid: false, error: email.error.message };
         const r = prescanReviewClaimedSchema.verifyTx(tx, dag, { nowMs: certTimestamp });
         return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
+      case TX_TYPES.PRESCAN_COMPLETED: {
+        const r = rules.canCompletePrescan(dag, { ctid: d.ctid, flagged: d.flagged, tier: d.tier }, { at_ms: _siteAt(now, certTimestamp) });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
       // GH #60 — key rotation + recovery state checks. Signature is

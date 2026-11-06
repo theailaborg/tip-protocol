@@ -33,17 +33,39 @@
 
 const {
   TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
-  TIP_ID_TYPES, ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
+  TIP_ID_TYPES, ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS, EMAIL_PRIVATE_ACTIVATION_MS,
   SHARED_HOST_DOMAINS, ORG_MEMBER_STATUS,
 } = require("../../../shared/constants");
 const { DISPUTE, APPEAL, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
+const { isEmailExtras } = require("../schemas/content-register");
 
 // Consensus gate: must be IDENTICAL fleet-wide or nodes diverge. Env override
 // exists to activate it on an isolated cluster before the mainnet date.
 const _ADJUDICATION_GATE_MS = Number.isFinite(parseInt(process.env.TIP_ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS, 10))
   ? parseInt(process.env.TIP_ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS, 10)
   : ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS;
+
+// Same gate rules as above.
+const _EMAIL_PRIVATE_GATE_MS = Number.isFinite(parseInt(process.env.TIP_EMAIL_PRIVATE_ACTIVATION_MS, 10))
+  ? parseInt(process.env.TIP_EMAIL_PRIVATE_ACTIVATION_MS, 10)
+  : EMAIL_PRIVATE_ACTIVATION_MS;
+
+function _emailPrivateOn(atMs) {
+  return Number.isFinite(atMs) && atMs >= _EMAIL_PRIVATE_GATE_MS;
+}
+
+// Only an email's sender and recipients can see it, so from the activation no
+// scan, review or verdict on it, by a person or a node, could mean anything. At
+// commit `atMs` is max(tx.timestamp, cert time), so backdating cannot dodge it.
+function isPrivateEmailRecord(rec, atMs) {
+  return !!rec && _emailPrivateOn(atMs) && isEmailExtras(rec.extras);
+}
+
+function _emailDisputeRefusal(rec, atMs) {
+  if (!isPrivateEmailRecord(rec, atMs)) return null;
+  return fail(403, "An email record is private: its origin is the sender's own statement and cannot be disputed", "email_not_disputable");
+}
 
 // Adjudication (verify / dispute / review) is personal-only; see the constant.
 // `atMs` is the frozen tx.timestamp so every node decides identically.
@@ -275,7 +297,7 @@ function _checkTakeovers(plan, declared, at_ms) {
   return null;
 }
 
-function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls, at_ms, url_takeovers }) {
+function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls, at_ms, url_takeovers, extras, parent_url }) {
   if (!ORIGIN_CODES.includes(origin_code)) {
     return fail(400, `Invalid origin_code. Must be one of: ${ORIGIN_CODES.join(", ")}`);
   }
@@ -284,6 +306,11 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
   if (dag.isRevoked(signer_tip_id)) return fail(403, "Signer TIP-ID is revoked");
   if (ctid && dag.getContent(ctid)) {
     return fail(409, `Content already registered with this origin code (CTID: ${ctid})`);
+  }
+  // Otherwise any post could skip the AI scan by calling itself an email.
+  if (_emailPrivateOn(at_ms) && isEmailExtras(extras)
+    && ((Array.isArray(registered_urls) && registered_urls.length > 0) || parent_url)) {
+    return fail(400, "An email registration is private and cannot carry registered_urls or parent_url", "email_no_links");
   }
   // URL exclusivity — a published URL binds to exactly ONE CTID, first
   // wins. Same dual-call-site enforcement as the ctid dedup above (API
@@ -329,9 +356,12 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
   return ok();
 }
 
-function canVerify(dag, { ctid, verifier_tip_id }, { now } = {}) {
+function canVerify(dag, { ctid, verifier_tip_id }, { now, gateAt } = {}) {
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
+  if (isPrivateEmailRecord(rec, gateAt ?? now)) {
+    return fail(403, "An email record is private: there is nothing public to verify", "email_not_verifiable");
+  }
 
   const verifier = dag.getIdentity(verifier_tip_id);
   if (!verifier) return fail(404, "Verifier TIP-ID not found");
@@ -454,6 +484,9 @@ function canUpdateRegisteredUrls(dag, { ctid, author_tip_id, registered_urls, at
   }
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
+  if (isPrivateEmailRecord(rec, at_ms)) {
+    return fail(403, "An email record is private and cannot carry registered URLs", "email_no_links");
+  }
   if (author_tip_id !== rec.author_tip_id) return fail(403, "Only the content author can update registered URLs");
   if (!UPDATE_URLS_ALLOWED_STATUSES.includes(rec.status)) {
     return fail(403, `Cannot update registered URLs: content status is '${rec.status}'`);
@@ -505,9 +538,11 @@ function canRetract(dag, { ctid, author_tip_id }) {
 
 // ─── Dispute / Jury ────────────────────────────────────────────────────────
 
-function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason, claimed_origin }, { now }) {
+function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason, claimed_origin }, { now, gateAt }) {
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
+  const email = _emailDisputeRefusal(rec, gateAt ?? now);
+  if (email) return email;
   if (rec.status === CONTENT_STATUS.RETRACTED) return fail(403, "Content has been retracted — dispute not allowed");
   if (rec.status === CONTENT_STATUS.DISPUTED) return fail(403, "Content is already under dispute — wait for adjudication result");
   if (rec.status === CONTENT_STATUS.PENDING_REVIEW) return fail(403, "Content is pending review — wait for 24-hour grace period");
@@ -592,6 +627,30 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
     );
   }
 
+  return ok();
+}
+
+// Node-filed disputes (review escalation, creator fast-forward) skip canDispute's
+// person checks, never this one.
+function canAutoDispute(dag, { ctid }, { at_ms }) {
+  return _emailDisputeRefusal(dag.getContent(ctid), at_ms) || ok();
+}
+
+// Opening, claiming or confirming a review. Dismiss and recuse stay open, so a
+// review already running on an email can still end (back to registered).
+function canReviewContent(dag, { ctid }, { at_ms }) {
+  if (isPrivateEmailRecord(dag.getContent(ctid), at_ms)) {
+    return fail(403, "An email record is private: it is never reviewed", "email_not_reviewable");
+  }
+  return ok();
+}
+
+// The way into review is a flagged verdict, so an email never gets one.
+function canCompletePrescan(dag, { ctid, flagged, tier }, { at_ms }) {
+  const flaggedVerdict = flagged === true || tier === PRESCAN_TIERS.HIGH || tier === PRESCAN_TIERS.CRITICAL;
+  if (flaggedVerdict && isPrivateEmailRecord(dag.getContent(ctid), at_ms)) {
+    return fail(400, "An email record is never scanned, so it cannot carry a flagged verdict", "email_not_scanned");
+  }
   return ok();
 }
 
@@ -861,6 +920,10 @@ module.exports = {
   UPDATE_URLS_ALLOWED_STATUSES,
   canRetract,
   canDispute,
+  canAutoDispute,
+  canReviewContent,
+  canCompletePrescan,
+  isPrivateEmailRecord,
   canCommitVote,
   canRevealVote,
   canFileAppeal,

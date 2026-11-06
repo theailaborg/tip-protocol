@@ -182,7 +182,9 @@ If pre-scan flags the content, `status` will be `pending` and `pre_scan.flagged`
 
 **Errors:**
 - `400`: Missing required fields or invalid origin code
-- `400` extras_email_invalid, when `extras.email` is present but is not `{ v: 1 }` with optional `recipients`, `from` and `all` (see below)
+- `400` extras_email_invalid, when `extras.email` is present but is not `{ v: 1 }` with optional `recipients`, `from`, `all` and `attachments` (see below)
+- `400` email_hash_only_invalid, when an email sent by its hash alone has a malformed `content_hash`, or carries media, fingerprints or a non-text `content_type_hint` (node 2.9.4)
+- `400` email_no_links, when an email carries `registered_urls` or `parent_url` (node 2.9.4: a hash-only email always, any email from `EMAIL_PRIVATE_ACTIVATION_MS`)
 - `403`: Author TIP-ID not active
 - `413` document_pages_exceed_plan, when a document fingerprint item covers more pages than the signer's plan fingerprints (see below)
 - `422`: Invalid author signature
@@ -192,6 +194,8 @@ Plans limit how many pages of a document the node fingerprints. A `cf-doc-1` ite
 
 ##### Email registrations
 An email is registered like any text: `content` is the subject, a newline, then the body, and `content_hash` covers that text. The signed `extras` carries `"email": { "v": 1 }` plus up to three optional seals, each 64 lowercase hex computed by the client (the node never sees an address): `recipients`, a salted commitment to the To and Cc addresses; `from`, a salted commitment to the sender's address (node 2.9.3); and `all`, a commitment to the To, Cc and Bcc addresses under a secret only the sender holds, so Bcc stays private (node 2.9.3). `v` must be the integer `1`, each seal is optional, and no other keys are allowed; anything else is refused with `400` `{ code: "extras_email_invalid" }`. The node uses the text only to recompute `content_hash`. It never sends an email's text to the AI origin classifier, keeps no copy of it, and indexes no text fingerprint for it (clients send none; a text or document fingerprint item that arrives with an email is dropped). The prescan completes at once with the same verdict a locally skipped origin gets, which is `probability` 0.5, tier `low`, not flagged, and `classifier_providers_used` `skipped_locally`.
+
+Node 2.9.4: an email can register by its hash alone, so its text never reaches any node. Send `content_hash` (64 lowercase hex, the hash of the normalized subject-newline-body text, exactly what the signature covers) and no `content`; no `media`, `media_canonical_hash`, fingerprints or `content_type_hint` other than `text`, and no `registered_urls` or `parent_url` (refused with `email_no_links` even before the activation below). The node cannot and does not check that the hash is an email: the signature binds the signer to that hash at that time, and whoever holds the email proves a copy by hashing it and comparing (`GET /v1/content-matches?hash=`). The CTID is the one the text would give. Sending `content` with an email still works for older clients. Either way the email's length is not put on the tx (`text_chars` is absent) and the email earns no registration credit, since nobody can dispute it. From `EMAIL_PRIVATE_ACTIVATION_MS` (2026-11-06 07:00 UTC), checked at API time and at commit (at the later of the tx time and the certificate time, so a backdated tx cannot dodge it): an email cannot carry `registered_urls` or `parent_url` and links cannot be added to it later (`email_no_links`); nobody can verify it (`email_not_verifiable`); nobody can dispute it, and no node files a dispute on it either, from a review escalation or a creator fast-forward (`email_not_disputable`); and it is never reviewed: a flagged verdict on it is dropped (`email_not_scanned`), and no review is triggered, claimed from the desk or confirmed (`email_not_reviewable`). A review already running on one can still be dismissed or time out, which returns it to registered. The sender can still change the declared origin or retract the record as for any post. Its origin is the sender's own statement, so records say `origin_basis: "self_declared"`. The marker also takes an optional `attachments` seal (64 lowercase hex, node 2.9.4): a commitment to the attachments' bytes, hashed on the sender's device and salted by the email's text, so a swapped attachment is caught while no file reaches a node. The node checks its shape only.
 
 #### `GET /v1/content/:ctid`
 Resolve a content provenance record.
@@ -220,6 +224,8 @@ Resolve a content provenance record.
   "media_canonical_hash": "[SHAKE-256 hex]"
 }
 ```
+
+`is_email` is true for an email registration. `origin_basis` (node 2.9.4) says what backs `origin_code`: `open_to_review` (the AI prescan where it applies, and disputes) or `self_declared` (an email: the sender's own statement, never scanned and not disputable).
 
 `media[]` carries public storage facts (type, size, whether the bytes are still stored) and the per-file AI score from the verdict. The bytes themselves are not here, fetch them via the role-gated media endpoint below. `ai_probability` is `null` until prescan completes.
 
@@ -256,7 +262,7 @@ List content, newest first. Cursor-paginated, public.
 
 Query params (all optional): `author`, `origin`, `status`, `has_media`, `limit` (1-100, default 20), `cursor` (opaque token from a prior response's `next_cursor`).
 
-**Response 200:** `{ "items": [ ...slim rows... ], "next_cursor": "..." | null }`. Each row carries `ctid`, `author_tip_id`, `origin_code`, `status`, `prescan_status`, `prescan_tier`, `media_count`, `registered_urls`, `registered_at`, and (node 2.9.3) `is_email`, true for an email registration, which has no link by design.
+**Response 200:** `{ "items": [ ...slim rows... ], "next_cursor": "..." | null }`. Each row carries `ctid`, `author_tip_id`, `origin_code`, `status`, `prescan_status`, `prescan_tier`, `media_count`, `registered_urls`, `registered_at`, and (node 2.9.3) `is_email`, true for an email registration, which has no link by design, and (node 2.9.4) `origin_basis`, as on the record.
 
 #### `POST /v1/content/:ctid/dispute`
 File a dispute against a content origin declaration.
@@ -279,8 +285,10 @@ File a dispute against a content origin declaration.
 }
 ```
 
+An email record cannot be disputed: `403` `{ code: "email_not_disputable" }` (node 2.9.4, from `EMAIL_PRIVATE_ACTIVATION_MS`). Jurors could never see the email.
+
 #### `POST /v1/content/:ctid/verify`
-Manually verify a content record (jury-level participants only).
+Manually verify a content record (jury-level participants only). An email record cannot be verified: `403` `{ code: "email_not_verifiable" }` (node 2.9.4, from `EMAIL_PRIVATE_ACTIVATION_MS`).
 
 ---
 

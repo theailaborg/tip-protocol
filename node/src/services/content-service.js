@@ -5,7 +5,7 @@ const {
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
-const { TX_TYPES, TIP_ID_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT, PARENT_URL_LOOKUP } = require("../../../shared/constants");
+const { TX_TYPES, TIP_ID_TYPES, ORIGIN, ORIGIN_LABELS, ORIGIN_BASIS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT, PARENT_URL_LOOKUP } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -363,10 +363,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const media_canonical_hash = derivedMch || body.media_canonical_hash || null;
 
     // The client signs over content_hash, which combines media + text per
-    // CNA-MIX-1. Server reproduces the same formula deterministically.
+    // CNA-MIX-1. Server reproduces the same formula deterministically, except
+    // for a hash-only email, whose text it never receives.
+    const hashOnly = contentRegisterSchema.isHashOnlyEmail(body);
     const textHashFull = content ? shake256(tipNormalize(content)) : shake256("");
-    const contentHashFull = media_canonical_hash
-      ? shake256(media_canonical_hash + textHashFull)
+    const contentHashFull = hashOnly ? body.content_hash
+      : media_canonical_hash ? shake256(media_canonical_hash + textHashFull)
       : textHashFull;
     // CTID short hash derives from the full canonical hash so it covers
     // every modality (text, media, mixed). Earlier branching on raw inputs
@@ -380,8 +382,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       throw schemaError(403, "Content signature verification failed", "signature_invalid");
     }
     // Email registration, read from the signed extras (shape checked in
-    // validateRequest). The text was needed above for content_hash; from
-    // here on it reaches no classifier, index or table.
+    // validateRequest). Any text was needed above for content_hash; from
+    // here on it reaches no classifier, index, table or tx.
     const email = contentRegisterSchema.isEmailExtras(canonicalPayload.extras);
 
     // ── Async prescan ───────────────────────────────────────────────────
@@ -393,6 +395,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       text: content,
       media: resolvedMedia,
       content_type_hint: body.content_type_hint || null,
+      hash_only_email: hashOnly,
       // First registered URL drives platform-based resolution
       // (twitter.com → MIXED, youtube.com → video, etc.). See
       // shared/platforms.js for the strategy table.
@@ -413,6 +416,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const { valid, error } = rules.canRegisterContent(dag, {
       signer_tip_id, ctid, origin_code,
       registered_urls: canonicalPayload.registered_urls, at_ms: registeredAt, url_takeovers: urlTakeovers,
+      extras: canonicalPayload.extras, parent_url: canonicalPayload.parent_url,
     });
     if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
 
@@ -472,8 +476,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         // Length of the normalized text, counted by this node. Advisory and
         // not signed, like override: it only decides whether an exact copy
         // of short text ("gm") raises an alert for the first author (see
-        // services/registered-again.js). Never changes what commits.
-        text_chars: content ? tipNormalize(content).length : 0,
+        // services/registered-again.js). Never changes what commits. Absent
+        // for an email: its length is private too.
+        ...(email ? {} : { text_chars: content ? tipNormalize(content).length : 0 }),
 
         // ── CNA-2.2 signed canonical fields (mirror canonicalPayload
         //    so commit-handler can replay buildSigningPayload(d, d.content_hash))
@@ -520,7 +525,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     submitTx(signedTx);
 
     // Paired registration reward (single-channel): capped +1 to the author.
-    _emitRegistrationCredit(signer_tip_id, ctid, signedTx.tx_id);
+    // None for an email: nobody can dispute it, so the credit could never be
+    // reversed. Nodes emit credits, so stopping it here needs no commit rule.
+    if (!email) _emitRegistrationCredit(signer_tip_id, ctid, signedTx.tx_id);
 
     // Near-dup advisory rides the register response; computed before this
     // registration's own ingest, so only pre-existing content can surface.
@@ -694,6 +701,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       ...rec,
       media: enrichedMedia,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      origin_basis: _originBasis(rec),
+      is_email: contentRegisterSchema.isEmailExtras(rec.extras),
       original_origin_code: originalOriginCode,
       origin_changed: originChanged,
       parent_url: rec.parent_url || null,
@@ -1159,7 +1168,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       // someone's records can label it and leave it out of "no link yet"
       // without fetching each record. The marker is already public.
       is_email: contentRegisterSchema.isEmailExtras(c.extras),
+      origin_basis: _originBasis(c),
     };
+  }
+
+  function _originBasis(rec) {
+    return contentRegisterSchema.isEmailExtras(rec.extras) ? ORIGIN_BASIS.SELF_DECLARED : ORIGIN_BASIS.OPEN_TO_REVIEW;
   }
 
   // Responses pointing at one parent. parent_url is an unverified assertion and

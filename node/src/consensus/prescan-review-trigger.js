@@ -44,6 +44,7 @@ const { nowMs } = require("../../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES, RECUSAL_REASONS, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
 const { selectReviewer } = require("../reviewer-selection");
 const { countNoShows } = require("../schemas/prescan-review-confirmed");
+const { isPrivateEmailRecord } = require("../validators/business-rules");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.prescan-review-trigger");
@@ -105,6 +106,8 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     if (!candidates || candidates.length === 0) return;
 
     for (const content of candidates) {
+      // Commit refuses a review of an email record; proposing one would only churn.
+      if (isPrivateEmailRecord(content, certTimestamp)) continue;
       try {
         // No-show cap: after MAX_NO_SHOWS SLA recusals the post stops
         // being reassigned; the node opens the creator's decision window
@@ -168,6 +171,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     if (!reviews || reviews.length === 0) return;
 
     for (const review of reviews) {
+      if (isPrivateEmailRecord(dag.getContent(review.ctid), certTimestamp)) continue;
       try {
         // Idempotency — another node may have already auto-escalated.
         // The review's state would still be CONFIRMED here (apply hasn't

@@ -150,10 +150,10 @@ describe("email registration: prescan", () => {
     const raw = fx.dag.getPrescanJobByCtid(r.ctid).payload;
     expect(Buffer.from(raw).toString("utf8")).not.toContain("private figures");
 
-    // REGISTER_CONTENT carries the signed marker and the length, never the text.
+    // REGISTER_CONTENT carries the signed marker, never the text or its length.
     const regTx = fx.submitted.find(t => t.tx_type === TX_TYPES.REGISTER_CONTENT);
     expect(regTx.data.extras).toEqual({ email: { v: 1, recipients: RECIPIENTS } });
-    expect(regTx.data.text_chars).toBe(tipNormalize(EMAIL_TEXT).length);
+    expect(regTx.data).not.toHaveProperty("text_chars");
     expect(JSON.stringify(regTx)).not.toContain("private figures");
     fx.commitDrain();
 
