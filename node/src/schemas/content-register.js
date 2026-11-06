@@ -250,7 +250,9 @@ function validateRequest(body, deps) {
   if (typeof body.signature !== "string" || body.signature.length === 0) {
     throw schemaError(400, "signature is required", "signature_required");
   }
-  if (!body.content && !body.media_canonical_hash && !Array.isArray(body.media)) {
+  if (isHashOnlyEmail(body)) {
+    _validateHashOnlyEmail(body);
+  } else if (!body.content && !body.media_canonical_hash && !Array.isArray(body.media)) {
     throw schemaError(400, "content, media_canonical_hash, or media[] required", "content_required");
   }
   // Legacy path: with no media[] to derive from, the client value is stored
@@ -412,6 +414,29 @@ const EMAIL_EXTRAS_KEYS = new Set(["v", ...EMAIL_SEALS]);
 function isEmailExtras(extras) {
   const e = extras && typeof extras === "object" ? extras.email : undefined;
   return !!e && typeof e === "object" && !Array.isArray(e);
+}
+
+/**
+ * An email registered by its hash alone: no text, the client's content_hash
+ * (the signature covers it). The node never sees the email; a reader proves
+ * a copy by hashing it.
+ */
+function isHashOnlyEmail(body) {
+  return !!body && !body.content && body.content_hash !== undefined && isEmailExtras(body.extras);
+}
+
+function _validateHashOnlyEmail(body) {
+  const invalid = (what) => schemaError(400, `hash-only email ${what}`, "email_hash_only_invalid");
+  if (typeof body.content_hash !== "string" || !/^[0-9a-f]{64}$/.test(body.content_hash)) {
+    throw invalid("needs content_hash as a 64-char lowercase hex string");
+  }
+  if (body.media !== undefined || body.media_canonical_hash != null) throw invalid("cannot carry media");
+  if (body.fingerprints !== undefined || body.fingerprint_commit !== undefined) throw invalid("cannot carry fingerprints");
+  if (body.content_type_hint != null && body.content_type_hint !== "text") throw invalid("can only be text");
+  // New path, so no compat window: refused here before the commit rule's activation.
+  if ((Array.isArray(body.registered_urls) && body.registered_urls.length > 0) || body.parent_url) {
+    throw schemaError(400, "An email registration is private and cannot carry registered_urls or parent_url", "email_no_links");
+  }
 }
 
 /**
@@ -901,6 +926,7 @@ module.exports = {
   validateCanonicalUrl,
   resolveSigner,
   isEmailExtras,
+  isHashOnlyEmail,
   buildSigningPayload,
   mediaCanonicalHash,
   fingerprintsCommit,

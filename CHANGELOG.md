@@ -11,6 +11,30 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.9.4: an email record is private and carries no checked claim**
+- An email can register by its hash alone: `content_hash` and the seals, no
+  `content`, so its text never reaches a node. The signature binds the signer
+  to that hash; whoever holds the email proves a copy by hashing it. The CTID
+  is the one the text would give, and sending the text still works for older
+  clients. No media, fingerprints or non-text hint on that path
+  (`email_hash_only_invalid`), and no links (`email_no_links`, refused
+  already, since only 2.9.4 nodes accept the path at all).
+- An email earns no registration credit (nobody can dispute it, so the credit
+  could never be reversed) and its length is no longer put on the tx.
+- New commit rules from `EMAIL_PRIVATE_ACTIVATION_MS`, 2026-11-06 07:00 UTC
+  (override `TIP_EMAIL_PRIVATE_ACTIVATION_MS`, test cluster only): an email
+  cannot carry `registered_urls` or `parent_url`, links cannot be added to it
+  later (`email_no_links`), nobody can verify or dispute it, no node files a
+  dispute on it (`email_not_verifiable`, `email_not_disputable`), and it is
+  never reviewed: a flagged verdict is dropped, no review is triggered,
+  claimed or confirmed (`email_not_scanned`, `email_not_reviewable`). Judged
+  at the later of the tx and certificate time, so backdating cannot dodge it.
+  Without these, any post could skip the AI scan by calling itself an email. Every node, partners
+  included, must run 2.9.4 before that time or it forks.
+- Records and list rows carry `origin_basis`: `self_declared` for an email
+  (the sender's own statement), `open_to_review` otherwise.
+
+
 **Node 2.9.3: an email can seal its sender and its Bcc, privately**
 - `extras.email` takes two more optional seals beside `recipients`, each a
   64-char lowercase hex commitment computed by the client: `from`, the
@@ -27,6 +51,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   by design) without fetching each record.
 
 ### Fixed
+
+**Node 2.9.4: exact-hash lookups no longer walk every record**
+- `getContentByHash` on the in-memory store (the Postgres mirror on every
+  federation node) scanned all content on each call: on every registration
+  commit, every registration and every `GET /v1/content-matches`. About 14 ms
+  at a million records, 54 ms at three million, on the single consensus
+  thread. It now reads a content_hash index kept in step with every write.
 
 **Node 2.8.2: a flagged post is no longer reassigned to reviewers forever**
 - A HIGH/CRITICAL post whose assigned reviewers kept missing the 48 h SLA was

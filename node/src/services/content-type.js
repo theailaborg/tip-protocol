@@ -241,6 +241,11 @@ function resolve(req) {
   const hint = req && typeof req.content_type_hint === "string" ? req.content_type_hint : null;
   const url = req && typeof req.registered_url === "string" ? req.registered_url : null;
 
+  // A hash-only email is text the node never sees (hint already limited to text).
+  if (req && req.hash_only_email) {
+    return { contentType: "text", hintProvided: hint, resolution: hint ? "from_hint" : "derived", platformStrategy: null };
+  }
+
   // Step 1: explicit publisher hint — trust unless the declared modality
   // is structurally impossible (missing required file).
   if (hint) {
