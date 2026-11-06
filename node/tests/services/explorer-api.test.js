@@ -252,6 +252,18 @@ describe("contentService.list: sections, dates, search and summary", () => {
     expect(out.summary).toMatchObject({ total: 3, posts: 2, emails: 1, latest_at: _row(2).registered_at });
     expect(out.summary.months).toHaveLength(1);
     expect(out.summary.months[0]).toMatchObject({ posts: 2, emails: 1 });
+    expect(out.summary.tz).toBe("America/New_York");
+  });
+
+  // Chrome reports "Etc/Unknown" when it cannot tell, and a browser can know a
+  // zone newer than the node's ICU. Either must not cost the person their list.
+  test("a well-formed zone the node does not know counts in UTC instead of failing the page", () => {
+    const svc = svcWith([email(0), _row(1)]);
+    for (const tz of ["Etc/Unknown", "Mars/Olympus", "-300"]) {
+      const out = svc.list({ author: AUTHOR_A, include: "summary", tz });
+      expect(out.items).toHaveLength(2);
+      expect(out.summary).toMatchObject({ total: 2, tz: "UTC" });
+    }
   });
 
   test("invalid section, date, search and summary values → 400 codes", () => {
@@ -271,8 +283,8 @@ describe("contentService.list: sections, dates, search and summary", () => {
     bad({ q: "budget" }, "q_needs_author");
     bad({ include: "summary" }, "summary_needs_author");
     bad({ bylined: AUTHOR_A, include: "summary" }, "summary_needs_author");
-    bad({ author: AUTHOR_A, tz: "Mars/Olympus" }, "tz_invalid");
-    bad({ author: AUTHOR_A, tz: "-300" }, "tz_invalid");
+    bad({ author: AUTHOR_A, tz: "x".repeat(65) }, "tz_invalid");
+    bad({ author: AUTHOR_A, tz: "America/New York" }, "tz_invalid");
     bad({ author: AUTHOR_A, tz: "America/New_York; DROP" }, "tz_invalid");
     // Blank values mean "no filter", like the older params.
     expect(svc.list({ kind: "", from: "", to: "", q: "   ", include: "" }).items).toHaveLength(1);

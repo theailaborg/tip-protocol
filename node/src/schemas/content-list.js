@@ -213,12 +213,15 @@ function validateRequest(query = {}) {
   }
   // A zone NAME, not an offset: daylight saving moves the offset, and a fixed
   // one files a record made just after midnight on the 1st under the wrong month.
+  // A well-formed name this runtime does not know (Chrome's "Etc/Unknown", or
+  // a zone newer than the node's ICU) counts in UTC rather than failing the
+  // page; the summary says which zone it used.
   if (query.tz !== undefined && query.tz !== "") {
     const tz = String(query.tz);
-    if (tz.length > TZ_NAME_MAX || !/^[A-Za-z0-9_+\-/]+$/.test(tz) || !isTimeZone(tz)) {
+    if (tz.length > TZ_NAME_MAX || !/^[A-Za-z0-9_+\-/]+$/.test(tz)) {
       throw schemaError(400, "tz must be an IANA time zone such as America/New_York", "tz_invalid");
     }
-    out.tz = tz;
+    out.tz = isTimeZone(tz) ? tz : "UTC";
   }
 
   return out;

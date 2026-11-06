@@ -1223,7 +1223,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // search (an older node ignores the params). `summary` rides on the page
     // the client was fetching anyway, so My Content's counts cost no request.
     const out = { items, next_cursor, applied: { kind: opts.kind, from: opts.from, to: opts.to, q: opts.q } };
-    if (opts.summary) out.summary = dag.summarizeContent({ author: opts.author, tz: opts.tz });
+    if (opts.summary) out.summary = { ...dag.summarizeContent({ author: opts.author, tz: opts.tz }), tz: opts.tz };
     return out;
   }
 
