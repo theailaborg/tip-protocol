@@ -1265,7 +1265,7 @@ const EMAIL_PRIVATE_ACTIVATION_MS = 1793963700000; // 2026-11-06 11:15:00 UTC ma
 // A new email record must seal its sender, its recipients (recipients or all) and its
 // attachments (an empty list too), and not be empty text: without them the receiver's
 // badge cannot tell a replayed or re-sent copy from the original. New reject rule.
-const EMAIL_SEALS_REQUIRED_ACTIVATION_MS = 1795132800000; // 2026-11-20 00:00:00 UTC mainnet activation
+const EMAIL_SEALS_REQUIRED_ACTIVATION_MS = 1793966100000; // 2026-11-06 11:55:00 UTC mainnet activation
 
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",
