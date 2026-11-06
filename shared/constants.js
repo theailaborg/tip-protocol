@@ -23,6 +23,13 @@ const ORIGIN_LABELS = Object.freeze({
   MX: "Mixed / Composite",
 });
 
+// What backs a record's origin: open to the AI scan and disputes, or only the
+// signer's own word (an email, which nobody else can see or check).
+const ORIGIN_BASIS = Object.freeze({
+  OPEN_TO_REVIEW: "open_to_review",
+  SELF_DECLARED: "self_declared",
+});
+
 // ─── Jury votes ─────────────────────────────────────────────────────────────
 const VOTE = Object.freeze({
   MATCH: "MATCH",
@@ -1256,6 +1263,9 @@ const KEY_ROTATION_MAX_LEAD_MS = 24 * 60 * 60 * 1000;
 // (Bullshark's rule, so the committed sequence depends on the DAG alone, not on when votes arrived).
 // Changes which anchors commit, so every node runs it before this epoch.
 const DETERMINISTIC_COMMIT_ACTIVATION_MS = 1796083200000; // 2026-12-01 00:00:00 UTC mainnet activation
+// An email record's origin is never scanned and nobody else can see the email, so
+// nothing public may hang off it: no links, no verify, no dispute. New reject rules.
+const EMAIL_PRIVATE_ACTIVATION_MS = 1793948400000; // 2026-11-06 07:00:00 UTC mainnet activation
 
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",
@@ -1324,6 +1334,7 @@ module.exports = {
   KEY_RETIREMENT_ACTIVATION_MS,
   KEY_ROTATION_MAX_LEAD_MS,
   DETERMINISTIC_COMMIT_ACTIVATION_MS,
+  EMAIL_PRIVATE_ACTIVATION_MS,
   ORG_MEMBER_ROLES,
   ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,
@@ -1340,6 +1351,7 @@ module.exports = {
   BATCH_TX_SOFT_CAP,
   ORIGIN,
   ORIGIN_LABELS,
+  ORIGIN_BASIS,
   VOTE,
   JURY_VOTES,
   VERDICT,

@@ -152,7 +152,7 @@ Lowercase 64-char hex of `SHAKE-256(CNA_VERSION(content), 32)`, where `CNA_VERSI
 - **Text content** (today's only path in production): `shared/crypto.js#tipNormalize()` implements CNA-2.2. Run the 8 normalization steps, UTF-8 encode, SHAKE-256 → 32 bytes → 64 lowercase hex.
 - **Mixed media (text + image / video / audio):** `content_hash = SHAKE-256(media_canonical_hash || text_hash, 32).hex()` — the media hash is concatenated with the text hash before the final SHAKE round. The client sends `media_canonical_hash` in the auxiliary HTTP envelope; the server combines and re-verifies.
 
-The server recomputes the content hash from the content bytes the client sends in the request envelope using the CNA version named in `cna_version`, then matches against the `content_hash` in the signed payload. Mismatch is a signature failure (the canonical payload didn't bind to the content the client claimed to sign).
+The server recomputes the content hash from the content bytes the client sends in the request envelope using the CNA version named in `cna_version` (a hash-only email is the one exception, §8), then matches against the `content_hash` in the signed payload. Mismatch is a signature failure (the canonical payload didn't bind to the content the client claimed to sign).
 
 ---
 
@@ -175,7 +175,9 @@ Anything in `extras` is signed — the canonical-JSON encoder includes it byte-f
 
 `extras` keys MUST be JSON-safe (no nested undefined, no functions, no circular references).
 
-**Email registrations.** `extras.email` marks an email registration, as `{ "v": 1 }` plus the optional seals `recipients`, `from` and `all`, each 64 lowercase hex computed on the client; the node never sees an address. `recipients` commits to the To and Cc addresses and `from` to the sender's address, both salted by the email's text, and `all` (node 2.9.3) commits to To, Cc and Bcc under a secret only the sender holds, so nobody else can test a Bcc address. `content` is the subject, a newline, then the body, hashed as usual. The node checks the marker's shape at submission (`extras_email_invalid`), uses the text only to recompute `content_hash`, and never passes it to the AI origin classifier or a text index.
+**Email registrations.** `extras.email` marks an email registration, as `{ "v": 1 }` plus the optional seals `recipients`, `from` and `all`, each 64 lowercase hex computed on the client; the node never sees an address. `recipients` commits to the To and Cc addresses and `from` to the sender's address, both salted by the email's text, and `all` (node 2.9.3) commits to To, Cc and Bcc under a secret only the sender holds, so nobody else can test a Bcc address. `attachments` (node 2.9.4) commits to the attachments' bytes, hashed on the sender's device and salted by the email's text; no file is sent. `content` is the subject, a newline, then the body, hashed as usual. The node checks the marker's shape at submission (`extras_email_invalid`), uses the text only to recompute `content_hash`, and never passes it to the AI origin classifier or a text index.
+
+Node 2.9.4: an email may be sent by its hash alone, `content_hash` with no `content`, so the text never leaves the sender's device. This is the one case where the server does not recompute `content_hash` (§7): it takes the client's value, and the signature over the canonical payload binds the signer to it. The signed payload is unchanged, so the CTID is the same either way. An email's signed `registered_urls` must be empty and it must have no `parent_url`: always for a hash-only email, and for any email from `EMAIL_PRIVATE_ACTIVATION_MS`, when a payload that breaks this is refused at submission and dropped at commit (`email_no_links`).
 
 ---
 
@@ -433,7 +435,10 @@ Common codes for `POST /v1/content/register`:
 | 400 | `authors_tip_id_invalid` | An `authors[].tip_id` is missing or not in `tip://id/...` format. |
 | 400 | `attribution_mode_invalid` | `attribution_mode` not in the enum (`self` / `employed` / `hosted`). |
 | 400 | `extras_invalid` | `extras` is not a plain object (e.g. array or null). |
-| 400 | `extras_email_invalid` | `extras.email` is present but is not `{ v: 1 }` with optional `recipients`, `from` and `all`, each 64 lowercase hex (§8). |
+| 400 | `extras_email_invalid` | `extras.email` is present but is not `{ v: 1 }` with optional `recipients`, `from`, `all` and `attachments`, each 64 lowercase hex (§8). |
+| 400 | `email_hash_only_invalid` | An email sent by its hash alone has a malformed `content_hash`, or carries media, fingerprints or a non-text `content_type_hint` (§8). |
+| 400 | `email_no_links` | An email carries `registered_urls` or `parent_url`: a hash-only email always, any email from `EMAIL_PRIVATE_ACTIVATION_MS` (§8). |
+| 403 | `email_not_verifiable`, `email_not_disputable`, `email_not_reviewable` | Verify, dispute (by a person or a node) or review of an email record, from `EMAIL_PRIVATE_ACTIVATION_MS` (§8). |
 | 400 | `registered_urls_invalid` | `registered_urls` is not an array of strings. |
 | 400 | `content_hash_mismatch` | Server-recomputed content hash != `content_hash` in signed payload. |
 | 403 | `signature_invalid` | ML-DSA verify failed against the DAG-resident public key. |

@@ -37,6 +37,7 @@ const claimedSchema = require("../schemas/prescan-review-claimed");
 const acceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
 const disputeSchema = require("../schemas/prescan-review-dispute");
 const { schemaError } = require("../schemas/_common");
+const rules = require("../validators/business-rules");
 const { withTxId, nodeSignedAuto } = require("./helpers");
 const { isEligibleReviewer, getReviewerAccuracy } = require("../reviewer-selection");
 const { getLogger } = require("../logger");
@@ -75,6 +76,10 @@ function _matchesReview(historyEntry, review, winStartMs, winEndMs, isEscalated)
 }
 
 function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
+
+  function _refuse(r) {
+    if (!r.valid) throw schemaError(r.error.status, r.error.message, r.error.code);
+  }
 
   function getReview(reviewId) {
     const review = dag.getPrescanReview(reviewId);
@@ -150,6 +155,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
   function confirm(reviewId, body) {
     const safeBody = { ...(body || {}), review_id: reviewId };
     confirmedSchema.validateRequest(safeBody, { dag });
+    _refuse(rules.canReviewContent(dag, { ctid: dag.getPrescanReview(reviewId)?.ctid }, { at_ms: nowMs() }));
 
     const reviewer = dag.getIdentity(safeBody.reviewer_tip_id);
     const payload = confirmedSchema.buildSigningPayload(safeBody);
@@ -226,6 +232,8 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const safeBody = { ...(body || {}) };
     if (reviewId) { safeBody.review_id = reviewId; delete safeBody.ctid; } else { delete safeBody.review_id; }
     const target = claimedSchema.validateRequest(safeBody, { dag, nowMs: timestamp });
+    const claimedCtid = target === "review" ? dag.getPrescanReview(reviewId)?.ctid : safeBody.ctid;
+    _refuse(rules.canReviewContent(dag, { ctid: claimedCtid }, { at_ms: timestamp }));
 
     const claimer = dag.getIdentity(safeBody.reviewer_tip_id);
     const payload = claimedSchema.buildSigningPayload(safeBody);
@@ -289,7 +297,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       }
       return row;
     });
-    const waiting = dag.getContentsNeedingReview(now).map(c => {
+    const waiting = dag.getContentsNeedingReview(now).filter(c => !rules.isPrivateEmailRecord(c, now)).map(c => {
       const since = Number.isFinite(c.prescan_completed_at) ? c.prescan_completed_at + CONTENT_GRACE.FLAGGED_MS : null;
       const row = {
         review_id: null,
@@ -313,7 +321,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     // predicate decides both lists, so a post moves from one to the other.
     const dueNow = new Set(waiting.map(r => r.ctid));
     const upcoming = dag.getContentsNeedingReview(now + CONTENT_GRACE.FLAGGED_MS)
-      .filter(c => !dueNow.has(c.ctid))
+      .filter(c => !dueNow.has(c.ctid) && !rules.isPrivateEmailRecord(c, now))
       .map(c => {
         const opensAt = c.prescan_completed_at + CONTENT_GRACE.FLAGGED_MS;
         const row = {
@@ -427,6 +435,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const { review, content } = disputeSchema.validateRequest(reviewId, body, { dag });
 
     const timestamp = nowMs();
+    _refuse(rules.canAutoDispute(dag, { ctid: review.ctid }, { at_ms: timestamp }));
     const disputeTx = nodeSignedAuto({
       tx_type: TX_TYPES.CONTENT_DISPUTED,
       timestamp,
