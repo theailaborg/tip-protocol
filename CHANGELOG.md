@@ -11,6 +11,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.9.5: every new email record seals its sender, recipients and attachments**
+- From `EMAIL_SEALS_REQUIRED_ACTIVATION_MS` (placeholder 2026-11-20 00:00 UTC, set at
+  release after the VP and plugin always send them; override
+  `TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS`, test cluster only), checked at API time and
+  at commit: a new email must carry `from`, `recipients` or `all` (a Bcc-only email has
+  `all` alone), and `attachments` (an empty list when there are no files), or it is
+  refused with `email_seals_required` naming what is missing; an email whose subject
+  and body normalize to nothing is refused with `email_empty`. Without these the
+  receiver cannot tell a copy replayed from another address or re-sent to someone else.
+  The node checks presence and shape; the values are the client's. Older email records
+  are unaffected. Every node, partners included, runs 2.9.5 before the activation.
+
 **Node 2.9.4: an email record is private and carries no checked claim**
 - An email can register by its hash alone: `content_hash` and the seals, no
   `content`, so its text never reaches a node. The signature binds the signer
@@ -21,7 +33,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already, since only 2.9.4 nodes accept the path at all).
 - An email earns no registration credit (nobody can dispute it, so the credit
   could never be reversed) and its length is no longer put on the tx.
-- New commit rules from `EMAIL_PRIVATE_ACTIVATION_MS`, 2026-11-06 07:00 UTC
+- New commit rules from `EMAIL_PRIVATE_ACTIVATION_MS`, 2026-11-06 11:15 UTC
   (override `TIP_EMAIL_PRIVATE_ACTIVATION_MS`, test cluster only): an email
   cannot carry `registered_urls` or `parent_url`, links cannot be added to it
   later (`email_no_links`), nobody can verify or dispute it, no node files a

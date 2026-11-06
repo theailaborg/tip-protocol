@@ -1265,7 +1265,11 @@ const KEY_ROTATION_MAX_LEAD_MS = 24 * 60 * 60 * 1000;
 const DETERMINISTIC_COMMIT_ACTIVATION_MS = 1796083200000; // 2026-12-01 00:00:00 UTC mainnet activation
 // An email record's origin is never scanned and nobody else can see the email, so
 // nothing public may hang off it: no links, no verify, no dispute. New reject rules.
-const EMAIL_PRIVATE_ACTIVATION_MS = 1793948400000; // 2026-11-06 07:00:00 UTC mainnet activation
+const EMAIL_PRIVATE_ACTIVATION_MS = 1793963700000; // 2026-11-06 11:15:00 UTC mainnet activation
+// A new email record must seal its sender, its recipients (recipients or all) and its
+// attachments (an empty list too), and not be empty text: without them the receiver's
+// badge cannot tell a replayed or re-sent copy from the original. New reject rule.
+const EMAIL_SEALS_REQUIRED_ACTIVATION_MS = 1795132800000; // 2026-11-20 00:00:00 UTC mainnet activation, set at release
 
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",
@@ -1335,6 +1339,7 @@ module.exports = {
   KEY_ROTATION_MAX_LEAD_MS,
   DETERMINISTIC_COMMIT_ACTIVATION_MS,
   EMAIL_PRIVATE_ACTIVATION_MS,
+  EMAIL_SEALS_REQUIRED_ACTIVATION_MS,
   ORG_MEMBER_ROLES,
   ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,
