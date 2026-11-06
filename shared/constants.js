@@ -1261,7 +1261,7 @@ const KEY_RETIREMENT_ACTIVATION_MS = 1791504000000; // 2026-10-09 00:00:00 UTC m
 const KEY_ROTATION_MAX_LEAD_MS = 24 * 60 * 60 * 1000;
 // An email record's origin is never scanned and nobody else can see the email, so
 // nothing public may hang off it: no links, no verify, no dispute. New reject rules.
-const EMAIL_PRIVATE_ACTIVATION_MS = 1793948400000; // 2026-11-06 07:00:00 UTC mainnet activation
+const EMAIL_PRIVATE_ACTIVATION_MS = 1793963700000; // 2026-11-06 11:15:00 UTC mainnet activation
 
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",

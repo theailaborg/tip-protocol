@@ -21,7 +21,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already, since only 2.9.4 nodes accept the path at all).
 - An email earns no registration credit (nobody can dispute it, so the credit
   could never be reversed) and its length is no longer put on the tx.
-- New commit rules from `EMAIL_PRIVATE_ACTIVATION_MS`, 2026-11-06 07:00 UTC
+- New commit rules from `EMAIL_PRIVATE_ACTIVATION_MS`, 2026-11-06 11:15 UTC
   (override `TIP_EMAIL_PRIVATE_ACTIVATION_MS`, test cluster only): an email
   cannot carry `registered_urls` or `parent_url`, links cannot be added to it
   later (`email_no_links`), nobody can verify or dispute it, no node files a
