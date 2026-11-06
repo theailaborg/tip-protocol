@@ -437,6 +437,8 @@ Common codes for `POST /v1/content/register`:
 | 400 | `extras_invalid` | `extras` is not a plain object (e.g. array or null). |
 | 400 | `extras_email_invalid` | `extras.email` is present but is not `{ v: 1 }` with optional `recipients`, `from`, `all` and `attachments`, each 64 lowercase hex (§8). |
 | 400 | `email_hash_only_invalid` | An email sent by its hash alone has a malformed `content_hash`, or carries media, fingerprints or a non-text `content_type_hint` (§8). |
+| 400 | `email_seals_required` | From `EMAIL_SEALS_REQUIRED_ACTIVATION_MS`, an email without `from`, `recipients` or `all`, and `attachments` (§8). |
+| 400 | `email_empty` | From `EMAIL_SEALS_REQUIRED_ACTIVATION_MS`, an email whose subject and body normalize to nothing (§8). |
 | 400 | `email_no_links` | An email carries `registered_urls` or `parent_url`: a hash-only email always, any email from `EMAIL_PRIVATE_ACTIVATION_MS` (§8). |
 | 403 | `email_not_verifiable`, `email_not_disputable`, `email_not_reviewable` | Verify, dispute (by a person or a node) or review of an email record, from `EMAIL_PRIVATE_ACTIVATION_MS` (§8). |
 | 400 | `registered_urls_invalid` | `registered_urls` is not an array of strings. |

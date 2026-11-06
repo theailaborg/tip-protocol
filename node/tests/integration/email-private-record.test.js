@@ -16,8 +16,13 @@
 
 // The gate is read once at module load; "1" means on for every real time.
 // Saved and restored: --runInBand shares process.env with every later test file.
-const _envBefore = { TIP_EMAIL_PRIVATE_ACTIVATION_MS: process.env.TIP_EMAIL_PRIVATE_ACTIVATION_MS };
+const _envBefore = {
+  TIP_EMAIL_PRIVATE_ACTIVATION_MS: process.env.TIP_EMAIL_PRIVATE_ACTIVATION_MS,
+  TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS: process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS,
+};
 process.env.TIP_EMAIL_PRIVATE_ACTIVATION_MS = "1";
+// The required-seals rule (2.9.5) has its own file; kept off here so partial seals stay valid.
+process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS = "4102444800000";
 
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");

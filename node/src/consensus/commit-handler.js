@@ -1139,7 +1139,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const r = rules.canRegisterContent(dag, {
           signer_tip_id: d.signer_tip_id, ctid: d.ctid, origin_code: d.origin_code,
           registered_urls: d.registered_urls, at_ms: _siteAt(now, certTimestamp),
-          url_takeovers: d.url_takeovers, extras: d.extras, parent_url: d.parent_url,
+          url_takeovers: d.url_takeovers, extras: d.extras, parent_url: d.parent_url, content_hash: d.content_hash,
         });
         if (!r.valid) return { valid: false, error: r.error.message };
         // Authors: DAG presence, type and org roster, activation-gated.

@@ -20,6 +20,9 @@
 // Every log level reaches the console, so the log check below sees debug lines
 // too. jest-setup already loaded the logger, so reload modules after setting it.
 process.env.TIP_CONSOLE_LEVEL = "debug";
+// The required-seals rule (2.9.5) has its own file; kept off here so partial seals stay valid.
+const _sealsGateBefore = process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS;
+process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS = "4102444800000";
 jest.resetModules();
 
 const path = require("path");
@@ -52,6 +55,10 @@ const RECIPIENTS = "5a".repeat(32);
 const EMAIL_TEXT = "Quarterly numbers\nHi team, the private figures are 4,812 and 77.";
 
 beforeAll(async () => { await initCrypto(); });
+afterAll(() => {
+  if (_sealsGateBefore === undefined) delete process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS;
+  else process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS = _sealsGateBefore;
+});
 
 function _packFingerprints(items) {
   const data = zlib.gzipSync(Buffer.from(JSON.stringify(items), "utf8")).toString("base64");
