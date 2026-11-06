@@ -416,7 +416,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const { valid, error } = rules.canRegisterContent(dag, {
       signer_tip_id, ctid, origin_code,
       registered_urls: canonicalPayload.registered_urls, at_ms: registeredAt, url_takeovers: urlTakeovers,
-      extras: canonicalPayload.extras, parent_url: canonicalPayload.parent_url,
+      extras: canonicalPayload.extras, parent_url: canonicalPayload.parent_url, content_hash: contentHashFull,
     });
     if (!valid) throw schemaError(error.status, error.message, error.code, error.details);
 

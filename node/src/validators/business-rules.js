@@ -33,12 +33,13 @@
 
 const {
   TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
-  TIP_ID_TYPES, ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS, EMAIL_PRIVATE_ACTIVATION_MS,
+  TIP_ID_TYPES, ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS, EMAIL_PRIVATE_ACTIVATION_MS, EMAIL_SEALS_REQUIRED_ACTIVATION_MS,
   SHARED_HOST_DOMAINS, ORG_MEMBER_STATUS,
 } = require("../../../shared/constants");
 const { DISPUTE, APPEAL, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 const { isEmailExtras } = require("../schemas/content-register");
+const { shake256 } = require("../../../shared/crypto");
 
 // Consensus gate: must be IDENTICAL fleet-wide or nodes diverge. Env override
 // exists to activate it on an isolated cluster before the mainnet date.
@@ -53,6 +54,24 @@ const _EMAIL_PRIVATE_GATE_MS = Number.isFinite(parseInt(process.env.TIP_EMAIL_PR
 
 function _emailPrivateOn(atMs) {
   return Number.isFinite(atMs) && atMs >= _EMAIL_PRIVATE_GATE_MS;
+}
+
+const _EMAIL_SEALS_GATE_MS = Number.isFinite(parseInt(process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS, 10))
+  ? parseInt(process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS, 10)
+  : EMAIL_SEALS_REQUIRED_ACTIVATION_MS;
+
+// Subject and body that normalize to nothing hash to this, shared by every such email.
+const EMPTY_TEXT_HASH = shake256("");
+const SEAL_HEX = /^[0-9a-f]{64}$/;
+
+// recipients may be absent when all is there: a Bcc-only email has no To or Cc.
+function _missingEmailSeals(email) {
+  const has = (k) => typeof email[k] === "string" && SEAL_HEX.test(email[k]);
+  const missing = [];
+  if (!has("from")) missing.push("from");
+  if (!has("recipients") && !has("all")) missing.push("recipients or all");
+  if (!has("attachments")) missing.push("attachments");
+  return missing;
 }
 
 // Only an email's sender and recipients can see it, so from the activation no
@@ -297,7 +316,7 @@ function _checkTakeovers(plan, declared, at_ms) {
   return null;
 }
 
-function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls, at_ms, url_takeovers, extras, parent_url }) {
+function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls, at_ms, url_takeovers, extras, parent_url, content_hash }) {
   if (!ORIGIN_CODES.includes(origin_code)) {
     return fail(400, `Invalid origin_code. Must be one of: ${ORIGIN_CODES.join(", ")}`);
   }
@@ -311,6 +330,13 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
   if (_emailPrivateOn(at_ms) && isEmailExtras(extras)
     && ((Array.isArray(registered_urls) && registered_urls.length > 0) || parent_url)) {
     return fail(400, "An email registration is private and cannot carry registered_urls or parent_url", "email_no_links");
+  }
+  if (isEmailExtras(extras) && Number.isFinite(at_ms) && at_ms >= _EMAIL_SEALS_GATE_MS) {
+    const missing = _missingEmailSeals(extras.email);
+    if (missing.length) {
+      return fail(400, `An email registration must seal ${missing.join(", ")}`, "email_seals_required", { missing });
+    }
+    if (content_hash === EMPTY_TEXT_HASH) return fail(400, "An email registration needs a subject or a body", "email_empty");
   }
   // URL exclusivity — a published URL binds to exactly ONE CTID, first
   // wins. Same dual-call-site enforcement as the ctid dedup above (API

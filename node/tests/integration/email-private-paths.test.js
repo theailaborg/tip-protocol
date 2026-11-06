@@ -30,8 +30,13 @@ const { nowMs } = require(path.join(SHARED, "time"));
 const GATE = nowMs() - 60 * 60 * 1000;
 const BEFORE = GATE - 10 * 60 * 1000;
 const T0 = GATE - 60 * 86400000;
-const _envBefore = { TIP_EMAIL_PRIVATE_ACTIVATION_MS: process.env.TIP_EMAIL_PRIVATE_ACTIVATION_MS };
+const _envBefore = {
+  TIP_EMAIL_PRIVATE_ACTIVATION_MS: process.env.TIP_EMAIL_PRIVATE_ACTIVATION_MS,
+  TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS: process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS,
+};
 process.env.TIP_EMAIL_PRIVATE_ACTIVATION_MS = String(GATE);
+// The required-seals rule (2.9.5) has its own file; kept off here so partial seals stay valid.
+process.env.TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS = "4102444800000";
 
 const { initCrypto, generateMLDSAKeypair, shake256, computeTxId, signBody, signTransaction } = require(path.join(SHARED, "crypto"));
 const { TX_TYPES, CONTENT_STATUS, PRESCAN_REVIEW_STATES, ORG_MEMBER_STATUS, DISPUTE_REASON } = require(path.join(SHARED, "constants"));
