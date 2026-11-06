@@ -27,6 +27,13 @@ const helpers = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
+// Longest extras.title a list row carries; the record keeps the full text.
+const LIST_TITLE_MAX = 300;
+// Cut by code points, so an emoji is never split into a broken character.
+function _clip(s, n) {
+  return s.length <= n ? s : Array.from(s).slice(0, n).join("");
+}
+
 function createContentService({ dag, scoring, config, submitTx, prescanJobs, mediaService, websitePages = null, mediaQuota = null }) {
   const urlTakeovers = createUrlTakeovers({ dag });
   const registeredAgain = createRegisteredAgain({ dag });
@@ -1164,6 +1171,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       registered_urls: Array.isArray(c.registered_urls) ? c.registered_urls : [],
       parent_url: c.parent_url || null,
       registered_at: c.registered_at,
+      // 2.9.6: the public extras.title, so a list row can show what the post
+      // is and a search hit on the title is visible. Capped for row size.
+      title: c.extras && typeof c.extras === "object" && typeof c.extras.title === "string" && c.extras.title
+        ? _clip(c.extras.title, LIST_TITLE_MAX) : null,
       // 2.9.3: an email (extras.email) has no link by design, so a list of
       // someone's records can label it and leave it out of "no link yet"
       // without fetching each record. The marker is already public.
@@ -1208,7 +1219,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const page = hasMore ? rows.slice(0, opts.limit) : rows;
     const items = page.map(_listRow);
     const next_cursor = hasMore ? contentListSchema.encodeCursor(page[page.length - 1]) : null;
-    return { items, next_cursor };
+    // 2.9.6: `applied` tells a client this node filtered by kind, date and
+    // search (an older node ignores the params). `summary` rides on the page
+    // the client was fetching anyway, so My Content's counts cost no request.
+    const out = { items, next_cursor, applied: { kind: opts.kind, from: opts.from, to: opts.to, q: opts.q } };
+    if (opts.summary) out.summary = dag.summarizeContent({ author: opts.author, tz: opts.tz });
+    return out;
   }
 
   // Compact card for a perceptually-similar content item: just enough for the

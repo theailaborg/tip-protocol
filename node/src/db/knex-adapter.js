@@ -1004,6 +1004,7 @@ class KnexAdapter {
   getContentWithMediaBefore(cutoffMs) { return this.mirror.getContentWithMediaBefore(cutoffMs); }
   getReferencedMediaIds() { return this.mirror.getReferencedMediaIds(); }
   listContent(opts) { return this.mirror.listContent(opts); }
+  summarizeContent(opts) { return this.mirror.summarizeContent(opts); }
   getContentByAuthor(id) { return this.mirror.getContentByAuthor(id); }
   getContentBylined(id) { return this.mirror.getContentBylined(id); }
   getContentByHash(h) { return this.mirror.getContentByHash(h); }

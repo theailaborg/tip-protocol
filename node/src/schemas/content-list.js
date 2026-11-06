@@ -15,6 +15,13 @@
  *   has_media  "1" | "true" → only rows with media attached
  *   url        exact registered_urls entry
  *   parent_url exact parent_url match; anti-spam gated in content-service.list
+ *   kind       "email" (extras.email records) | "post" (everything else)
+ *   from, to   registered_at range in ms, from inclusive, to exclusive
+ *   q          2..100 chars, matched against the ctid, registered_urls and
+ *              extras.title (ASCII case-insensitive); needs author or bylined
+ *   include    "summary": counts per month (posts and emails) for the
+ *              author, returned beside the first page; needs author
+ *   tz         IANA time zone for the summary's months (default UTC)
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -23,6 +30,7 @@
 "use strict";
 
 const { schemaError } = require("./_common");
+const { isTimeZone } = require("../lib/month-buckets");
 const { CONTENT_STATUS } = require("../../../shared/constants");
 const { ORIGIN_CODES } = require("./content-register");
 
@@ -32,6 +40,27 @@ const STATUSES = Object.values(CONTENT_STATUS);
 
 const LIMIT_DEFAULT = 20;
 const LIMIT_MAX = 100;
+const KINDS = ["email", "post"];
+const Q_MIN = 2;
+const Q_MAX = 100;
+// Year 2286 in ms; anything past it is a typo, not a date.
+const TIME_MAX = 9_999_999_999_999;
+const TZ_NAME_MAX = 64;
+
+// SQLite lower() folds ASCII only, so every store folds ASCII only and a
+// search gives the same rows on every backend.
+function asciiLower(s) {
+  return String(s).replace(/[A-Z]+/g, (m) => m.toLowerCase());
+}
+
+function _time(raw, name) {
+  const s = String(raw);
+  const n = /^\d{1,13}$/.test(s) ? Number(s) : NaN;
+  if (!Number.isInteger(n) || n > TIME_MAX) {
+    throw schemaError(400, `${name} must be a time in milliseconds`, `${name}_invalid`);
+  }
+  return n;
+}
 
 function encodeCursor(row) {
   return Buffer.from(JSON.stringify({ t: row.registered_at, c: row.ctid })).toString("base64url");
@@ -65,6 +94,12 @@ function validateRequest(query = {}) {
     hasMedia: null,
     url: null,
     parentUrl: null,
+    kind: null,
+    from: null,
+    to: null,
+    q: null,
+    summary: false,
+    tz: "UTC",
   };
 
   if (query.limit !== undefined) {
@@ -143,8 +178,50 @@ function validateRequest(query = {}) {
     }
     out.parentUrl = s;
   }
+  // My Content sections: emails apart from everything else.
+  if (query.kind !== undefined && query.kind !== "") {
+    const k = String(query.kind).toLowerCase();
+    if (!KINDS.includes(k)) {
+      throw schemaError(400, `kind must be one of ${KINDS.join(", ")}`, "kind_invalid");
+    }
+    out.kind = k;
+  }
+  if (query.from !== undefined && query.from !== "") out.from = _time(query.from, "from");
+  if (query.to !== undefined && query.to !== "") out.to = _time(query.to, "to");
+  if (out.from !== null && out.to !== null && out.from >= out.to) {
+    throw schemaError(400, "from must be earlier than to", "range_invalid");
+  }
+  // Search stays inside one person's list: a global substring scan would read
+  // the whole table on every keystroke. (author is indexed; a bylined list
+  // already scans authors[], and search adds a filter to that same scan.)
+  if (query.q !== undefined && String(query.q).trim() !== "") {
+    const q = String(query.q).trim();
+    if (q.length < Q_MIN || q.length > Q_MAX) {
+      throw schemaError(400, `q must be ${Q_MIN} to ${Q_MAX} characters`, "q_invalid");
+    }
+    if (!out.author && !out.bylined) {
+      throw schemaError(400, "q needs author or bylined", "q_needs_author");
+    }
+    out.q = asciiLower(q);
+  }
+  if (query.include !== undefined && query.include !== "") {
+    const toks = String(query.include).split(",").map((t) => t.trim());
+    if (toks.includes("summary")) {
+      if (!out.author) throw schemaError(400, "include=summary needs author", "summary_needs_author");
+      out.summary = true;
+    }
+  }
+  // A zone NAME, not an offset: daylight saving moves the offset, and a fixed
+  // one files a record made just after midnight on the 1st under the wrong month.
+  if (query.tz !== undefined && query.tz !== "") {
+    const tz = String(query.tz);
+    if (tz.length > TZ_NAME_MAX || !/^[A-Za-z0-9_+\-/]+$/.test(tz) || !isTimeZone(tz)) {
+      throw schemaError(400, "tz must be an IANA time zone such as America/New_York", "tz_invalid");
+    }
+    out.tz = tz;
+  }
 
   return out;
 }
 
-module.exports = { validateRequest, encodeCursor, decodeCursor, LIMIT_MAX, LIMIT_DEFAULT };
+module.exports = { validateRequest, encodeCursor, decodeCursor, asciiLower, LIMIT_MAX, LIMIT_DEFAULT, KINDS };

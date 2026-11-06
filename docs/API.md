@@ -263,7 +263,15 @@ List content, newest first. Cursor-paginated, public.
 
 Query params (all optional): `author`, `origin`, `status`, `has_media`, `limit` (1-100, default 20), `cursor` (opaque token from a prior response's `next_cursor`).
 
-**Response 200:** `{ "items": [ ...slim rows... ], "next_cursor": "..." | null }`. Each row carries `ctid`, `author_tip_id`, `origin_code`, `status`, `prescan_status`, `prescan_tier`, `media_count`, `registered_urls`, `registered_at`, and (node 2.9.3) `is_email`, true for an email registration, which has no link by design, and (node 2.9.4) `origin_basis`, as on the record.
+Node 2.9.6 adds, for a person's own list (My Content):
+- `kind`: `email` (records whose `extras.email` is an object) or `post` (every other record). `400` kind_invalid.
+- `from`, `to`: `registered_at` range in epoch milliseconds, `from` inclusive, `to` exclusive. Send local midnights to get calendar days in the reader's time zone. `400` from_invalid / to_invalid / range_invalid.
+- `q`: 2 to 100 characters, matched as a case-insensitive substring of the `ctid`, the registered URLs and the public `extras.title`. Case folding is ASCII only (`É` matches only `É`) so every store agrees. It needs `author` or `bylined`, so a search stays inside one person's list (`400` q_needs_author, q_invalid). An email has no public title or link, so a search finds an email only by its CTID.
+- `include=summary` (needs `author`, `400` summary_needs_author) adds `summary` to the response, counted over all of the author's records whatever the other filters: `{ total, posts, emails, latest_at, months: [{ month: "2026-11", posts, emails }] }`, newest month first. `tz` (an IANA time zone such as `America/New_York`, default `UTC`; `400` tz_invalid) sets the month boundaries, daylight saving included. It rides on the page the client is already fetching, so counts cost no extra request.
+
+All of them combine with each other, with the older filters and with `cursor`. A node older than 2.9.6 ignores them and returns an unfiltered page; a client can tell from `applied`.
+
+**Response 200:** `{ "items": [ ...slim rows... ], "next_cursor": "..." | null, "applied": { "kind", "from", "to", "q" }, "summary"?: {...} }`. `applied` (node 2.9.6) echoes the normalized values, `null` when unset. Each row carries `ctid`, `author_tip_id`, `origin_code`, `status`, `prescan_status`, `prescan_tier`, `media_count`, `registered_urls`, `registered_at`, and (node 2.9.3) `is_email`, true for an email registration, which has no link by design, and (node 2.9.4) `origin_basis`, as on the record, and (node 2.9.6) `title`, the public `extras.title` up to 300 characters or `null`.
 
 #### `POST /v1/content/:ctid/dispute`
 File a dispute against a content origin declaration.

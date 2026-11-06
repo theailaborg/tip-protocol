@@ -726,6 +726,76 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getContentBylined(member.slice(0, -2))).toEqual([]);
   });
 
+  test("My Content sections: kind, date range, search and the monthly summary agree on every store", async () => {
+    const dag = await makeDag();
+    const me = uniq("US-me");
+    const other = uniq("US-other");
+    const NOV1 = Date.UTC(2026, 10, 1); // 2026-11-01T00:00Z
+    const H = 3600 * 1000;
+    const rows = [
+      // ctid suffix, registered_at, extras, urls
+      ["post-a", NOV1 + 5 * H, { title: "Budget Review 2026" }, ["https://www.LinkedIn.com/posts/a"]],
+      ["post-b", NOV1 + 2 * H, { title: "Café opening" }, ["https://youtu.be/xyz"]],
+      ["mail-a", NOV1 + 4 * H, { email: { v: 1 } }, []],
+      ["mail-b", NOV1 - 2 * H, { email: { v: 1 } }, []], // Oct 31 22:00Z, Nov 1 in UTC+3
+      ["arr-not-mail", NOV1 - 30 * 24 * H, { email: ["x"], title: 42 }, ["https://example.com/a%b_c"]],
+    ];
+    const ct = {};
+    for (const [k, at, extras, urls] of rows) {
+      ct[k] = uniq("ct-" + k);
+      dag.saveContent(contentRec(ct[k], me, { registered_at: at, extras, registered_urls: urls }));
+    }
+    dag.saveContent(contentRec(uniq("ct-theirs"), other, { registered_at: NOV1 + H, extras: { email: {} } }));
+    const ids = (opts) => dag.listContent({ author: me, limit: 50, ...opts }).map(c => c.ctid);
+
+    expect(ids({ kind: "email" })).toEqual([ct["mail-a"], ct["mail-b"]]);
+    expect(ids({ kind: "post" })).toEqual([ct["post-a"], ct["post-b"], ct["arr-not-mail"]]);
+    // from inclusive, to exclusive.
+    expect(ids({ from: NOV1 + 2 * H, to: NOV1 + 5 * H })).toEqual([ct["mail-a"], ct["post-b"]]);
+    expect(ids({ kind: "post", from: NOV1 })).toEqual([ct["post-a"], ct["post-b"]]);
+    expect(ids({ to: NOV1 })).toEqual([ct["mail-b"], ct["arr-not-mail"]]);
+    // Search: ASCII-folded title, url, ctid; a non-string title is ignored;
+    // % and _ are literal; a non-ASCII letter only matches itself.
+    expect(ids({ q: "budget" })).toEqual([ct["post-a"]]);
+    expect(ids({ q: "linkedin" })).toEqual([ct["post-a"]]);
+    expect(ids({ q: "youtu" })).toEqual([ct["post-b"]]);
+    expect(ids({ q: "café" })).toEqual([ct["post-b"]]);
+    expect(ids({ q: "a%b_c" })).toEqual([ct["arr-not-mail"]]);
+    expect(ids({ q: "a%b" })).toEqual([ct["arr-not-mail"]]);
+    expect(ids({ q: "ab" })).toEqual([]);
+    expect(ids({ q: "42" })).toEqual([]);
+    expect(ids({ q: ct["mail-b"].slice(-6).toLowerCase() })).toEqual([ct["mail-b"]]);
+    // Filters page with the cursor like any other list.
+    const first = dag.listContent({ author: me, kind: "post", limit: 1 });
+    expect(first.map(c => c.ctid)).toEqual([ct["post-a"], ct["post-b"]]);
+    const next = dag.listContent({ author: me, kind: "post", limit: 1, cursor: { t: first[0].registered_at, c: first[0].ctid } });
+    expect(next.map(c => c.ctid)).toEqual([ct["post-b"], ct["arr-not-mail"]]);
+
+    expect(dag.summarizeContent({ author: me })).toEqual({
+      total: 5, posts: 3, emails: 2, latest_at: NOV1 + 5 * H,
+      months: [
+        { month: "2026-11", posts: 2, emails: 1 },
+        { month: "2026-10", posts: 1, emails: 1 },
+      ],
+    });
+    // Moscow (UTC+3) moves mail-b (Oct 31 22:00Z) into November.
+    expect(dag.summarizeContent({ author: me, tz: "Europe/Moscow" }).months).toEqual([
+      { month: "2026-11", posts: 2, emails: 2 },
+      { month: "2026-10", posts: 1, emails: 0 },
+    ]);
+    // Daylight saving: read in November (EST, UTC-5), a record made at 00:30
+    // EDT on Aug 1 (04:30Z) is still August. A fixed -300 offset said July.
+    const dst = uniq("US-dst");
+    const AUG1 = Date.UTC(2026, 7, 1, 4, 30);
+    dag.saveContent(contentRec(uniq("ct-aug"), dst, { registered_at: AUG1, extras: {} }));
+    dag.saveContent(contentRec(uniq("ct-jul"), dst, { registered_at: AUG1 - 3600000, extras: {} })); // 23:30 EDT Jul 31
+    expect(dag.summarizeContent({ author: dst, tz: "America/New_York" }).months).toEqual([
+      { month: "2026-08", posts: 1, emails: 0 },
+      { month: "2026-07", posts: 1, emails: 0 },
+    ]);
+    expect(dag.summarizeContent({ author: uniq("US-nobody") })).toEqual({ total: 0, posts: 0, emails: 0, latest_at: null, months: [] });
+  });
+
   // ── 12. Canonical state ──────────────────────────────────────────────────
 
   test("clearCanonicalState leaves zero canonical rows", async () => {
