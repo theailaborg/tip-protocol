@@ -33,6 +33,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   included, must run 2.9.4 before that time or it forks.
 - Records and list rows carry `origin_basis`: `self_declared` for an email
   (the sender's own statement), `open_to_review` otherwise.
+- `extras.email` takes an optional `attachments` seal (64 lowercase hex), the
+  attachments' bytes hashed on the sender's device and salted by the email's
+  text, so a swapped attachment is caught. No file reaches a node; the node
+  checks the shape only. Clients send it only once every node runs 2.9.4.
 
 
 **Node 2.9.3: an email can seal its sender and its Bcc, privately**

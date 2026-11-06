@@ -401,9 +401,10 @@ function _normalizeExtras(input) {
 }
 
 // Each seal is a client-side commitment, 64 lowercase hex: recipients (To and
-// Cc), from (the sender's address) and all (To, Cc and Bcc with a secret only
-// the sender holds, so Bcc stays private). The node never sees an address.
-const EMAIL_SEALS = ["recipients", "from", "all"];
+// Cc), from (the sender's address), all (To, Cc and Bcc with a secret only
+// the sender holds, so Bcc stays private) and attachments (the files' bytes,
+// hashed on the sender's device). The node never sees an address or a file.
+const EMAIL_SEALS = ["recipients", "from", "all", "attachments"];
 const EMAIL_EXTRAS_KEYS = new Set(["v", ...EMAIL_SEALS]);
 
 /**
@@ -441,11 +442,12 @@ function _validateHashOnlyEmail(body) {
 
 /**
  * Shape of the email marker: `{ v: 1 }` plus any of the optional seals
- * `recipients`, `from` and `all`, each the client's commitment (64 lowercase
- * hex; the node never sees the addresses). recipients covers To and Cc, from
- * the sender's address, all To, Cc and Bcc with a secret only the sender
- * holds (2.9.3). API time only: _normalizeExtras also runs on consensus
- * replay, and a check there would refuse txs that older nodes committed.
+ * `recipients`, `from`, `all` and `attachments`, each the client's commitment
+ * (64 lowercase hex; the node never sees an address or a file). recipients
+ * covers To and Cc, from the sender's address, all To, Cc and Bcc with a
+ * secret only the sender holds (2.9.3), attachments the files (2.9.4). API
+ * time only: _normalizeExtras also runs on consensus replay, and a check there
+ * would refuse txs that older nodes committed.
  */
 function _validateEmailExtras(extras) {
   if (!extras || typeof extras !== "object" || Array.isArray(extras)) return;
@@ -453,7 +455,7 @@ function _validateEmailExtras(extras) {
   const e = extras.email;
   const invalid = (what) => schemaError(400, `extras.email ${what}`, "extras_email_invalid");
   if (!e || typeof e !== "object" || Array.isArray(e)) {
-    throw invalid("must be an object like { v: 1 } or { v: 1, recipients, from, all }");
+    throw invalid(`must be an object like { v: 1 } or { v: 1, ${EMAIL_SEALS.join(", ")} }`);
   }
   const unknown = Object.keys(e).filter((k) => !EMAIL_EXTRAS_KEYS.has(k));
   if (unknown.length) throw invalid(`has unknown keys: ${unknown.join(", ")} (allowed: v, ${EMAIL_SEALS.join(", ")})`);

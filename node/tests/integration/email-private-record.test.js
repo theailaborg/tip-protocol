@@ -199,6 +199,29 @@ describe("hash-only email", () => {
   });
 });
 
+describe("attachment seal", () => {
+  const seals = { v: 1, recipients: "5a".repeat(32), from: "f0".repeat(32), all: "a1".repeat(32), attachments: "c3".repeat(32) };
+
+  test("is signed, committed and stored as sent, with the text and by hash alone", async () => {
+    for (const content of [EMAIL_TEXT, undefined]) {
+      const fx = setup();
+      const r = await fx.contentService.register(fx.body({ content, extras: { email: seals } }));
+      fx.commitDrain();
+      expect(fx.dag.getContent(r.ctid).extras).toEqual({ email: seals });
+      expect((await fx.contentService.resolve(r.ctid)).extras.email.attachments).toBe(seals.attachments);
+    }
+  });
+
+  test("a malformed one is refused before anything is queued", async () => {
+    const fx = setup();
+    for (const attachments of ["C3".repeat(32), "c3".repeat(31), 42]) {
+      await expect(fx.contentService.register(fx.body({ extras: { email: { v: 1, attachments } } })))
+        .rejects.toMatchObject({ status: 400, code: "extras_email_invalid" });
+    }
+    expect(fx.submitted).toHaveLength(0);
+  });
+});
+
 describe("registration credit", () => {
   test("an email earns none, with or without its text; any other registration still does", async () => {
     const fx = setup();
