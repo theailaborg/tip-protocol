@@ -541,12 +541,58 @@ class SmtMap extends Map {
   }
 }
 
+// Exact-hash lookups run on every registration commit and a public endpoint,
+// so they read this index instead of walking every record. A hash almost
+// always has one record, so its ctid is stored bare (a Set per hash costs
+// ~200 MB per million records); a Set only once a hash repeats.
+class ContentMap extends SmtMap {
+  constructor(owner, table) { super(owner, table); this._byHash = new Map(); }
+  set(k, v) {
+    const prev = super.get(k);
+    super.set(k, v);
+    if (prev && prev.content_hash !== v?.content_hash) this._unindex(k, prev.content_hash);
+    if (v?.content_hash) this._index(k, v.content_hash);
+    return this;
+  }
+  delete(k) {
+    const prev = super.get(k);
+    const r = super.delete(k);
+    if (r && prev) this._unindex(k, prev.content_hash);
+    return r;
+  }
+  clear() {
+    super.clear();
+    this._byHash.clear();
+  }
+  ctidsByHash(h) {
+    const cur = this._byHash.get(h);
+    if (cur === undefined) return [];
+    return typeof cur === "string" ? [cur] : [...cur];
+  }
+  _index(k, h) {
+    const cur = this._byHash.get(h);
+    if (cur === undefined) this._byHash.set(h, k);
+    else if (typeof cur !== "string") cur.add(k);
+    else if (cur !== k) this._byHash.set(h, new Set([cur, k]));
+  }
+  _unindex(k, h) {
+    const cur = this._byHash.get(h);
+    if (cur === undefined) return;
+    if (typeof cur === "string") {
+      if (cur === k) this._byHash.delete(h);
+      return;
+    }
+    cur.delete(k);
+    if (cur.size === 1) this._byHash.set(h, cur.values().next().value);
+  }
+}
+
 class MemoryStore {
   constructor() {
     this._smt = createSMT();   // #88 , must exist before any canonical map
     this._txs = new Map();  // tx_id -> tx
     this._identities = new SmtMap(this, "identities");  // tip_id -> record (no public_key — see entity_keys)
-    this._content = new SmtMap(this, "content");  // ctid -> record
+    this._content = new ContentMap(this, "content");  // ctid -> record
     this._scores = new SmtMap(this, "scores");  // tip_id -> { score, offense_count, last_updated }
     this._dedup = new Set();  // dedup_hash strings (Poseidon field elements); SMT sync is explicit in addDedupHash
     this._revocations = new SmtMap(this, "revocations");  // tip_id -> { tip_id, tx_type, timestamp, tx_id }
@@ -823,7 +869,7 @@ class MemoryStore {
   // a different ctid, so a ctid lookup can never surface these.
   getContentByHash(contentHash) {
     if (!contentHash) return [];
-    return [...this._content.values()].filter(c => c.content_hash === contentHash);
+    return this._content.ctidsByHash(contentHash).map(k => this._content.get(k));
   }
 
   hasVerification(ctid, tipId) {
