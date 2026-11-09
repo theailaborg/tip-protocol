@@ -36,7 +36,7 @@ const ACTIVE = 0;
 const LEGACY = Number.MAX_SAFE_INTEGER;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function build({ activationMs = ACTIVE } = {}) {
+function build({ activationMs = ACTIVE, seed } = {}) {
   const kp = { [SELF]: generateMLDSAKeypair(), [B]: generateMLDSAKeypair(), [C]: generateMLDSAKeypair(), [OUT]: generateMLDSAKeypair() };
   const dag = initDAG({ inMemory: true });
   const published = [];
@@ -53,6 +53,7 @@ function build({ activationMs = ACTIVE } = {}) {
     publish: (topic, buf) => { published.push({ topic, buf }); },
     authorizedPeers: () => ({ [B]: { publicKey: kp[B].publicKey }, [C]: { publicKey: kp[C].publicKey } }),
   };
+  if (seed) seed({ dag, kp });
   const mempool = createMempool({ dag });
   const narwhal = createNarwhal({
     dag, mempool, network,
@@ -286,6 +287,85 @@ describe("narwhal: adopting an existing own cert never drops the new batch's txs
     fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(createBatchAck(mine.hash, B, nowMs(), fx.kp[B].privateKey))));
     await sleep(20);
     expect(fx.mempool.has(tx.tx_id)).toBe(true);
+    fx.narwhal.stop();
+  }, 10000);
+});
+
+// A restart mid-round left round R with one committee cert while every node moved on to R + 1 (test cluster,
+// 2026-11-09): nobody could seal R + 1 and nobody went back to fill R.
+describe("narwhal: a node joins no later than one past the newest round with a parent quorum", () => {
+  const R = 1000;
+
+  function hole({ dag, kp }) {
+    const fx = { dag, kp };
+    const below = seedRound(fx, R - 2);
+    const prev = [B, C].map((id) => {
+      const cert = makeCert(fx, R - 1, id, [B, C], below);
+      dag.saveCertificate(cert);
+      return cert.hash;
+    });
+    dag.saveCertificate(makeCert(fx, R, B, [B, C], prev));
+  }
+
+  function ackOwnBatch(fx, round) {
+    const own = createBatch(round, SELF, [], fx.kp[SELF].privateKey);
+    fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(createBatchAck(own.hash, C, nowMs(), fx.kp[C].privateKey))));
+  }
+
+  test("on start it joins the short round, seals on its parents and completes it", async () => {
+    const fx = build({ seed: hole });
+    fx.narwhal.start();
+    await sleep(50);
+    expect(fx.narwhal.currentRound()).toBe(R);
+    ackOwnBatch(fx, R);
+    await sleep(20);
+    const cert = fx.dag.getCertificateByAuthorRound(SELF, R);
+    expect(cert).toBeTruthy();
+    expect(cert.parent_hashes).toHaveLength(2);
+    expect(fx.narwhal.currentRound()).toBe(R + 1);
+    fx.narwhal.stop();
+  }, 10000);
+
+  test("after a sync it joins the short round, not one past the peer's head", async () => {
+    const fx = build({ seed: hole });
+    fx.narwhal.enterSyncMode();
+    fx.narwhal.start();
+    fx.narwhal.exitSyncMode(R);
+    await sleep(50);
+    expect(fx.narwhal.currentRound()).toBe(R);
+    fx.narwhal.stop();
+  }, 10000);
+
+  test("a peer batch one round ahead does not pull it past the short round", async () => {
+    const fx = build({ seed: hole });
+    fx.narwhal.start();
+    await sleep(50);
+    fx.narwhal.handleIncomingBatch(encode("Batch", serializeBatch(createBatch(R + 1, B, [], fx.kp[B].privateKey))));
+    await sleep(50);
+    expect(fx.narwhal.currentRound()).toBe(R);
+    expect(fx.narwhal.stats().metrics.fast_forwards).toBe(0);
+    fx.narwhal.stop();
+  }, 10000);
+
+  test("control: with a full previous round it still joins one past the DAG head", async () => {
+    const fx = build({
+      seed: ({ dag, kp }) => {
+        const f = { dag, kp };
+        const below = seedRound(f, R - 1);
+        for (const id of [B, C]) dag.saveCertificate(makeCert(f, R, id, [B, C], below));
+      },
+    });
+    fx.narwhal.start();
+    await sleep(50);
+    expect(fx.narwhal.currentRound()).toBe(R + 1);
+    fx.narwhal.stop();
+  }, 10000);
+
+  test("before the activation it joins one past the DAG head (old rule unchanged)", async () => {
+    const fx = build({ activationMs: LEGACY, seed: hole });
+    fx.narwhal.start();
+    await sleep(50);
+    expect(fx.narwhal.currentRound()).toBe(R + 1);
     fx.narwhal.stop();
   }, 10000);
 });

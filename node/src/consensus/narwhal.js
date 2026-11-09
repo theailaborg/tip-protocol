@@ -222,6 +222,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // node would report "halted" for the first few seconds before any
     // round completes.
     _lastRoundAdvanceAt = nowMs();
+    _currentRound = _joinRound(_currentRound);
 
     log.notice(`Narwhal started at round ${_currentRound} (committee: ${_getCommittee().length}, registered: ${getNodeCount()}, quorum: ${_getQuorum()})`);
 
@@ -500,6 +501,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     return authors.size >= computeQuorum(committee.size);
   }
 
+  // Newest round this node can seal in: one past the newest round holding a committee quorum of certs.
+  // Joining later strands the round below short of parents for good, since seal and accept both need them.
+  function _joinRound(proposed) {
+    if (!_roundRulesActive()) return proposed;
+    const floor = Math.max(2, proposed - CONSENSUS.VOTES_RETENTION_ROUNDS);
+    for (let r = proposed; r >= floor; r--) {
+      if (_hasParentQuorum(r, dag.getCertificatesByRound(r - 1))) return r;
+    }
+    return proposed;
+  }
+
   function _resetRoundState() {
     // #64: if our own batch never formed a cert at this round, return
     // its txs to the FRONT of the mempool so they get re-batched at
@@ -607,10 +619,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // front-loads its txs back into the mempool so they drain ahead of
     // newer arrivals at the next round. Don't duplicate the requeue
     // here.
-    if (batch.round > _currentRound) {
+    const ffTarget = batch.round > _currentRound ? _joinRound(batch.round) : 0;
+    if (ffTarget > _currentRound) {
       _metrics.fast_forwards++;
-      log.info(`Round ${_currentRound}: peer ${batch.author_node_id} is at round ${batch.round} — fast-forwarding`);
-      _currentRound = batch.round;
+      log.info(`Round ${_currentRound}: peer ${batch.author_node_id} is at round ${batch.round}, fast-forwarding to ${ffTarget}`);
+      _currentRound = ffTarget;
       // Following the committee is progress: a node whose own batches land late
       // fast-forwards every round and otherwise reported sub_quorum (AZ, 2026-09-30).
       _lastRoundAdvanceAt = nowMs();
@@ -1368,7 +1381,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       log.debug(`markSnapshotInstalled ignored — joinState=${_joinState}`);
       return;
     }
-    const target = Math.max(round, dag.getLatestRound()) + 1;
+    const target = _joinRound(Math.max(round, dag.getLatestRound()) + 1);
     if (target > _currentRound) {
       const oldRound = _currentRound;
       _currentRound = target;
@@ -1416,7 +1429,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return false;
     }
     const fromDag = dag.getLatestRound();
-    const target = Math.max(peerLatestRound, fromDag) + 1;
+    const target = _joinRound(Math.max(peerLatestRound, fromDag) + 1);
     if (target > _currentRound) {
       const oldRound = _currentRound;
       _currentRound = target;
