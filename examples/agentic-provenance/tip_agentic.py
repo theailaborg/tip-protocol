@@ -50,6 +50,8 @@ ACTIONS = ("read", "create", "edit", "delete")
 WRITE_ACTIONS = ("create", "edit")
 MAX_CHAIN_DEPTH = 4
 MLDSA65_PUBKEY_BYTES = 1952
+SIG_ALG = "ML-DSA-65"      # NIST FIPS 204
+HASH_ALG = "SHAKE-256"     # NIST FIPS 202
 
 VALID = "valid"
 INVALID = "invalid"
@@ -146,21 +148,43 @@ class Signer:
         return cls(MLDSA65PrivateKey.from_seed_bytes(seed))
 
     def sign_body(self, body: dict) -> dict:
+        # The algorithm labels sit inside the signed body, so they cannot be
+        # swapped or stripped without breaking the signature.
+        body = {**body, "sig_alg": SIG_ALG, "hash_alg": HASH_ALG}
         digest = shake256(canonical_json(body))
         return {"body": body, "sig": self._sk.sign(digest.encode("ascii")).hex()}
 
 
-def verify_body(body: dict, sig_hex: str, public_key_hex: str) -> bool:
+def _verify_mldsa65(public_key_hex: str, message: bytes, sig_hex: str) -> bool:
     try:
         raw = bytes.fromhex(public_key_hex)
         if len(raw) != MLDSA65_PUBKEY_BYTES:
             return False
-        pk = MLDSA65PublicKey.from_public_bytes(raw)
-        digest = shake256(canonical_json(body))
-        pk.verify(bytes.fromhex(sig_hex), digest.encode("ascii"))
+        MLDSA65PublicKey.from_public_bytes(raw).verify(bytes.fromhex(sig_hex), message)
         return True
     except (InvalidSignature, ValueError, TypeError):
         return False
+
+
+# Crypto agility: a verifier accepts only the algorithms listed here. A later
+# migration (for example to SLH-DSA for long-lived root keys) adds an entry;
+# old records keep verifying under their own label, and anything unlisted,
+# missing or downgraded is refused.
+SIGNATURE_VERIFIERS = {SIG_ALG: _verify_mldsa65}
+ACCEPTED_HASH_ALGS = {HASH_ALG}
+
+
+def verify_body(body: dict, sig_hex: str, public_key_hex: str) -> bool:
+    if not isinstance(body, dict) or not isinstance(sig_hex, str) or not isinstance(public_key_hex, str):
+        return False
+    verifier = SIGNATURE_VERIFIERS.get(body.get("sig_alg"))
+    if verifier is None or body.get("hash_alg") not in ACCEPTED_HASH_ALGS:
+        return False
+    try:
+        digest = shake256(canonical_json(body))
+    except (TypeError, ValueError):
+        return False
+    return verifier(public_key_hex, digest.encode("ascii"), sig_hex)
 
 
 def record_id(record: dict) -> str:

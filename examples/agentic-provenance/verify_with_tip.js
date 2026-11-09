@@ -35,6 +35,9 @@ async function main() {
   const b = JSON.parse(fs.readFileSync(file, "utf8"));
 
   const checks = [];
+  const records = [b.request, ...b.delegations, ...(b.revocations || []), b.receipt, b.checkpoint];
+  checks.push(["every record labelled ML-DSA-65 + SHAKE-256 (inside the signed body)",
+    records.every((r) => r.body.sig_alg === "ML-DSA-65" && r.body.hash_alg === "SHAKE-256")]);
   checks.push(["agent request signed by the agent key", signedBy(b.request, "agent_key")]);
   for (const d of b.delegations) {
     checks.push([`delegation ${recordId(d).slice(0, 12)} signed by its issuer`, signedBy(d, "issuer_key")]);

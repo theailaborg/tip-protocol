@@ -117,7 +117,7 @@ Python 3.11+ and a `cryptography` release with ML-DSA support (tested with 50.0.
 ```bash
 cd examples/agentic-provenance
 python -m pip install "cryptography>=50" pytest
-python -m pytest -q                 # 32 tests
+python -m pytest -q                 # 35 tests
 python demo.py --export out/        # narrated run, writes evidence bundles
 ```
 
@@ -137,6 +137,7 @@ node examples/agentic-provenance/verify_with_tip.js examples/agentic-provenance/
 | Activity | one-character content substitution; replay; stale or future-dated request; edit based on an outdated read |
 | Record | edited receipt; receipt paired with another request; receipt missing from the log; checkpoint signed by another key; a site committing an action the chain does not authorise; missing delegation (indeterminate, not valid); content that differs from the commit; inclusion proofs across a longer log |
 | Conformance | canonical JSON rules including UTF-16 key order; Merkle construction and the duplicated-leaf case; key and signature sizes; TIP-ID format |
+| Post-quantum agility | every record names its signature and hash algorithm; an unlisted, missing or relabelled algorithm is refused even when the signature maths is valid |
 
 Each safety check was also removed one at a time to confirm that at least one test fails without it.
 
@@ -155,6 +156,16 @@ not allow is reported as invalid, which makes the receiving side accountable too
 
 **Refusals are evidence.** Every decision, including refusals, is signed and
 logged, so attempted impersonation leaves a record.
+
+**Post-quantum, and ready to change algorithm.** Every signature is ML-DSA-65
+(FIPS 204) and every hash SHAKE-256 (FIPS 202); nothing depends on RSA or
+elliptic curves. Each record also carries `sig_alg` and `hash_alg` inside the
+signed body, so the label cannot be stripped or swapped without breaking the
+signature. Verifiers accept only the algorithms they list, which blocks
+downgrades and lets a later migration (for example SLH-DSA for long-lived root
+keys, as TIP already plans) add a new entry while old records keep verifying
+under their own label. Anchoring log checkpoints on TIP would add independent
+proof of when records existed, should any algorithm weaken in future.
 
 **Invalid is not the same as indeterminate.** Missing evidence (an absent
 delegation, an unknown identity) gives `indeterminate`, never `valid`.

@@ -362,6 +362,31 @@ def test_merkle_matches_tip_construction():
             assert ta.verify_merkle_proof(items[i], ta.merkle_proof(items, i), root)
 
 
+def test_every_record_names_its_algorithms(w):
+    req = w.edit()
+    out = w.submit(req)
+    for rec in (w.root, w.child, req, out["receipt"], out["checkpoint"]):
+        assert rec["body"]["sig_alg"] == "ML-DSA-65"
+        assert rec["body"]["hash_alg"] == "SHAKE-256"
+
+
+def test_unlisted_or_missing_algorithm_label_is_refused():
+    s = ta.Signer.generate()
+    for label in ({"sig_alg": "Ed25519", "hash_alg": "SHAKE-256"},
+                  {"sig_alg": "ML-DSA-65", "hash_alg": "SHA-1"},
+                  {}):
+        body = {"x": 1, **label}
+        # The signature math is valid ML-DSA-65; only the label is wrong.
+        sig = s._sk.sign(ta.shake256(ta.canonical_json(body)).encode("ascii")).hex()
+        assert not ta.verify_body(body, sig, s.public_key_hex)
+
+
+def test_relabelled_request_is_rejected_by_the_site(w):
+    req = w.edit()
+    req["body"]["sig_alg"] = "Ed25519"
+    assert decision(w.submit(req)) == ("rejected", "request signature invalid")
+
+
 def test_tip_id_and_key_sizes():
     s = ta.Signer.generate()
     assert len(bytes.fromhex(s.public_key_hex)) == 1952
