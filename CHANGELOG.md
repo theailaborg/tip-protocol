@@ -11,9 +11,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.9.6: My Content sections, dates and search on the content list**
+- `GET /v1/content` takes `kind` (`email` or `post`), `from` and `to` (registered_at
+  range in ms) and `q` (search over the CTID, registered URLs and the public title,
+  ASCII case-insensitive, only inside one `author` or `bylined` list). Filtering
+  happens in the store, so a client asks for one page of the section it shows
+  instead of paging through everything. Every store returns the same rows.
+- `include=summary` with `author` returns the author's counts per month, posts and
+  emails apart, on the same response, so the counts and the month index cost no
+  extra request. `tz` (an IANA zone) sets the month boundaries, daylight saving
+  included, so a record made just after midnight on the 1st lands in its month.
+- Responses carry `applied` (the filters this node honored; an older node ignores
+  the params) and each row carries `title` (up to 300 characters).
+- Index `idx_content_author_time` on (author, registered_at, ctid), migration 016
+  and schema.sql, built on start. An author's pages become an index range scan
+  instead of a sort.
+- Read-only. Nothing about a tx, its hash or consensus changes.
+
 **Node 2.9.5: every new email record seals its sender, recipients and attachments**
-- From `EMAIL_SEALS_REQUIRED_ACTIVATION_MS` (placeholder 2026-11-20 00:00 UTC, set at
-  release after the VP and plugin always send them; override
+- From `EMAIL_SEALS_REQUIRED_ACTIVATION_MS`, 2026-11-06 11:55 UTC (override
   `TIP_EMAIL_SEALS_REQUIRED_ACTIVATION_MS`, test cluster only), checked at API time and
   at commit: a new email must carry `from`, `recipients` or `all` (a Bcc-only email has
   `all` alone), and `attachments` (an empty list when there are no files), or it is
