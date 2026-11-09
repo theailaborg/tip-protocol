@@ -50,9 +50,10 @@ Same record with the receipt edited afterwards: INVALID
 `shared/crypto.js` and `shared/merkle.js` (Node 24, @noble/post-quantum 0.5.4):
 
 ```
+PASS  every record labelled ML-DSA-65 + SHAKE-256 (inside the signed body)
 PASS  agent request signed by the agent key
-PASS  delegation aa6fb4a2ca01 signed by its issuer
-PASS  delegation 1208b0961a00 signed by its issuer
+PASS  delegation 1f9a31a1e6bc signed by its issuer
+PASS  delegation e0a148bf3b5a signed by its issuer
 PASS  request chain ids match the delegations
 PASS  receipt signed by the site key
 PASS  receipt points at this request
@@ -62,7 +63,7 @@ PASS  receipt included in the checkpointed log (shared/merkle.js)
 CNA-2 hashContent("balance=+100") = 1766c1a2a9bfa3
 CNA-2 hashContent("balance=-100") = 1766c1a2a9bfa3  (same)
 
-8/8 checks passed
+9/9 checks passed
 ```
 
 ## The flow
