@@ -59,6 +59,7 @@ function createBus() {
   const topicHandlers = new Map(); // nodeId -> { [topic]: (buf) => void }
   const protoHandlers = new Map(); // nodeId -> { [protocol]: ({stream,connection}) => void }
   const delays = new Map();        // "from->to" -> ticks
+  const topicDelays = new Map();   // "from->to:topic" -> extra ticks for one gossip topic
   const partitioned = new Set();   // node ids cut off from the bus
   const certBufs = [];             // every CERTIFICATES buf ever published (for cert-tail replay)
   const queue = [];
@@ -70,9 +71,9 @@ function createBus() {
     close() { /* noop */ },
   });
   const delayFor = (from, to) => delays.get(`${from}->${to}`) || 0;
-  const enqueue = (from, to, run) => {
+  const enqueue = (from, to, run, extra = 0) => {
     if (partitioned.has(from) || partitioned.has(to)) return; // dropped: node is offline
-    queue.push({ to, dueTick: tick + delayFor(from, to), run });
+    queue.push({ to, dueTick: tick + delayFor(from, to) + extra, run });
   };
 
   function adapterFor(nodeId) {
@@ -94,7 +95,7 @@ function createBus() {
         for (const [otherId, h] of topicHandlers) {
           if (otherId === nodeId) continue;
           const fn = h[topic];
-          if (fn) enqueue(nodeId, otherId, () => fn(buf));
+          if (fn) enqueue(nodeId, otherId, () => fn(buf), topicDelays.get(`${nodeId}->${otherId}:${topic}`) || 0);
         }
         return Promise.resolve();
       },
@@ -134,6 +135,7 @@ function createBus() {
     adapterFor,
     setTopicHandlers: (nodeId, h) => topicHandlers.set(nodeId, h),
     setDelay: (from, to, ticks) => delays.set(`${from}->${to}`, ticks),
+    setTopicDelay: (from, to, topic, ticks) => topicDelays.set(`${from}->${to}:${topic}`, ticks),
     partition: (nodeId) => partitioned.add(nodeId),
     heal: (nodeId) => partitioned.delete(nodeId),
     certBufs,
@@ -266,6 +268,9 @@ function createInProcessCluster({ nodeCount = 3, committeeSize = nodeCount } = {
     tickRound,
     tickRounds,
     setDelay: (from, to, ticks) => bus.setDelay(idOf(from), idOf(to), ticks),
+    // Delay one gossip topic ("mempool" batches, "certificates") on one edge,
+    // e.g. a node whose certificates land after its peers already moved on.
+    setTopicDelay: (from, to, topic, ticks) => bus.setTopicDelay(idOf(from), idOf(to), topic, ticks),
     partition: (x) => bus.partition(idOf(x)),
     heal: (x) => bus.heal(idOf(x)),
     feedCertTail,

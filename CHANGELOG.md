@@ -84,6 +84,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+**Node 2.9.7: an accepted transaction is never lost after its certificate is sealed**
+- A tx answered 202 and sealed into the receiving node's own certificate could be
+  lost when no committed anchor ever reached that certificate (the node skipped a
+  round, and peers had moved on before the certificate arrived). The mempool was
+  empty, no `tx_rejections` row existed, and cert GC deleted it later. Seen live on
+  2026-11-10: two REGISTER_CONTENT txs returned a CTID that then stayed 404.
+- Own-chain link: when a node produced nothing at round-1, its next certificate also
+  links its own last certificate (at most 12 rounds back), so peers can reach it.
+  Verification has no rule on parent rounds, so older nodes accept these unchanged.
+- Requeue: an own certificate whose txs are still uncommitted 30 rounds after sealing
+  puts them back at the front of the mempool. 30 rounds is past the point where any
+  new link to that certificate can appear, so a tx can never be ordered twice in one
+  anchor. Commit-handler already skips a tx already in the DAG.
+- No silent loss: after 3 requeues, or when cert GC is about to prune a certificate
+  holding a tx that was never committed or rejected, the node writes a
+  `sealed_never_committed` rejection row (node-local, not in the state root).
+- New counters on `/v1/stats` consensus: `own_cert_gap_links`, `sealed_txs_requeued`,
+  `sealed_txs_given_up`, `gc_unordered_txs_recorded`, and `sealedAwaitingCommit`.
+
 **Node 2.9.4: exact-hash lookups no longer walk every record**
 - `getContentByHash` on the in-memory store (the Postgres mirror on every
   federation node) scanned all content on each call: on every registration

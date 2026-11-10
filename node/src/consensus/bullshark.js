@@ -33,6 +33,8 @@ const { shake256, canonicalJson, mldsaSign } = require("../../../shared/crypto")
 const { nowMs } = require("../../../shared/time");
 const { computeNextRotationCommittee, epochIndexOfTime } = require("./participants");
 const { getLogger } = require("../logger");
+const { TX_REJECTION_REASON } = require("../../../shared/constants");
+const { createRejectionSink } = require("./tx-rejection-sink");
 
 const log = getLogger("tip.bullshark");
 
@@ -74,6 +76,11 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
   // the retry timer expires (fall back to best-effort commit with what we have).
   let _pendingAnchorCommit = null; // { voteRound, anchorCert, missingHashes, timer }
 
+  // No-loss sweep before cert GC: rows go to the node-local tx_rejections table
+  // (never part of the state root), so nodes may differ here without diverging.
+  const _persistRejection = createRejectionSink({ dag, nodeId: proposer && proposer.nodeId });
+  let _lastSweptCutoff = 0;
+
   // Bullshark counters — cumulative over process lifetime.
   const _metrics = {
     anchors_committed: 0,
@@ -82,6 +89,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     certs_pruned: 0,
     gc_runs: 0,
     gc_failures: 0,
+    // txs found in certificates about to be pruned that were never committed
+    // or rejected; each is recorded as sealed_never_committed before the prune.
+    gc_unordered_txs_recorded: 0,
     // §4 + #34: rotation proposer fired (regardless of whether the
     // tx eventually commits). Increments each time _maybeProposeCommitteeRotation
     // builds + submits a COMMITTEE_ROTATION tx. Pairs with the dag-level
@@ -837,6 +847,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
     try {
       if (typeof dag.pruneCertificatesBefore !== "function") return;
+      _recordUnorderedBeforePrune(cutoff);
       const n = dag.pruneCertificatesBefore(cutoff);
       _metrics.gc_runs++;
       if (n > 0) {
@@ -866,6 +877,44 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       _metrics.gc_failures++;
       log.warn(`Cert GC prune failed at cutoff ${cutoff}: ${err.message}`);
     }
+  }
+
+  /**
+   * Before certificates below `cutoff` are pruned, record every tx they carry
+   * that was never committed and never rejected. Such a tx sat in a sealed
+   * certificate no committed anchor reached; once the certificate is gone it
+   * would vanish with no trace (the 2026-11-10 loss). Scans only the rounds
+   * since the previous sweep; the first sweep after boot looks back a bounded
+   * window, since older certificates were pruned by the previous process.
+   * A tx still waiting in the mempool (requeued) is left alone.
+   */
+  function _recordUnorderedBeforePrune(cutoff) {
+    if (typeof dag.iterateCertsByRoundRange !== "function") return 0;
+    const from = _lastSweptCutoff > 0 ? _lastSweptCutoff : Math.max(1, cutoff - 1000);
+    if (cutoff <= from) return 0;
+    let recorded = 0;
+    try {
+      for (const cert of dag.iterateCertsByRoundRange(from, cutoff - 1)) {
+        for (const tx of (cert.batch && cert.batch.txs) || []) {
+          if (!tx || !tx.tx_id) continue;
+          if (dag.getTx(tx.tx_id)) continue;
+          if (typeof dag.getTxRejection === "function" && dag.getTxRejection(tx.tx_id)) continue;
+          if (typeof dag.getMempoolTx === "function" && dag.getMempoolTx(tx.tx_id)) continue;
+          _persistRejection(tx, TX_REJECTION_REASON.SEALED_NEVER_COMMITTED,
+            `certificate from ${cert.author_node_id} at round ${cert.round} was pruned before any committed anchor reached it`,
+            { round: cert.round });
+          recorded++;
+        }
+      }
+      _lastSweptCutoff = cutoff;
+    } catch (err) {
+      log.warn(`Cert GC: unordered-tx sweep failed below ${cutoff}: ${err.message}`);
+    }
+    if (recorded > 0) {
+      _metrics.gc_unordered_txs_recorded += recorded;
+      log.warn(`Cert GC: recorded ${recorded} never-committed tx(s) as sealed_never_committed before pruning below round ${cutoff}`);
+    }
+    return recorded;
   }
 
   /**
@@ -1072,6 +1121,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
     /** Test hook: the anchored-cert ancestry walk (committed-frontier bound). */
     _walkAnchoredCertChain,
+
+    /** Test hook: the no-loss sweep that runs just before cert GC prunes. */
+    _recordUnorderedBeforePrune,
 
     /** Get the last committed round */
     lastCommittedRound: () => _lastCommittedRound,

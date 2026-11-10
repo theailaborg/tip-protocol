@@ -841,6 +841,10 @@ const TX_REJECTION_REASON = Object.freeze({
   BATCH_AUTHOR_UNREGISTERED: "batch_author_unregistered",
   BATCH_EQUIVOCATION: "batch_equivocation",
   BATCH_DECODE_FAILED: "batch_decode_failed",
+  // A tx sealed into this node's own certificate that no committed anchor ever
+  // reached: requeued and still uncommitted after the retry budget, or its
+  // certificate was pruned before any anchor ordered it.
+  SEALED_NEVER_COMMITTED: "sealed_never_committed",
   // Site 4 — commit-handler revalidation (business-rules check at commit time)
   // Owner-chain prev[0] no longer matches the owner's committed head , a
   // concurrent same-owner tx committed first. The accepting node rebuilds prev
