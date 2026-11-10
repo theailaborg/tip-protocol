@@ -382,6 +382,9 @@ function narwhalSection(s) {
     counter("tip_narwhal_own_batch_uncertified_total", "Rounds where this node's own batch failed to certify, empty or not. A registered non-committee node carries no traffic, so this is the only visible signal that it cannot earn its way into the committee", nm.my_batches_uncertified),
     counter("tip_narwhal_own_certs_sealed_total", "Rounds where this node did seal its own certificate. Divided by rounds advanced this is the seal rate, which decides whether a registered node can earn committee admission", nm.own_certs_sealed),
     counter("tip_narwhal_own_batch_orphaned_total", "Subset of the above where the uncertified batch carried transactions (delay, not loss: they are requeued)", nm.my_batches_orphaned),
+    counter("tip_narwhal_sealed_txs_requeued_total", "Txs from this node's own certificates that no committed anchor reached, put back in the mempool. Rising means this node's certificates often land too late to be linked", nm.sealed_txs_requeued),
+    counter("tip_narwhal_sealed_requeue_before_activation_total", "Txs that were due for requeue before the activation and were left alone", nm.sealed_requeue_before_activation),
+    counter("tip_narwhal_sealed_requeue_budget_spent_total", "Txs left alone after the requeue budget; the cert GC sweep records them if they never commit", nm.sealed_requeue_budget_spent),
     counter("tip_narwhal_certs_unblocked_total", "Parked certs unblocked when parents arrived", nm.certs_unblocked),
     counter("tip_narwhal_pending_certs_pruned_total", "Stale parked certs dropped by §2 GC on round advance", nm.pending_certs_pruned),
     counter("tip_narwhal_equivocation_refused_total", "§1 equivocation attempts refused (vote-digest mismatch)", nm.equivocation_refused),
@@ -406,6 +409,8 @@ function bullsharkSection(s) {
     counter("tip_bullshark_certs_pruned_total", "Certs pruned from SQLite by §2 GC", bm.certs_pruned),
     counter("tip_bullshark_gc_runs_total", "Successful §2 GC runs", bm.gc_runs),
     counter("tip_bullshark_gc_failures_total", "GC attempts that threw (SQLite error, etc.)", bm.gc_failures),
+    counter("tip_bullshark_gc_unordered_txs_recorded_total", "Txs in this node's own certificates that GC was about to prune uncommitted, recorded as sealed_never_committed", bm.gc_unordered_txs_recorded),
+    counter("tip_commit_in_anchor_duplicates_skipped_total", "Second copies of one tx_id inside a single anchor, skipped by commit-handler (from the sealed-requeue activation)", Number(s.commitHandler?.metrics?.in_anchor_duplicates_skipped || 0)),
   ].join("\n");
 }
 

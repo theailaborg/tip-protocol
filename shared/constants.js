@@ -841,6 +841,10 @@ const TX_REJECTION_REASON = Object.freeze({
   BATCH_AUTHOR_UNREGISTERED: "batch_author_unregistered",
   BATCH_EQUIVOCATION: "batch_equivocation",
   BATCH_DECODE_FAILED: "batch_decode_failed",
+  // A tx sealed into this node's own certificate that no committed anchor ever
+  // reached: the certificate is being pruned and the tx was never committed or
+  // rejected. Recorded only then, when it can no longer commit.
+  SEALED_NEVER_COMMITTED: "sealed_never_committed",
   // Site 4 — commit-handler revalidation (business-rules check at commit time)
   // Owner-chain prev[0] no longer matches the owner's committed head , a
   // concurrent same-owner tx committed first. The accepting node rebuilds prev
@@ -1266,6 +1270,12 @@ const EMAIL_PRIVATE_ACTIVATION_MS = 1793963700000; // 2026-11-06 11:15:00 UTC ma
 // attachments (an empty list too), and not be empty text: without them the receiver's
 // badge cannot tell a replayed or re-sent copy from the original. New reject rule.
 const EMAIL_SEALS_REQUIRED_ACTIVATION_MS = 1793966100000; // 2026-11-06 11:55:00 UTC mainnet activation
+// A node may put a tx from its own sealed-but-never-committed certificate back in
+// the mempool, so the same tx_id can then ride two certificates. From this time
+// (judged on the anchor's BFT timestamp) commit-handler applies a tx_id at most
+// once per anchor, and requeue starts only 10 minutes after it. Every node runs
+// 2.9.7 before the activation. New commit rule.
+const SEALED_REQUEUE_ACTIVATION_MS = 1794916800000; // 2026-11-17 12:00:00 UTC mainnet activation
 
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",
@@ -1335,6 +1345,7 @@ module.exports = {
   KEY_ROTATION_MAX_LEAD_MS,
   EMAIL_PRIVATE_ACTIVATION_MS,
   EMAIL_SEALS_REQUIRED_ACTIVATION_MS,
+  SEALED_REQUEUE_ACTIVATION_MS,
   ORG_MEMBER_ROLES,
   ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,

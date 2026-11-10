@@ -22,6 +22,7 @@ const { nowMs } = require("../../../shared/time");
 
 const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS, KEY_RETIREMENT_GRACE_MS, KEY_RETIREMENT_ACTIVATION_MS, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
+const { inAnchorDedupActive } = require("./sealed-requeue-gate");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { noteTakeovers } = require("../services/url-takeovers");
@@ -219,7 +220,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
 
   // O(1) counter for /metrics (was a per-scrape 10k-row scan); benign re-broadcast
   // duplicates excluded to match the metric's intent.
-  const _metrics = { committee_rotation_failures: 0 };
+  const _metrics = { committee_rotation_failures: 0, in_anchor_duplicates_skipped: 0 };
 
   // Dead ids must be tombstoned or gossip resurrects them into endless
   // drain->stale->drop churn. Local mirror covers the no-mempool path;
@@ -270,11 +271,29 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     let dropped = 0;
     // In-batch duplicate copies held for a post-txn verdict (see below).
     const dupHeld = [];
+    // A node may requeue a tx from its own certificate that no anchor reached
+    // (narwhal, from the activation), so one tx_id can ride two certificates of
+    // the same anchor. From the activation, judged on this anchor's BFT time so
+    // every node flips together, only the first copy in canonical order is
+    // processed; a later copy is the same signed bytes, so skipping it loses
+    // nothing. Without this a second copy would run _applyDerivedState again
+    // (saveTx ignores the row, the derived effects do not). Copies that exist
+    // today (dupHeld requeue on every node) are already refused by the key-based
+    // dedup below, so for them only node-local rejection rows change.
+    const seenInAnchor = inAnchorDedupActive(certTimestamp) ? new Set() : null;
 
     for (const tx of orderedTxs) {
       if (!tx || !tx.tx_id || !tx.tx_type) {
         dropped++;
         continue;
+      }
+
+      if (seenInAnchor) {
+        if (seenInAnchor.has(tx.tx_id)) {
+          _metrics.in_anchor_duplicates_skipped++;
+          continue;
+        }
+        seenInAnchor.add(tx.tx_id);
       }
 
       // Skip if already in DAG

@@ -31,6 +31,7 @@ const { safeSetInterval } = require("../safe-timer");
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { SNAPSHOT_INSTALL_MARKER_KEY, BATCH_TX_SOFT_CAP } = require("../../../shared/constants");
+const { requeueActive } = require("./sealed-requeue-gate");
 const {
   createBatch, verifyBatch,
   createBatchAck, verifyBatchAck,
@@ -51,6 +52,27 @@ const log = getLogger("tip.narwhal");
 // (mis-sized horizon, persistently lagging peer) is still visible
 // within a few minutes, long enough that warm-up doesn't flood.
 const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
+
+// Sealed-but-never-committed recovery (2026-11-10: two REGISTER_CONTENT txs
+// were accepted with 202, sealed into the seed's own certificate, and lost
+// because no committed anchor ever reached that certificate).
+//
+// A certificate is committed only when a later committed anchor reaches it
+// through parent links (always round-1 parents). If peers moved on before our
+// certificate reached them and we then skipped a round, nothing links it and
+// its txs never commit. We requeue such txs once enough rounds have passed
+// that the original would normally have been committed (6x the late-ack
+// window, at least 30 rounds).
+//
+// The original can still be ordered later (for example after a network stall),
+// so the same tx_id may ride two certificates. Across anchors commit-handler
+// already skips a tx in the DAG; inside one anchor it skips the second copy
+// from the activation on (sealed-requeue-gate.js). Requeue therefore runs only
+// from that activation, never before.
+function _requeueAfterRounds() { return Math.max(30, 6 * (CONSENSUS.VOTES_RETENTION_ROUNDS || 5)); }
+// Requeues per tx. After that the tx is left alone; if it never commits, the
+// cert GC sweep (bullshark) records it as sealed_never_committed.
+const SEALED_REQUEUE_MAX_ATTEMPTS = 3;
 
 /**
  * Create the Narwhal data availability layer.
@@ -101,6 +123,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   const _batchAcks = new Map();                     // batchHash → [ack, ack, ...]
   const _roundCertificates = new Map();             // nodeId → certificate
   let _myCertificateCreated = false;
+
+  // Own certificates that carried txs and are not yet committed. Checked on
+  // every round advance; txs still uncommitted after _requeueAfterRounds() go
+  // back to the front of the mempool (see the constants above). Memory only:
+  // after a restart the cert GC sweep still records any tx that never commits.
+  const _sealedAwaiting = new Map();                // certHash → { round, txs }
+  const _requeueAttempts = new Map();               // txId → requeues so far
 
   // CertificateWaiter: peer certs whose parent hashes aren't in our DAG yet.
   // Parked on receive, reprocessed when the missing parent lands. Guarantees
@@ -164,6 +193,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // gives the seal rate, the single number that says whether a registered
     // node can earn its way into the committee.
     own_certs_sealed: 0,
+
+    // Sealed-but-never-committed recovery. sealed_txs_requeued: txs put back
+    // in the mempool because no committed anchor reached their certificate.
+    // sealed_requeue_budget_spent: txs left alone after the requeue budget.
+    // sealed_requeue_before_activation: due txs NOT requeued because the
+    // activation has not come yet. A rising requeue count means this node's
+    // certificates often land too late for peers to link them.
+    sealed_txs_requeued: 0,
+    sealed_requeue_budget_spent: 0,
+    sealed_requeue_before_activation: 0,
   };
 
   // Per-peer certificate arrival delay: how long after a certificate's own BFT
@@ -900,6 +939,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       log.info(`Round ${_currentRound}: own cert exists from prior session — reusing instead of re-signing`);
       _roundCertificates.set(nodeId, existingOwn);
       _myCertificateCreated = true;
+      _noteOwnCertSealed(existingOwn);
       // Re-broadcast in case peers missed it
       try {
         const certBuf = encode("Certificate", serializeCertificate(existingOwn));
@@ -935,6 +975,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _roundCertificates.set(nodeId, cert);
     _myCertificateCreated = true;
     _metrics.own_certs_sealed++;
+    _noteOwnCertSealed(cert);
 
     // Broadcast on CERTIFICATES topic (enforce size limit)
     try {
@@ -957,6 +998,88 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     log.debug(`Round ${_currentRound}: cert sealed (${acks.length} acks [${ackerShort}], ${(cert.batch.txs || []).length} txs) | author's committee view: [${committeeShort}] (size=${_getCommittee(_currentRound).length}, quorum=${_getQuorum()})`);
 
     _tryAdvanceRound();
+  }
+
+  // ── Sealed-but-never-committed recovery ──────────────────────────────────
+
+  /** Track our own sealed certificate while its txs are uncommitted. */
+  function _noteOwnCertSealed(cert) {
+    if (!cert || !cert.hash) return;
+    const txs = (cert.batch && cert.batch.txs) || [];
+    if (txs.length > 0 && !_sealedAwaiting.has(cert.hash)) {
+      _sealedAwaiting.set(cert.hash, { round: cert.round, txs });
+    }
+  }
+
+  /** A tx is settled once it is committed or explicitly rejected. */
+  function _txSettled(txId) {
+    if (dag.getTx(txId)) return true;
+    return typeof dag.getTxRejection === "function" && !!dag.getTxRejection(txId);
+  }
+
+  /**
+   * Run on every round advance. A certificate is looked at once, when it is
+   * _requeueAfterRounds() old (nothing is read before that, so this costs one
+   * pass per tx-bearing certificate, never per round). Settled txs are
+   * dropped; still-unsettled ones go back to the front of the mempool (fresh
+   * receive time, so TTL eviction does not take them at once), up to
+   * SEALED_REQUEUE_MAX_ATTEMPTS per tx. Before the activation it requeues
+   * nothing and only counts.
+   *
+   * Never writes a rejection: a tx left alone may still commit later, and the
+   * cert GC sweep records it only when its certificate is pruned uncommitted.
+   */
+  function _checkSealedAwaiting() {
+    if (_sealedAwaiting.size === 0) return;
+    const after = _requeueAfterRounds();
+    let allowed = null;
+    for (const [hash, entry] of _sealedAwaiting) {
+      if (_currentRound - entry.round < after) continue;
+      _sealedAwaiting.delete(hash);
+
+      const open = entry.txs.filter(t => t && t.tx_id && !_txSettled(t.tx_id));
+      if (open.length === 0) {
+        for (const t of entry.txs) if (t && t.tx_id) _requeueAttempts.delete(t.tx_id);
+        continue;
+      }
+      if (allowed === null) allowed = requeueActive(nowMs());
+      if (!allowed) {
+        _metrics.sealed_requeue_before_activation += open.length;
+        log.warn(`Round ${_currentRound}: own certificate from round ${entry.round} still uncommitted after ${_currentRound - entry.round} rounds (${open.length} txs); requeue starts at the activation`);
+        continue;
+      }
+      let requeued = 0;
+      let spent = 0;
+      for (const tx of open) {
+        const attempts = (_requeueAttempts.get(tx.tx_id) || 0) + 1;
+        if (attempts > SEALED_REQUEUE_MAX_ATTEMPTS) {
+          _requeueAttempts.delete(tx.tx_id);
+          spent++;
+          continue;
+        }
+        const r = mempool.addFront(tx, nowMs());
+        if (r && r.added) {
+          _requeueAttempts.set(tx.tx_id, attempts);
+          requeued++;
+        } else if (!(r && r.reason === "duplicate")) {
+          // Not queued (tombstoned, mempool full, which records its own
+          // rejection): nothing will seal it again, so stop tracking it.
+          _requeueAttempts.delete(tx.tx_id);
+        }
+      }
+      _metrics.sealed_txs_requeued += requeued;
+      _metrics.sealed_requeue_budget_spent += spent;
+      log.warn(`Round ${_currentRound}: own certificate from round ${entry.round} still uncommitted after ${_currentRound - entry.round} rounds, requeued ${requeued}/${open.length} txs${spent ? `, ${spent} past the requeue budget` : ""}`);
+    }
+    // Bound the attempt map: an entry whose tx settled, or that left the
+    // mempool without being sealed again, would otherwise stay forever.
+    if (_requeueAttempts.size > 10000) {
+      const tracked = new Set();
+      for (const e of _sealedAwaiting.values()) for (const t of e.txs) if (t && t.tx_id) tracked.add(t.tx_id);
+      for (const id of [..._requeueAttempts.keys()]) {
+        if (_txSettled(id) || (!mempool.has(id) && !tracked.has(id))) _requeueAttempts.delete(id);
+      }
+    }
   }
 
   // ── Certificate reception ────────────────────────────────────────────────
@@ -1224,6 +1347,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Advance
     _currentRound++;
 
+    // Requeue txs from our own certificates that no committed anchor reached.
+    try {
+      _checkSealedAwaiting();
+    } catch (err) {
+      log.warn(`sealed-cert recovery check failed: ${err.message}`);
+    }
+
     // §1 votes_seen auto-prune. We only need the last few rounds' commitments
     // (old rounds can't be re-entered). Pruning here — tied to round advance
     // — means the table is bounded to ~VOTES_RETENTION_ROUNDS × committee_size
@@ -1488,6 +1618,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     /** Count of currently-parked cert waiters (ops diagnostic). */
     pendingCertCount: () => _pendingCerts.size,
+
+    /** Test hooks: drive the sealed-but-never-committed recovery directly. */
+    _noteOwnCertSealed: (cert) => _noteOwnCertSealed(cert),
+    _checkSealedAwaiting: () => _checkSealedAwaiting(),
     stats: () => ({
       round: _currentRound,
       running: _running,
@@ -1495,6 +1629,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       batchesThisRound: _peerBatches.size,
       certificatesThisRound: _roundCertificates.size,
       pendingCerts: _pendingCerts.size,
+      sealedAwaitingCommit: _sealedAwaiting.size,
       quorum: _getQuorum(),
       activeParticipants: _getCommittee().length,
       registeredNodes: getNodeCount(),

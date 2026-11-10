@@ -84,6 +84,36 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+**Node 2.9.7: an accepted transaction is never lost after its certificate is sealed**
+- A tx answered 202 and sealed into the receiving node's own certificate could be
+  lost when no committed anchor ever reached that certificate (the node skipped a
+  round, and peers had moved on before the certificate arrived). The mempool was
+  empty, no `tx_rejections` row existed, and cert GC deleted it later. Seen live on
+  2026-11-10: two REGISTER_CONTENT txs returned a CTID that then stayed 404.
+- Requeue (from `SEALED_REQUEUE_ACTIVATION_MS`, 2026-11-17 12:00 UTC, plus a
+  10-minute clock margin; override `TIP_SEALED_REQUEUE_ACTIVATION_MS`, test cluster
+  only): a node tracks its own certificates that carry txs, and 30 rounds after
+  sealing puts any tx still not committed or rejected back at the front of its
+  mempool, up to 3 times per tx.
+- In-anchor dedup (new commit rule, same activation, judged on the anchor's BFT
+  time): commit-handler processes a tx_id at most once per anchor. The original can
+  still be ordered after a requeue (for example after a stall), and a second copy
+  would otherwise run its derived-state effects twice. Before the activation nothing
+  is requeued and nothing changes at commit. Every node, SS and Rooverse included,
+  must run 2.9.7 before 2026-11-17 12:00 UTC: from 12:10 an older node would apply a
+  duplicate copy twice and fork. A node with the override set logs a warning.
+- No silent loss: just before cert GC prunes, the node records every tx in its own
+  certificates there that was never committed or rejected as
+  `sealed_never_committed` (node-local `tx_rejections`, not in the state root). Live
+  from the upgrade; recorded only when the tx can no longer commit.
+- Certificate parents are unchanged (round-1 only): linking older certificates was
+  considered and left out, since a peer missing one would set our certificates aside
+  and catch-up pulls only from its committed round.
+- Counters: `sealed_txs_requeued`, `sealed_requeue_budget_spent`,
+  `sealed_requeue_before_activation`, `sealedAwaitingCommit` (narwhal),
+  `gc_unordered_txs_recorded` (bullshark), `in_anchor_duplicates_skipped`
+  (commit-handler), also on `/metrics`.
+
 **Node 2.9.4: exact-hash lookups no longer walk every record**
 - `getContentByHash` on the in-memory store (the Postgres mirror on every
   federation node) scanned all content on each call: on every registration
