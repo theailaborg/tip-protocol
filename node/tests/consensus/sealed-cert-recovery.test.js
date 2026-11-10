@@ -90,6 +90,23 @@ describe("activation gate", () => {
     process.env[ENV] = "1000";
     expect(gate.sealedRequeueGateMs()).toBe(1000);
   });
+
+  test("an override is logged once per value, the mainnet value never", () => {
+    const warn = jest.fn();
+    jest.isolateModules(() => {
+      jest.doMock(path.join(SRC, "logger"), () => ({ getLogger: () => ({ warn, error() {}, info() {}, debug() {}, notice() {} }) }));
+      const g = require(path.join(SRC, "consensus", "sealed-requeue-gate"));
+      process.env[ENV] = "1234";
+      g.sealedRequeueGateMs();
+      g.sealedRequeueGateMs();
+      process.env[ENV] = String(SEALED_REQUEUE_ACTIVATION_MS);
+      g.sealedRequeueGateMs();
+      delete process.env[ENV];
+      g.sealedRequeueGateMs();
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/TIP_SEALED_REQUEUE_ACTIVATION_MS=1234 overrides/);
+  });
 });
 
 describe("in-anchor dedup", () => {

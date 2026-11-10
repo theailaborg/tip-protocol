@@ -20,12 +20,23 @@
 "use strict";
 
 const { SEALED_REQUEUE_ACTIVATION_MS } = require("../../../shared/constants");
+const { getLogger } = require("../logger");
+
+const log = getLogger("tip.consensus");
 
 const REQUEUE_SKEW_MARGIN_MS = 10 * 60 * 1000;
 
+let _warnedFor = null;
+
 function sealedRequeueGateMs() {
   const env = parseInt(process.env.TIP_SEALED_REQUEUE_ACTIVATION_MS, 10);
-  return Number.isFinite(env) ? env : SEALED_REQUEUE_ACTIVATION_MS;
+  if (!Number.isFinite(env)) return SEALED_REQUEUE_ACTIVATION_MS;
+  // A stray override on one mainnet node flips its commit rule at a different anchor than its peers.
+  if (env !== SEALED_REQUEUE_ACTIVATION_MS && env !== _warnedFor) {
+    _warnedFor = env;
+    log.warn(`TIP_SEALED_REQUEUE_ACTIVATION_MS=${env} overrides the network activation (${SEALED_REQUEUE_ACTIVATION_MS}); every node must use the same value or this node forks`);
+  }
+  return env;
 }
 
 /** Commit side: dedup tx_ids inside one anchor from this anchor time on. */

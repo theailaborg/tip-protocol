@@ -99,8 +99,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   time): commit-handler processes a tx_id at most once per anchor. The original can
   still be ordered after a requeue (for example after a stall), and a second copy
   would otherwise run its derived-state effects twice. Before the activation nothing
-  is requeued and nothing changes at commit. Every node, partners included, runs
-  2.9.7 before the activation.
+  is requeued and nothing changes at commit. Every node, SS and Rooverse included,
+  must run 2.9.7 before 2026-11-17 12:00 UTC: from 12:10 an older node would apply a
+  duplicate copy twice and fork. A node with the override set logs a warning.
 - No silent loss: just before cert GC prunes, the node records every tx in its own
   certificates there that was never committed or rejected as
   `sealed_never_committed` (node-local `tx_rejections`, not in the state root). Live
