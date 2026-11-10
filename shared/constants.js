@@ -1275,7 +1275,7 @@ const EMAIL_SEALS_REQUIRED_ACTIVATION_MS = 1793966100000; // 2026-11-06 11:55:00
 // (judged on the anchor's BFT timestamp) commit-handler applies a tx_id at most
 // once per anchor, and requeue starts only 10 minutes after it. Every node runs
 // 2.9.7 before the activation. New commit rule.
-const SEALED_REQUEUE_ACTIVATION_MS = 1794916800000; // 2026-11-17 12:00:00 UTC mainnet activation
+const SEALED_REQUEUE_ACTIVATION_MS = 1794309600000; // 2026-11-10 11:20:00 UTC mainnet activation
 
 const ORG_MEMBER_STATUS = Object.freeze({
   INVITED: "invited",
