@@ -880,21 +880,28 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
   }
 
   /**
-   * Before certificates below `cutoff` are pruned, record every tx they carry
-   * that was never committed and never rejected. Such a tx sat in a sealed
-   * certificate no committed anchor reached; once the certificate is gone it
-   * would vanish with no trace (the 2026-11-10 loss). Scans only the rounds
-   * since the previous sweep; the first sweep after boot looks back a bounded
-   * window, since older certificates were pruned by the previous process.
-   * A tx still waiting in the mempool (requeued) is left alone.
+   * Before certificates below `cutoff` are pruned, record every tx in THIS
+   * node's own certificates there that was never committed and never
+   * rejected. Such a tx was accepted here, sealed, and no committed anchor
+   * reached it; once the certificate is gone it would vanish with no trace
+   * (the 2026-11-10 loss). Own certificates only: the node that accepted a tx
+   * is the one asked about it, and one indexed read per round keeps this off
+   * the consensus thread's budget. Scans only the rounds since the previous
+   * sweep; the first sweep after boot looks back a bounded window, since older
+   * certificates were pruned by the previous process. A tx still waiting in
+   * the mempool (requeued) is left alone. Rows land in the node-local
+   * tx_rejections table, never in the state root.
    */
   function _recordUnorderedBeforePrune(cutoff) {
-    if (typeof dag.iterateCertsByRoundRange !== "function") return 0;
+    const selfId = proposer && proposer.nodeId;
+    if (!selfId || typeof dag.getCertificateByAuthorRound !== "function") return 0;
     const from = _lastSweptCutoff > 0 ? _lastSweptCutoff : Math.max(1, cutoff - 1000);
     if (cutoff <= from) return 0;
     let recorded = 0;
     try {
-      for (const cert of dag.iterateCertsByRoundRange(from, cutoff - 1)) {
+      for (let round = from; round < cutoff; round++) {
+        const cert = dag.getCertificateByAuthorRound(selfId, round);
+        if (!cert) continue;
         for (const tx of (cert.batch && cert.batch.txs) || []) {
           if (!tx || !tx.tx_id) continue;
           if (dag.getTx(tx.tx_id)) continue;

@@ -30,8 +30,8 @@ const { nowMs } = require("../../../shared/time");
 const { safeSetInterval } = require("../safe-timer");
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
-const { SNAPSHOT_INSTALL_MARKER_KEY, BATCH_TX_SOFT_CAP, TX_REJECTION_REASON } = require("../../../shared/constants");
-const { createRejectionSink } = require("./tx-rejection-sink");
+const { SNAPSHOT_INSTALL_MARKER_KEY, BATCH_TX_SOFT_CAP } = require("../../../shared/constants");
+const { requeueActive } = require("./sealed-requeue-gate");
 const {
   createBatch, verifyBatch,
   createBatchAck, verifyBatchAck,
@@ -58,18 +58,20 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
 // because no committed anchor ever reached that certificate).
 //
 // A certificate is committed only when a later committed anchor reaches it
-// through parent links. New certificates link only round-1 certificates (plus,
-// below, this node's own last certificate), and a certificate can only be
-// sealed within VOTES_RETENTION_ROUNDS of the network's round, because peers
-// refuse to ack older batches. So once roughly 3x that window has passed, no
-// new link to an old certificate can appear. Requeuing after that point can
-// never put a second copy of a tx into the same anchor's history.
+// through parent links (always round-1 parents). If peers moved on before our
+// certificate reached them and we then skipped a round, nothing links it and
+// its txs never commit. We requeue such txs once enough rounds have passed
+// that the original would normally have been committed (6x the late-ack
+// window, at least 30 rounds).
 //
-// OWN_LINK_MAX_GAP bounds how old a certificate the own-chain link may point
-// at; it stays well inside the requeue delay for the same reason.
-function _ownLinkMaxGap() { return 2 * (CONSENSUS.VOTES_RETENTION_ROUNDS || 5) + 2; }
+// The original can still be ordered later (for example after a network stall),
+// so the same tx_id may ride two certificates. Across anchors commit-handler
+// already skips a tx in the DAG; inside one anchor it skips the second copy
+// from the activation on (sealed-requeue-gate.js). Requeue therefore runs only
+// from that activation, never before.
 function _requeueAfterRounds() { return Math.max(30, 6 * (CONSENSUS.VOTES_RETENTION_ROUNDS || 5)); }
-// Requeues per tx before it is recorded as rejected (sealed_never_committed).
+// Requeues per tx. After that the tx is left alone; if it never commits, the
+// cert GC sweep (bullshark) records it as sealed_never_committed.
 const SEALED_REQUEUE_MAX_ATTEMPTS = 3;
 
 /**
@@ -122,17 +124,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   const _roundCertificates = new Map();             // nodeId → certificate
   let _myCertificateCreated = false;
 
-  // This node's most recent own certificate. When we skip a round (fast-
-  // forward, or peers advance before our batch formed) our next certificate
-  // links it as an extra parent, so our earlier certificates stay reachable.
-  let _lastOwnCert = null;                          // { hash, round }
-
   // Own certificates that carried txs and are not yet committed. Checked on
   // every round advance; txs still uncommitted after _requeueAfterRounds() go
-  // back to the front of the mempool (see the constants above).
+  // back to the front of the mempool (see the constants above). Memory only:
+  // after a restart the cert GC sweep still records any tx that never commits.
   const _sealedAwaiting = new Map();                // certHash → { round, txs }
   const _requeueAttempts = new Map();               // txId → requeues so far
-  const _persistRejection = createRejectionSink({ dag, nodeId: config.nodeRegisteredId || config.nodeId });
 
   // CertificateWaiter: peer certs whose parent hashes aren't in our DAG yet.
   // Parked on receive, reprocessed when the missing parent lands. Guarantees
@@ -197,16 +194,15 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // node can earn its way into the committee.
     own_certs_sealed: 0,
 
-    // Sealed-but-never-committed recovery. own_cert_gap_links: certificates
-    // that linked our own older certificate across a skipped round.
-    // sealed_txs_requeued: txs put back in the mempool because no committed
-    // anchor reached their certificate. sealed_txs_given_up: txs recorded as
-    // rejected (sealed_never_committed) after the retry budget. A rising
-    // requeue count means this node's certificates often land too late for
-    // peers to link them.
-    own_cert_gap_links: 0,
+    // Sealed-but-never-committed recovery. sealed_txs_requeued: txs put back
+    // in the mempool because no committed anchor reached their certificate.
+    // sealed_requeue_budget_spent: txs left alone after the requeue budget.
+    // sealed_requeue_before_activation: due txs NOT requeued because the
+    // activation has not come yet. A rising requeue count means this node's
+    // certificates often land too late for peers to link them.
     sealed_txs_requeued: 0,
-    sealed_txs_given_up: 0,
+    sealed_requeue_budget_spent: 0,
+    sealed_requeue_before_activation: 0,
   };
 
   // Per-peer certificate arrival delay: how long after a certificate's own BFT
@@ -962,19 +958,6 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       ? dag.getCertificatesByRound(_currentRound - 1).map(c => c.hash)
       : [];
 
-    // Own-chain link across a gap. Normally our previous certificate is in
-    // round-1 and already a parent. When we produced nothing at round-1
-    // (fast-forward, or peers advanced before our batch formed), peers that
-    // moved on without our earlier certificates would never link them, and
-    // their txs could never commit. Linking our last certificate keeps that
-    // chain reachable. Verification puts no rule on parent rounds, so nodes
-    // without this change accept these certificates unchanged.
-    const ownLink = _ownGapLink(parentHashes);
-    if (ownLink) {
-      parentHashes.push(ownLink);
-      _metrics.own_cert_gap_links++;
-    }
-
     const cert = createCertificate(
       _currentRound, nodeId, _myBatch, acks, parentHashes, privateKey
     );
@@ -1019,27 +1002,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
   // ── Sealed-but-never-committed recovery ──────────────────────────────────
 
-  /**
-   * Hash of our last own certificate when it should ride as an extra parent:
-   * it is older than round-1 (we skipped a round), recent enough that the
-   * requeue path cannot also fire for it, still in the DAG, and not already a
-   * parent. Otherwise null.
-   */
-  function _ownGapLink(parentHashes) {
-    const last = _lastOwnCert;
-    if (!last || last.round >= _currentRound - 1) return null;
-    if (_currentRound - last.round > _ownLinkMaxGap()) return null;
-    if (parentHashes.includes(last.hash)) return null;
-    if (!dag.getCertificate(last.hash)) return null;
-    return last.hash;
-  }
-
-  /** Remember our own sealed certificate; track it while its txs are uncommitted. */
+  /** Track our own sealed certificate while its txs are uncommitted. */
   function _noteOwnCertSealed(cert) {
     if (!cert || !cert.hash) return;
-    if (!_lastOwnCert || cert.round >= _lastOwnCert.round) {
-      _lastOwnCert = { hash: cert.hash, round: cert.round };
-    }
     const txs = (cert.batch && cert.batch.txs) || [];
     if (txs.length > 0 && !_sealedAwaiting.has(cert.hash)) {
       _sealedAwaiting.set(cert.hash, { round: cert.round, txs });
@@ -1053,47 +1018,67 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   }
 
   /**
-   * Run on every round advance. Drops certificates whose txs all settled.
-   * For one still unsettled after _requeueAfterRounds(), requeues its
-   * unsettled txs at the front of the mempool (fresh receive time so TTL
-   * eviction does not take them at once). After SEALED_REQUEUE_MAX_ATTEMPTS
-   * a tx is recorded as rejected instead, so it is never lost silently.
+   * Run on every round advance. A certificate is looked at once, when it is
+   * _requeueAfterRounds() old (nothing is read before that, so this costs one
+   * pass per tx-bearing certificate, never per round). Settled txs are
+   * dropped; still-unsettled ones go back to the front of the mempool (fresh
+   * receive time, so TTL eviction does not take them at once), up to
+   * SEALED_REQUEUE_MAX_ATTEMPTS per tx. Before the activation it requeues
+   * nothing and only counts.
    *
-   * Commit-handler already skips a tx whose tx_id is in the DAG, so a requeued
-   * copy can never apply twice across rounds.
+   * Never writes a rejection: a tx left alone may still commit later, and the
+   * cert GC sweep records it only when its certificate is pruned uncommitted.
    */
   function _checkSealedAwaiting() {
     if (_sealedAwaiting.size === 0) return;
     const after = _requeueAfterRounds();
+    let allowed = null;
     for (const [hash, entry] of _sealedAwaiting) {
+      if (_currentRound - entry.round < after) continue;
+      _sealedAwaiting.delete(hash);
+
       const open = entry.txs.filter(t => t && t.tx_id && !_txSettled(t.tx_id));
       if (open.length === 0) {
-        _sealedAwaiting.delete(hash);
         for (const t of entry.txs) if (t && t.tx_id) _requeueAttempts.delete(t.tx_id);
         continue;
       }
-      if (_currentRound - entry.round < after) continue;
-
-      _sealedAwaiting.delete(hash);
+      if (allowed === null) allowed = requeueActive(nowMs());
+      if (!allowed) {
+        _metrics.sealed_requeue_before_activation += open.length;
+        log.warn(`Round ${_currentRound}: own certificate from round ${entry.round} still uncommitted after ${_currentRound - entry.round} rounds (${open.length} txs); requeue starts at the activation`);
+        continue;
+      }
       let requeued = 0;
-      let gaveUp = 0;
+      let spent = 0;
       for (const tx of open) {
         const attempts = (_requeueAttempts.get(tx.tx_id) || 0) + 1;
         if (attempts > SEALED_REQUEUE_MAX_ATTEMPTS) {
           _requeueAttempts.delete(tx.tx_id);
-          _persistRejection(tx, TX_REJECTION_REASON.SEALED_NEVER_COMMITTED,
-            `sealed in this node's certificate ${SEALED_REQUEUE_MAX_ATTEMPTS + 1} times and never reached by a committed anchor`,
-            { round: entry.round });
-          gaveUp++;
+          spent++;
           continue;
         }
-        _requeueAttempts.set(tx.tx_id, attempts);
         const r = mempool.addFront(tx, nowMs());
-        if (r && r.added) requeued++;
+        if (r && r.added) {
+          _requeueAttempts.set(tx.tx_id, attempts);
+          requeued++;
+        } else if (!(r && r.reason === "duplicate")) {
+          // Not queued (tombstoned, mempool full, which records its own
+          // rejection): nothing will seal it again, so stop tracking it.
+          _requeueAttempts.delete(tx.tx_id);
+        }
       }
       _metrics.sealed_txs_requeued += requeued;
-      _metrics.sealed_txs_given_up += gaveUp;
-      log.warn(`Round ${_currentRound}: own certificate from round ${entry.round} still uncommitted after ${_currentRound - entry.round} rounds, requeued ${requeued}/${open.length} txs${gaveUp ? `, recorded ${gaveUp} as sealed_never_committed` : ""}`);
+      _metrics.sealed_requeue_budget_spent += spent;
+      log.warn(`Round ${_currentRound}: own certificate from round ${entry.round} still uncommitted after ${_currentRound - entry.round} rounds, requeued ${requeued}/${open.length} txs${spent ? `, ${spent} past the requeue budget` : ""}`);
+    }
+    // Bound the attempt map: an entry whose tx settled, or that left the
+    // mempool without being sealed again, would otherwise stay forever.
+    if (_requeueAttempts.size > 10000) {
+      const tracked = new Set();
+      for (const e of _sealedAwaiting.values()) for (const t of e.txs) if (t && t.tx_id) tracked.add(t.tx_id);
+      for (const id of [..._requeueAttempts.keys()]) {
+        if (_txSettled(id) || (!mempool.has(id) && !tracked.has(id))) _requeueAttempts.delete(id);
+      }
     }
   }
 

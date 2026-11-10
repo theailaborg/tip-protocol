@@ -1,22 +1,24 @@
 /**
  * @file tests/consensus/sealed-cert-recovery.test.js
  * @description A tx sealed into a node's own certificate must reach a committed
- * anchor, or be recorded as rejected. Never lost silently.
+ * anchor, or be recorded as rejected. Never lost silently, never applied twice.
  *
  * Live incident, 2026-11-10: two REGISTER_CONTENT txs were accepted with 202,
  * drained into the seed's own batch, sealed into its certificate, and then no
  * committed anchor ever reached that certificate. The mempool was empty, no
  * tx_rejections row existed, and cert GC later deleted the certificate.
  *
- * Covers the three parts of the fix:
+ * Covers:
  *   1. requeue: own certificates still uncommitted after the requeue delay put
- *      their txs back at the front of the mempool;
- *   2. own-chain link: after a skipped round a node's next certificate links its
- *      own last certificate, so peers that moved on can still reach it;
- *   3. no silent loss: retry budget exhausted, or certificate about to be
- *      pruned uncommitted, means a sealed_never_committed rejection row.
+ *      their txs back at the front of the mempool, only from the activation;
+ *   2. in-anchor dedup: from the activation a tx_id is applied at most once
+ *      per anchor, so a requeued copy can never apply twice;
+ *   3. no silent loss: a tx in an own certificate about to be pruned, never
+ *      committed or rejected, gets a sealed_never_committed row.
  *
- * Runs on the virtual-clock cluster (tests/helpers/cluster.js).
+ * Runs on the virtual-clock cluster (tests/helpers/cluster.js). The cluster's
+ * clock sits before the mainnet activation, so most tests set
+ * TIP_SEALED_REQUEUE_ACTIVATION_MS=0.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -29,13 +31,20 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, shake256, computeTxId } = require(path.join(SHARED, "crypto"));
-const { TX_REJECTION_REASON } = require(path.join(SHARED, "constants"));
+const { TX_REJECTION_REASON, SEALED_REQUEUE_ACTIVATION_MS } = require(path.join(SHARED, "constants"));
 const { nowMs } = require(path.join(SHARED, "time"));
 const { loadTypes } = require(path.join(SRC, "network", "proto"));
+const gate = require(path.join(SRC, "consensus", "sealed-requeue-gate"));
 const { createInProcessCluster } = require(path.join(__dirname, "..", "helpers", "cluster"));
 
-beforeAll(async () => { await initCrypto(); await loadTypes(); });
-beforeEach(() => jest.useFakeTimers({ doNotFake: ["setImmediate", "queueMicrotask", "nextTick"] }));
+const ENV = "TIP_SEALED_REQUEUE_ACTIVATION_MS";
+let savedEnv;
+beforeAll(async () => { await initCrypto(); await loadTypes(); savedEnv = process.env[ENV]; });
+afterAll(() => { if (savedEnv === undefined) delete process.env[ENV]; else process.env[ENV] = savedEnv; });
+beforeEach(() => {
+  process.env[ENV] = "0";
+  jest.useFakeTimers({ doNotFake: ["setImmediate", "queueMicrotask", "nextTick"] });
+});
 afterEach(() => jest.useRealTimers());
 
 const PEERS = [1, 2, 3];
@@ -69,10 +78,49 @@ function makeTx(tag) {
   return body;
 }
 
+describe("activation gate", () => {
+  test("mainnet value, env override, and the 10-minute requeue margin", () => {
+    delete process.env[ENV];
+    expect(gate.sealedRequeueGateMs()).toBe(SEALED_REQUEUE_ACTIVATION_MS);
+    expect(gate.inAnchorDedupActive(SEALED_REQUEUE_ACTIVATION_MS - 1)).toBe(false);
+    expect(gate.inAnchorDedupActive(SEALED_REQUEUE_ACTIVATION_MS)).toBe(true);
+    expect(gate.inAnchorDedupActive(0)).toBe(false);
+    expect(gate.requeueActive(SEALED_REQUEUE_ACTIVATION_MS)).toBe(false);
+    expect(gate.requeueActive(SEALED_REQUEUE_ACTIVATION_MS + gate.REQUEUE_SKEW_MARGIN_MS)).toBe(true);
+    process.env[ENV] = "1000";
+    expect(gate.sealedRequeueGateMs()).toBe(1000);
+  });
+});
+
+describe("in-anchor dedup", () => {
+  test("from the activation a tx_id inside one anchor is processed once; before it, as today", async () => {
+    const cluster = createInProcessCluster({ nodeCount: 4 });
+    try {
+      await cluster.tickRounds(2);
+      const ch = cluster.nodes[0].commitHandler;
+      const tx = makeTx("dedup");
+
+      process.env[ENV] = "1000";
+      const after = ch.commitOrderedTxs([tx, { ...tx }], 900001, { certTimestamp: 5000 });
+      expect(ch.metrics().in_anchor_duplicates_skipped).toBe(1);
+
+      const tx2 = makeTx("dedup-before");
+      const before = ch.commitOrderedTxs([tx2, { ...tx2 }], 900003, { certTimestamp: 500 });
+      expect(ch.metrics().in_anchor_duplicates_skipped).toBe(1);
+      // From the activation only the first copy is handled (committed or
+      // rejected); before it both copies are handled, exactly as on main.
+      expect(after.dropped + after.committed).toBe(1);
+      expect(before.dropped + before.committed).toBe(2);
+    } finally {
+      cluster.stop();
+    }
+  });
+});
+
 describe("sealed-but-never-committed recovery", () => {
-  // Both delay patterns lost the tx silently before the fix (no commit, no
-  // rejection row): node0's certificates land after peers moved on, and node0
-  // skips a round, which cuts its own chain.
+  // Both delay patterns lost the tx silently on main (no commit, no rejection
+  // row, not in the mempool): node0's certificates land after peers moved on,
+  // and node0 skips a round, which cuts its own chain.
   test.each([
     ["node0 certificates 3 ticks late, peers' 1 tick late to node0", 3, 1, 6],
     ["node0 certificates 4 ticks late, peers' 2 ticks late to node0", 4, 2, 8],
@@ -84,56 +132,23 @@ describe("sealed-but-never-committed recovery", () => {
       certTopic(cluster, out, inn);
       for (let i = 0; i < win; i++) await cluster.tickRound();
       certTopic(cluster, 0, 0);
-      await cluster.tickRounds(30);
+      await cluster.tickRounds(60);
 
       expect(ordered(cluster, txId)).toBe(true);
       expect(sealedNeverCommitted(cluster, txId)).toBe(false);
     } finally {
       cluster.stop();
     }
-  });
+  }, 240000);
 
-  test("own-chain link: after a skipped round, node0's next certificate links its own older certificate", async () => {
-    const cluster = createInProcessCluster({ nodeCount: 4 });
-    try {
-      await cluster.tickRounds(4);
-      cluster.nodes[0].submitTx();
-      certTopic(cluster, 4, 2);
-      for (let i = 0; i < 8; i++) await cluster.tickRound();
-      certTopic(cluster, 0, 0);
-      await cluster.tickRounds(6);
-
-      const n0 = cluster.nodes[0];
-      expect(n0.narwhal.stats().metrics.own_cert_gap_links).toBeGreaterThan(0);
-
-      // Find a certificate of node0 whose parents include node0's own
-      // certificate from an older round than round-1.
-      const id = n0.nodeId;
-      const top = n0.narwhal.currentRound();
-      let found = false;
-      for (let r = 2; r <= top && !found; r++) {
-        const cert = n0.dag.getCertificateByAuthorRound(id, r);
-        if (!cert) continue;
-        for (const h of cert.parent_hashes || []) {
-          const p = n0.dag.getCertificate(h);
-          if (p && p.author_node_id === id && p.round < r - 1) { found = true; break; }
-        }
-      }
-      expect(found).toBe(true);
-    } finally {
-      cluster.stop();
-    }
-  });
-
-  test("requeue: a sealed certificate nobody can link is requeued, and the tx commits once", async () => {
+  test("requeue: a sealed certificate nobody links is requeued after 30 rounds, and the tx commits once", async () => {
     const cluster = createInProcessCluster({ nodeCount: 4 });
     try {
       await cluster.tickRounds(4);
       const txId = cluster.nodes[0].submitTx();
 
       // The certificate node0 seals next reaches peers far too late to be
-      // linked, and node0 seals nothing else for a long stretch (its batches
-      // are held too), so no own-chain link can reach it either.
+      // linked, and node0 seals nothing else for a long stretch.
       certTopic(cluster, 20, 0);
       await cluster.tickRound();
       expect(cluster.nodes[0].narwhal.stats().sealedAwaitingCommit).toBeGreaterThan(0);
@@ -147,7 +162,6 @@ describe("sealed-but-never-committed recovery", () => {
       expect(n0.metrics.sealed_txs_requeued).toBeGreaterThan(0);
       expect(ordered(cluster, txId)).toBe(true);
       expect(sealedNeverCommitted(cluster, txId)).toBe(false);
-      // Committed at most once on every node: never two rows, never a rollback.
       for (const n of cluster.nodes) {
         const row = n.dag.getTx(txId);
         if (row) expect(row.tx_id).toBe(txId);
@@ -158,24 +172,42 @@ describe("sealed-but-never-committed recovery", () => {
     }
   }, 240000);
 
-  test("retry budget: after 3 requeues a still-uncommitted tx is recorded as sealed_never_committed", async () => {
+  test("before the activation nothing is requeued: the due tx is only counted", async () => {
+    const cluster = createInProcessCluster({ nodeCount: 4 });
+    try {
+      await cluster.tickRounds(2);
+      process.env[ENV] = String(nowMs() + 24 * 60 * 60 * 1000);
+      const n0 = cluster.nodes[0];
+      const tx = makeTx("pre-activation");
+      n0.narwhal._noteOwnCertSealed({ hash: "d".repeat(64), round: -1000, batch: { txs: [tx] } });
+      n0.narwhal._checkSealedAwaiting();
+
+      expect(n0.mempool.has(tx.tx_id)).toBe(false);
+      const m = n0.narwhal.stats().metrics;
+      expect(m.sealed_txs_requeued).toBe(0);
+      expect(m.sealed_requeue_before_activation).toBe(1);
+      expect(n0.dag.getTxRejection(tx.tx_id)).toBeFalsy();
+    } finally {
+      cluster.stop();
+    }
+  });
+
+  test("requeue budget: 3 requeues, then the tx is left alone and never marked rejected early", async () => {
     const cluster = createInProcessCluster({ nodeCount: 4 });
     try {
       await cluster.tickRounds(2);
       const n0 = cluster.nodes[0];
       const tx = makeTx("budget");
-      const old = { hash: "f".repeat(64), round: 1, batch: { txs: [tx] } };
 
       for (let i = 0; i < 4; i++) {
-        n0.narwhal._noteOwnCertSealed({ ...old, hash: `${i}`.repeat(64).slice(0, 64), round: -1000 });
+        n0.narwhal._noteOwnCertSealed({ hash: `${i}`.repeat(64), round: -1000, batch: { txs: [tx] } });
         n0.narwhal._checkSealedAwaiting();
         n0.mempool.remove([tx.tx_id]);
       }
-      const row = n0.dag.getTxRejection(tx.tx_id);
-      expect(row && row.reason).toBe(TX_REJECTION_REASON.SEALED_NEVER_COMMITTED);
       const m = n0.narwhal.stats().metrics;
       expect(m.sealed_txs_requeued).toBe(3);
-      expect(m.sealed_txs_given_up).toBe(1);
+      expect(m.sealed_requeue_budget_spent).toBe(1);
+      expect(n0.dag.getTxRejection(tx.tx_id)).toBeFalsy();
     } finally {
       cluster.stop();
     }
@@ -203,7 +235,7 @@ describe("sealed-but-never-committed recovery", () => {
     }
   });
 
-  test("cert GC sweep: an uncommitted tx in a certificate about to be pruned gets a rejection row; committed and queued txs do not", async () => {
+  test("cert GC sweep: only this node's own uncommitted txs get a row; committed, queued and peer txs do not", async () => {
     const cluster = createInProcessCluster({ nodeCount: 4 });
     try {
       await cluster.tickRounds(2);
@@ -211,19 +243,19 @@ describe("sealed-but-never-committed recovery", () => {
       const lost = makeTx("gc-lost");
       const done = makeTx("gc-done");
       const queued = makeTx("gc-queued");
+      const peers = makeTx("gc-peer");
       n0.dag.addTx(done);
       n0.dag.saveMempoolTx(queued);
-      n0.dag.saveCertificate({
-        hash: "b".repeat(64), round: 3, author_node_id: n0.nodeId,
-        batch: { hash: "c".repeat(64), txs: [lost, done, queued] },
-        acknowledgments: [], parent_hashes: [], signature: "00", timestamp: nowMs(),
-      });
+      const base = { acknowledgments: [], parent_hashes: [], signature: "00", timestamp: nowMs() };
+      n0.dag.saveCertificate({ ...base, hash: "b".repeat(64), round: 3, author_node_id: n0.nodeId, batch: { hash: "c".repeat(64), txs: [lost, done, queued] } });
+      n0.dag.saveCertificate({ ...base, hash: "e".repeat(64), round: 3, author_node_id: cluster.nodes[1].nodeId, batch: { hash: "9".repeat(64), txs: [peers] } });
 
       const recorded = n0.bullshark._recordUnorderedBeforePrune(10);
       expect(recorded).toBe(1);
       expect(n0.dag.getTxRejection(lost.tx_id).reason).toBe(TX_REJECTION_REASON.SEALED_NEVER_COMMITTED);
       expect(n0.dag.getTxRejection(done.tx_id)).toBeFalsy();
       expect(n0.dag.getTxRejection(queued.tx_id)).toBeFalsy();
+      expect(n0.dag.getTxRejection(peers.tx_id)).toBeFalsy();
       // The next sweep starts where this one ended: nothing is recorded twice.
       expect(n0.bullshark._recordUnorderedBeforePrune(10)).toBe(0);
     } finally {

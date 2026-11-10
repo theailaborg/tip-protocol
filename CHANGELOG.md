@@ -90,18 +90,28 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   round, and peers had moved on before the certificate arrived). The mempool was
   empty, no `tx_rejections` row existed, and cert GC deleted it later. Seen live on
   2026-11-10: two REGISTER_CONTENT txs returned a CTID that then stayed 404.
-- Own-chain link: when a node produced nothing at round-1, its next certificate also
-  links its own last certificate (at most 12 rounds back), so peers can reach it.
-  Verification has no rule on parent rounds, so older nodes accept these unchanged.
-- Requeue: an own certificate whose txs are still uncommitted 30 rounds after sealing
-  puts them back at the front of the mempool. 30 rounds is past the point where any
-  new link to that certificate can appear, so a tx can never be ordered twice in one
-  anchor. Commit-handler already skips a tx already in the DAG.
-- No silent loss: after 3 requeues, or when cert GC is about to prune a certificate
-  holding a tx that was never committed or rejected, the node writes a
-  `sealed_never_committed` rejection row (node-local, not in the state root).
-- New counters on `/v1/stats` consensus: `own_cert_gap_links`, `sealed_txs_requeued`,
-  `sealed_txs_given_up`, `gc_unordered_txs_recorded`, and `sealedAwaitingCommit`.
+- Requeue (from `SEALED_REQUEUE_ACTIVATION_MS`, 2026-11-17 12:00 UTC, plus a
+  10-minute clock margin; override `TIP_SEALED_REQUEUE_ACTIVATION_MS`, test cluster
+  only): a node tracks its own certificates that carry txs, and 30 rounds after
+  sealing puts any tx still not committed or rejected back at the front of its
+  mempool, up to 3 times per tx.
+- In-anchor dedup (new commit rule, same activation, judged on the anchor's BFT
+  time): commit-handler processes a tx_id at most once per anchor. The original can
+  still be ordered after a requeue (for example after a stall), and a second copy
+  would otherwise run its derived-state effects twice. Before the activation nothing
+  is requeued and nothing changes at commit. Every node, partners included, runs
+  2.9.7 before the activation.
+- No silent loss: just before cert GC prunes, the node records every tx in its own
+  certificates there that was never committed or rejected as
+  `sealed_never_committed` (node-local `tx_rejections`, not in the state root). Live
+  from the upgrade; recorded only when the tx can no longer commit.
+- Certificate parents are unchanged (round-1 only): linking older certificates was
+  considered and left out, since a peer missing one would set our certificates aside
+  and catch-up pulls only from its committed round.
+- Counters: `sealed_txs_requeued`, `sealed_requeue_budget_spent`,
+  `sealed_requeue_before_activation`, `sealedAwaitingCommit` (narwhal),
+  `gc_unordered_txs_recorded` (bullshark), `in_anchor_duplicates_skipped`
+  (commit-handler), also on `/metrics`.
 
 **Node 2.9.4: exact-hash lookups no longer walk every record**
 - `getContentByHash` on the in-memory store (the Postgres mirror on every
