@@ -4,7 +4,7 @@ const {
   shake256, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
-const { nowMs, toIso } = require("../../../shared/time");
+const { nowMs, toIso, utcMonth } = require("../../../shared/time");
 const { TX_TYPES, TIP_ID_TYPES, ORIGIN, ORIGIN_LABELS, ORIGIN_BASIS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES, REGISTER_CREDIT, PARENT_URL_LOOKUP } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
@@ -90,6 +90,47 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         "document_pages_exceed_plan",
         { pages: answer.pages, max_pages: answer.max_pages });
     }
+  }
+
+  // Emails this signer signed in the UTC calendar month holding `atMs`: the
+  // committed ones from the same monthly summary My Content shows, plus the
+  // email registrations still waiting in this node's mempool.
+  function _emailsThisMonth(signerTipId, atMs) {
+    const { key: month, startMs: start } = utcMonth(atMs);
+    let committed = 0;
+    if (typeof dag.summarizeContent === "function") {
+      const m = (dag.summarizeContent({ author: signerTipId, tz: "UTC" }).months || []).find(x => x.month === month);
+      committed = m ? (m.emails || 0) : 0;
+    }
+    let pending = 0;
+    if (typeof dag.getMempoolTxsByTipId === "function") {
+      for (const t of dag.getMempoolTxsByTipId(signerTipId)) {
+        // A tx that already committed is counted above; never twice.
+        if (t.tx_type === TX_TYPES.REGISTER_CONTENT && t.data && contentRegisterSchema.isEmailExtras(t.data.extras)
+            && Number(t.timestamp) >= start && !(typeof dag.getContent === "function" && dag.getContent(t.data.ctid))) pending++;
+      }
+    }
+    return committed + pending;
+  }
+
+  // Signed emails a month by plan (founder, 2026-11-13: Free 100, Plus 500,
+  // Pro 1,000, Max 5,000, a commercial licence 5,000). The allowance comes
+  // from the operator's billing service; the count from this node's own
+  // records. Asked only for an email; an unreachable billing service, or one
+  // whose limits have not started, lets it through.
+  async function _checkEmailSigns(extras, signerTipId, atMs) {
+    if (!mediaQuota || !mediaQuota.enabled || typeof mediaQuota.checkEmailSigns !== "function") return;
+    if (!contentRegisterSchema.isEmailExtras(extras)) return;
+    const answer = await mediaQuota.checkEmailSigns({ tip_id: signerTipId });
+    if (!answer || answer.enforced !== true || typeof answer.limit !== "number") return;
+    const used = _emailsThisMonth(signerTipId, atMs);
+    if (used < answer.limit) return;
+    const resetsAt = Math.floor(utcMonth(atMs).nextStartMs / 1000);
+    throw schemaError(429,
+      `This TIP-ID has signed ${answer.limit.toLocaleString("en-US")} emails this month, all that its plan includes. ` +
+      "The count starts again on the 1st, or choose a plan with more emails at vp.theailab.org/plans.",
+      "email_sign_limit",
+      { used, limit: answer.limit, resets_at: resetsAt, upgrade_url: answer.upgrade_url || "https://vp.theailab.org/plans#personal" });
   }
 
   // Enqueue the prescan job for the worker. The job payload carries
@@ -450,6 +491,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // fingerprints a document this long, so nobody can probe plans unsigned.
     // Before the website reservation, which counts the page.
     await _checkDocumentPages(body.fingerprints, signer_tip_id);
+
+    // Signed emails a UTC month by plan (node 2.9.8). Same place and reason
+    // as the page check: signed and registrable first, so plans cannot be probed.
+    await _checkEmailSigns(canonicalPayload.extras, signer_tip_id, registeredAt);
 
     // Last gate before the tx exists: every check that can refuse for free
     // has passed, so a counted page is one that is about to register.

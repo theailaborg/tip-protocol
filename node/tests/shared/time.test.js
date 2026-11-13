@@ -14,7 +14,23 @@
 
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
-const { nowMs, nowIso, nowPlusMs, toIso, fromIso, isValidMs, MS_FLOOR_2025_01_01_UTC } = require(path.join(SHARED, "time"));
+const { nowMs, nowIso, nowPlusMs, toIso, fromIso, isValidMs, utcMonth, MS_FLOOR_2025_01_01_UTC } = require(path.join(SHARED, "time"));
+
+describe("time, utcMonth (node 2.9.8 monthly allowances)", () => {
+  test("the month key and its UTC start and next start", () => {
+    expect(utcMonth(Date.UTC(2026, 10, 30, 23, 59, 59, 999))).toEqual({
+      key: "2026-11", startMs: Date.UTC(2026, 10, 1), nextStartMs: Date.UTC(2026, 11, 1),
+    });
+    expect(utcMonth(Date.UTC(2026, 11, 1))).toEqual({
+      key: "2026-12", startMs: Date.UTC(2026, 11, 1), nextStartMs: Date.UTC(2027, 0, 1),
+    });
+    expect(utcMonth(Date.UTC(2028, 1, 29, 12)).key).toBe("2028-02");
+  });
+  test("rejects a non-number", () => {
+    expect(() => utcMonth("2026-11-01")).toThrow(TypeError);
+    expect(() => utcMonth(NaN)).toThrow(TypeError);
+  });
+});
 
 describe("nowMs", () => {
   test("returns an integer in the plausible 2025+ range", () => {
