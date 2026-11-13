@@ -11,6 +11,24 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.9.8: signed emails a month by plan**
+- Before an email registration is written, the node asks the operator's billing
+  service how many emails the signer may sign in a UTC calendar month
+  (`POST /api/email-signs/check`, the same `X-TIP-Quota-Key` as the media quota and
+  document page checks) and counts the signer's emails that month from its own
+  records (the `include=summary` month counts) plus its mempool. At or over the
+  allowance, once the service says the limit applies, it refuses with `429
+  email_sign_limit` and `{ used, limit, resets_at, upgrade_url }`, before any tx
+  exists. The count starts again at 00:00 UTC on the 1st.
+- Asked only for an email, and only after the signature and every free check pass,
+  so a plan cannot be probed unsigned. Posts are never counted.
+- Fails open: an unreachable, slow or older billing service, or one whose limits
+  have not started (`enforced: false`), lets the email through.
+- API time only. Nothing about a tx, its hash or consensus changes, so no
+  activation is needed and a node without the billing key behaves as before.
+- The AI Lab's allowances (founder, 2026-11-13): Free 100, Plus 500, Pro 1,000,
+  Max 5,000, a commercial licence 5,000, enforced from 2026-12-14.
+
 **Node 2.9.6: My Content sections, dates and search on the content list**
 - `GET /v1/content` takes `kind` (`email` or `post`), `from` and `to` (registered_at
   range in ms) and `q` (search over the CTID, registered URLs and the public title,

@@ -87,4 +87,20 @@ function isValidMs(v) {
     && v <= Number.MAX_SAFE_INTEGER;
 }
 
-module.exports = { nowMs, nowIso, nowPlusMs, toIso, fromIso, isValidMs, MS_FLOOR_2025_01_01_UTC };
+// The UTC calendar month holding `ms`: { key: "YYYY-MM", startMs, nextStartMs }.
+// Monthly allowances (signed emails, node 2.9.8) start again at 00:00 UTC on the 1st.
+function utcMonth(ms) {
+  if (!Number.isFinite(ms)) {
+    throw new TypeError(`utcMonth: expected finite number, got ${ms === null ? "null" : typeof ms}`);
+  }
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  return {
+    key: `${y}-${String(m + 1).padStart(2, "0")}`,
+    startMs: Date.UTC(y, m, 1),
+    nextStartMs: Date.UTC(y, m + 1, 1),
+  };
+}
+
+module.exports = { nowMs, nowIso, nowPlusMs, toIso, fromIso, isValidMs, utcMonth, MS_FLOOR_2025_01_01_UTC };

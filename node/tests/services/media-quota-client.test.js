@@ -193,3 +193,44 @@ describe("media-quota-client checkDocPages", () => {
     expect(await c.check({ tip_id: TIP, content_hash: HASH, size: 1 })).toMatchObject({ allowed: false, stale: true });
   });
 });
+
+describe("media-quota-client checkEmailSigns", () => {
+  const ANSWER = { limit: 100, enforced: true, from: "2026-12-14", month: "2026-12", resets_at: 1798761600,
+                   upgrade_url: "https://vp.theailab.org/plans#personal", policy_url: "" };
+
+  test("disabled without a URL or key, and then answers null without calling out", async () => {
+    const f = _fetch([]);
+    for (const opts of [{ url: "", key: "k" }, { url: "https://vp.example", key: "" }]) {
+      const c = createMediaQuotaClient({ ...opts, fetch: f, log: quiet });
+      expect(await c.checkEmailSigns({ tip_id: TIP })).toBeNull();
+    }
+    expect(f.calls).toEqual([]);
+  });
+
+  test("posts { tip_id } to /api/email-signs/check with the key and returns the answer", async () => {
+    const f = _fetch([{ status: 200, body: ANSWER }]);
+    const c = createMediaQuotaClient({ url: "https://vp.example/", key: "secret-key", fetch: f, log: quiet });
+    expect(await c.checkEmailSigns({ tip_id: TIP })).toEqual(ANSWER);
+    expect(f.calls[0].url).toBe("https://vp.example/api/email-signs/check");
+    expect(f.calls[0].init.method).toBe("POST");
+    expect(f.calls[0].init.headers["X-TIP-Quota-Key"]).toBe("secret-key");
+    expect(f.calls[0].body).toEqual({ tip_id: TIP });
+  });
+
+  test("fails open: unreachable, a 404 from a VP without the endpoint, another error status, or a malformed answer is null", async () => {
+    const warned = [];
+    const log = { warn: (m) => warned.push(m), error() {} };
+    const f = _fetch([
+      new Error("ECONNREFUSED"),
+      { status: 404, body: { error: "not found" } },
+      { status: 503, body: { detail: "x" } },
+      { status: 200, body: { limit: "100", enforced: true } },
+      { status: 200, body: { limit: 100 } },
+    ]);
+    const c = createMediaQuotaClient({ url: "https://vp.example", key: "k", fetch: f, log });
+    for (let i = 0; i < 5; i++) expect(await c.checkEmailSigns({ tip_id: TIP })).toBeNull();
+    expect(warned).toHaveLength(5);
+    expect(warned[0]).toContain("email-signs check unavailable");
+    expect(warned[1]).toContain("HTTP 404");
+  });
+});
