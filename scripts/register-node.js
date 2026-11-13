@@ -44,8 +44,10 @@
  *   --operated-by tip://id/...   Identity responsible for this node (optional)
  *   --operator-key-file ./x.json That identity's .tip.json; required with --operated-by,
  *                                since the operator must cosign the registration
+ *   --operator-key-phrase "w1 ... w12"  The 12-word recovery phrase the operator key file
+ *                                is locked with; required for a tip-key-export-v3 file
  *   --operator-key-date YYYY-MM-DD  Date the operator key file is locked with (an org's
- *                                incorporation date); required for a tip-key-export-v2 file
+ *                                incorporation date); required for an older tip-key-export-v2 file
  *
  * The generated .env is built from .env.example plus the flags above and
  * nothing else. It deliberately inherits no value from the operator's own
@@ -130,6 +132,7 @@ const partnerSlug = getArg("--partner", null);
 const operatedBy = getArg("--operated-by", null);
 const operatorKeyFile = getArg("--operator-key-file", null);
 const operatorKeyDate = getArg("--operator-key-date", null);
+const operatorKeyPhrase = getArg("--operator-key-phrase", null);
 const vpFile = getArg("--vp-file", null);
 const apiPort = parseInt(getArg("--port", "4100"), 10);   // API port for the new node
 const p2pPort = parseInt(getArg("--p2p-port", String(apiPort + 1)), 10);   // libp2p port; convention is API+1
@@ -302,7 +305,12 @@ async function main() {
       fail("--operator-key-date must be YYYY-MM-DD");
       process.exit(1);
     }
-    const opKeys = readKeyFile(path.resolve(operatorKeyFile), operatorKeyDate ? datePassword(operatorKeyDate) : null);
+    if (operatorKeyDate && operatorKeyPhrase) {
+      fail("pass --operator-key-phrase or --operator-key-date, not both");
+      process.exit(1);
+    }
+    const opSecret = operatorKeyPhrase || (operatorKeyDate ? datePassword(operatorKeyDate) : null);
+    const opKeys = readKeyFile(path.resolve(operatorKeyFile), opSecret);
     if (opKeys.tip_id && opKeys.tip_id !== operatedBy) {
       fail(`--operator-key-file is for ${opKeys.tip_id}, not ${operatedBy}`);
       process.exit(1);
