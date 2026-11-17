@@ -1166,7 +1166,7 @@ const URL_TAKEOVER_ACTIVATION_MS = 1794700800000; // 2026-11-15 00:00:00 UTC
 // Domain release. From this instant (judged at max(tx.timestamp, certificate
 // time)) UNBIND_DOMAIN commits only as the owner's signed release or after the
 // owner's TIP-ID is revoked; before it the original node-only rule replays.
-const DOMAIN_RELEASE_ACTIVATION_MS = 1797292800000; // 2026-12-15 00:00:00 UTC
+const DOMAIN_RELEASE_ACTIVATION_MS = 1794938400000; // 2026-11-17 18:00:00 UTC mainnet activation
 const DOMAIN_RELEASE = Object.freeze({
   ACTION: "domain_release",
   MAX_AGE_MS: 15 * 60 * 1000,   // a release signature this old is refused

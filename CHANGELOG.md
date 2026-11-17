@@ -11,8 +11,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-**Domain release: an owner gives a protected site up** (consensus change, activation
-`DOMAIN_RELEASE_ACTIVATION_MS`, 2026-12-15 00:00 UTC; every node must run it first)
+**Node 2.9.9: an owner gives a protected site up** (consensus change, activation
+`DOMAIN_RELEASE_ACTIVATION_MS`, 2026-11-17 18:00 UTC; every node, partners included, must
+run 2.9.9 before it)
 - `POST /v1/domain/release` with `{ domain, tip_id, released_at, signature }`. The
   owner signs `{ action: "domain_release", domain, released_at, tip_id }` (canonical
   JSON, ML-DSA-65, the same way as a domain claim) within 15 minutes of the request.
