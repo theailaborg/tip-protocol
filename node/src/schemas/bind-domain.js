@@ -153,7 +153,7 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
  * Returns { ok: true } on success, or
  * { ok: false, status, error, code } on any failure.
  */
-function verifyTx(tx, dag) {
+function verifyTx(tx, dag, opts = {}) {
   const d = tx.data || {};
 
   if (!d.node_id) {
@@ -182,6 +182,10 @@ function verifyTx(tx, dag) {
   if (!mayBindDomain(identity.tip_id_type, tx.timestamp)) {
     return { ok: false, status: 403, error: "Claimant TIP-ID is not an organization", code: "tip_id_not_authorised" };
   }
+
+  const at = Number.isFinite(opts.atMs) ? opts.atMs : Number(tx.timestamp);
+  const stale = registerDomainSchema.claimAfterRelease(dag, d.domain, d.claimed_at, at);
+  if (stale) return { ok: false, ...stale };
 
   // Cosignature verification runs in commit-handler via the cosignatures
   // dispatcher (calls getCosignatureContract below). Verify it here too
@@ -326,8 +330,8 @@ function signUnbind(payload, nodePrivateKeyHex, opts) {
  *   3. Domain has a current binding (otherwise unbind is a no-op /
  *      spurious)
  *   4. From the domain release activation: owner_revoked needs the owner's
- *      fresh signed release, tip_id_revoked a revoked owner; other reasons
- *      are refused.
+ *      fresh signed release, made after the current binding; tip_id_revoked a
+ *      revoked owner; other reasons are refused.
  */
 function verifyUnbindTx(tx, dag, opts = {}) {
   const d = tx.data || {};
@@ -370,6 +374,9 @@ function verifyUnbindTx(tx, dag, opts = {}) {
     }
     if (!isValidMs(d.released_at) || d.released_at > at + DOMAIN_RELEASE.SKEW_MS || at - d.released_at > DOMAIN_RELEASE.MAX_AGE_MS) {
       return { ok: false, status: 400, error: "The release must be signed within the last 15 minutes", code: "release_stale" };
+    }
+    if (d.released_at < registerDomainSchema.bindingFloor(existing)) {
+      return { ok: false, status: 409, error: `This release was signed before ${d.domain} was last bound; sign a new release`, code: "release_before_binding" };
     }
     const cosig = verifyCosignatures(tx, getUnbindCosignatureContract(tx), dag);
     if (!cosig.ok) return { ok: false, status: 403, error: cosig.error, code: cosig.code };

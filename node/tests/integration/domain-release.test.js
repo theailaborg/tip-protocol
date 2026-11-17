@@ -3,7 +3,8 @@
  * @description An owner gives a protected site up (POST /v1/domain/release),
  * and from the release activation UNBIND_DOMAIN commits only as the owner's
  * signed release (owner_revoked) or after the owner's TIP-ID is revoked
- * (tip_id_revoked); before it the original node-only rule replays.
+ * (tip_id_revoked); before it the original node-only rule replays. A release
+ * or claim copied from the chain cannot undo a later bind or release.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -69,13 +70,22 @@ function setup() {
   dag.saveVP({ vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green", public_key: "00", status: "active", registered_at: 1767225600000 });
   const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
   const submitted = [];
-  const domainService = createDomainService({ dag, config, submitTx: (tx) => submitted.push(tx) });
+  const domainService = createDomainService({ dag, config, submitTx: (tx) => submitted.push(tx), verifier: stubVerifier() });
   const handler = createCommitHandler({ dag, nodeId: NODE_ID });
   const keys = { owner: generateMLDSAKeypair(), other: generateMLDSAKeypair() };
   seedIdentity(dag, OWNER, keys.owner);
   seedIdentity(dag, OTHER, keys.other);
   bind(dag, SITE, OWNER);
   return { dag, nodeKp, domainService, handler, submitted, keys };
+}
+
+function stubVerifier() {
+  return {
+    verify: async (method, domain, tipId) => ({
+      verified: true, method: "dns", verified_at: nowMs(),
+      evidence: { url: null, body: null, txt: [`tip-id=${tipId}`] }, error: null,
+    }),
+  };
 }
 
 function bind(dag, domain, tipId, verifiedAt = nowMs()) {
@@ -100,6 +110,38 @@ function nodeUnbind(fx, { reason, ts, extra = {} }) {
 }
 
 const stateOf = (dag) => dag.getDomainBinding(SITE).binding_state;
+
+function claimBody(kp, { tipId = OWNER, claimedAt = nowMs() } = {}) {
+  const payload = registerDomainSchema.buildSigningPayload({ claimed_at: claimedAt, domain: SITE, method: "dns", tip_id: tipId });
+  return { domain: SITE, tip_id: tipId, method: "dns", claimed_at: claimedAt, signature: registerDomainSchema.sign(payload, kp.privateKey) };
+}
+
+// A BIND_DOMAIN as any active node could build it around a claim it has seen.
+function nodeBind(fx, claim, verifiedAt) {
+  const canon = bindDomainSchema.buildSigningPayload({
+    binding_state: "verified", claimed_at: claim.claimed_at, claimed_method: "dns", domain: SITE,
+    method: "dns", node_id: NODE_ID, tip_id: claim.tip_id, verified_at: verifiedAt,
+  });
+  const data = {
+    ...canon,
+    cosignatures: [{ signer_kind: SIGNED_BY_KIND.SUBJECT, signer_ref: claim.tip_id, signature: claim.signature }],
+    evidence: { url: null, body: null, txt: [`tip-id=${claim.tip_id}`] },
+  };
+  return withTxId({ tx_type: TX_TYPES.BIND_DOMAIN, timestamp: verifiedAt, data, signature: bindDomainSchema.sign(canon, fx.nodeKp.privateKey) }, fx.dag);
+}
+
+async function bindViaApi(fx, claim, round) {
+  fx.domainService.register(claim);
+  await fx.domainService.verify({ domain: SITE, tip_id: claim.tip_id });
+  expect(fx.handler.commitOrderedTxs(fx.submitted.splice(0), round, { certTimestamp: nowMs() }).committed).toBe(1);
+}
+
+function releaseAndCommit(fx, round, releasedAt = nowMs()) {
+  const body = releaseBody({ kp: fx.keys.owner, releasedAt });
+  fx.domainService.release(body);
+  expect(fx.handler.commitOrderedTxs(fx.submitted.splice(0), round, { certTimestamp: nowMs() }).committed).toBe(1);
+  return body;
+}
 
 describe("the owner releases a protected site", () => {
   test("release is proposed, commits, and the site is no longer protected", () => {
@@ -210,6 +252,63 @@ describe("from the activation, only the owner or a revocation unbinds", () => {
     });
     expect(fx.handler.commitOrderedTxs([tx], 10, { certTimestamp: nowMs() }).committed).toBe(0);
     expect(stateOf(fx.dag)).toBe("verified");
+  });
+});
+
+describe("a release or a claim copied from the chain cannot be replayed", () => {
+  test("an old release cannot remove the site once the owner binds it again", async () => {
+    const fx = setup();
+    bind(fx.dag, SITE, OWNER, nowMs() - 120_000);
+    const old = releaseAndCommit(fx, 10, nowMs() - 60_000);
+    await bindViaApi(fx, claimBody(fx.keys.owner, { claimedAt: nowMs() - 30_000 }), 11);
+    expect(stateOf(fx.dag)).toBe("verified");
+
+    expect(() => fx.domainService.release(old))
+      .toThrow(expect.objectContaining({ status: 409, code: "release_before_binding" }));
+    const byHand = nodeUnbind(fx, {
+      reason: DOMAIN_UNBIND_REASONS.OWNER_REVOKED, ts: nowMs(),
+      extra: { tip_id: OWNER, released_at: old.released_at, cosignatures: [{ signer_kind: SIGNED_BY_KIND.SUBJECT, signer_ref: OWNER, signature: old.signature }] },
+    });
+    expect(fx.handler.commitOrderedTxs([byHand], 12, { certTimestamp: nowMs() }).committed).toBe(0);
+    expect(stateOf(fx.dag)).toBe("verified");
+
+    releaseAndCommit(fx, 13);
+    expect(stateOf(fx.dag)).toBe("revoked");
+  });
+
+  test("an old claim cannot bind the site again after the owner releases it", async () => {
+    const fx = setup();
+    bind(fx.dag, SITE, OWNER, nowMs() - 120_000);
+    releaseAndCommit(fx, 10, nowMs() - 100_000);
+    const first = claimBody(fx.keys.owner, { claimedAt: nowMs() - 90_000 });
+    await bindViaApi(fx, first, 11);
+    releaseAndCommit(fx, 12);
+
+    expect(() => fx.domainService.register(first))
+      .toThrow(expect.objectContaining({ status: 409, code: "claim_before_release" }));
+    expect(fx.handler.commitOrderedTxs([nodeBind(fx, first, nowMs())], 13, { certTimestamp: nowMs() }).committed).toBe(0);
+    expect(stateOf(fx.dag)).toBe("revoked");
+
+    const fresh = claimBody(fx.keys.owner, { claimedAt: fx.dag.getDomainBinding(SITE).verified_at + 1 });
+    await bindViaApi(fx, fresh, 14);
+    expect(stateOf(fx.dag)).toBe("verified");
+  });
+
+  test("a claim dated ahead of the node's clock is still caught after the release", () => {
+    const fx = setup();
+    const ahead = claimBody(fx.keys.owner, { claimedAt: nowMs() + 30_000 });
+    fx.dag.saveDomainBinding({ ...fx.dag.getDomainBinding(SITE), claimed_at: ahead.claimed_at, verified_at: nowMs() - 1000, binding_state: "revoked" });
+    expect(() => fx.domainService.register(ahead))
+      .toThrow(expect.objectContaining({ status: 409, code: "claim_before_release" }));
+  });
+
+  test("before the activation a released site takes any valid claim", () => {
+    const fx = setup();
+    const row = fx.dag.getDomainBinding(SITE);
+    fx.dag.saveDomainBinding({ ...row, binding_state: "revoked" });
+    const tx = nodeBind(fx, claimBody(fx.keys.owner, { claimedAt: row.claimed_at - 1 }), RELEASE_GATE - 60_000);
+    expect(bindDomainSchema.verifyTx(tx, fx.dag, { atMs: RELEASE_GATE - 60_000 }).ok).toBe(true);
+    expect(bindDomainSchema.verifyTx(tx, fx.dag, { atMs: nowMs() })).toMatchObject({ ok: false, code: "claim_before_release" });
   });
 });
 

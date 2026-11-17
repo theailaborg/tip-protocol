@@ -1197,7 +1197,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // organization, user's claim_signature attestation still verifies.
         // GH #51 split — node binding signature is verified by the
         // unified dispatcher; this is the non-signature state piece.
-        const s = bindDomainSchema.verifyTx(tx, dag);
+        const s = bindDomainSchema.verifyTx(tx, dag, { atMs: _siteAt(now, certTimestamp) });
         return s.ok ? { valid: true } : { valid: false, error: s.error };
       }
 
@@ -1828,9 +1828,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         }
         break;
 
-      // UNBIND_DOMAIN reserved (revocation cascade or explicit owner
-      // revoke). No-op until the path is wired in v2 — having the case
-      // here keeps the switch exhaustive.
+      // The row stays as revoked: a later bind is judged against it (claimAfterRelease).
       case TX_TYPES.UNBIND_DOMAIN:
         if (d.domain) {
           const existing = dag.getDomainBinding(d.domain);

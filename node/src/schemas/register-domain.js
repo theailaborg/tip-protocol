@@ -33,11 +33,11 @@ const {
 } = require("./_common");
 const {
   TIP_ID_TYPES, DOMAIN_VERIFICATION_METHODS, DOMAIN_VERIFICATION_METHOD_VALUES,
-  DOMAIN_PENDING_CLAIM_TTL_MS,
+  DOMAIN_PENDING_CLAIM_TTL_MS, DOMAIN_BINDING_STATUS,
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
 } = require("../../../shared/constants");
 const { nowMs, isValidMs } = require("../../../shared/time");
-const { mayBindDomain } = require("../validators/website-gate");
+const { mayBindDomain, domainReleaseOn } = require("../validators/website-gate");
 
 // GH #51 — unified signature storage. Publisher signs the canonical
 // payload returned by buildSigningPayload.
@@ -126,6 +126,21 @@ function resolveClaimant(tipId, dag, atMs = nowMs()) {
  * Returns the resolved identity record (carries .public_key) so the route
  * doesn't re-fetch.
  */
+// Claim and release times come from the user's clock, which may run ahead of the
+// node's, so a binding's own claim can be later than its verified_at.
+function bindingFloor(binding) {
+  return Math.max(Number(binding.claimed_at) || 0, Number(binding.verified_at) || 0);
+}
+
+// From the release activation a released site takes only a claim signed after its
+// last binding: older claims are public on chain and would rebind it.
+function claimAfterRelease(dag, domain, claimedAt, atMs) {
+  if (!domainReleaseOn(atMs) || typeof dag.getDomainBinding !== "function") return null;
+  const b = dag.getDomainBinding(domain);
+  if (!b || b.binding_state === DOMAIN_BINDING_STATUS.VERIFIED || claimedAt > bindingFloor(b)) return null;
+  return { status: 409, error: `This claim was signed before ${domain} was released; sign a new claim`, code: "claim_before_release" };
+}
+
 function validateRequest(body, deps) {
   if (!body || typeof body !== "object") {
     throw schemaError(400, "request body is required", "body_invalid");
@@ -150,6 +165,8 @@ function validateRequest(body, deps) {
   const domain = normalizeDomain(body.domain);
 
   const identity = resolveClaimant(body.tip_id, deps.dag);
+  const stale = claimAfterRelease(deps.dag, domain, body.claimed_at, nowMs());
+  if (stale) throw schemaError(stale.status, stale.error, stale.code);
   return { identity, domain, method };
 }
 
@@ -205,6 +222,8 @@ function validateVerifyRequest(body, deps) {
   // claimant no longer qualifies (revoked or somehow flipped to personal
   // between /register and /verify).
   const identity = resolveClaimant(claim.tip_id, deps.dag);
+  const stale = claimAfterRelease(deps.dag, domain, claim.claimed_at, nowMs());
+  if (stale) throw schemaError(stale.status, stale.error, stale.code);
 
   // Method resolution: caller-supplied override > claim's stored method >
   // canonical default. Validate against the enum so a bad value fails fast.
@@ -265,6 +284,8 @@ module.exports = {
   normalizeDomain,
   isValidDomain,
   resolveClaimant,
+  bindingFloor,
+  claimAfterRelease,
   validateRequest,
   validateVerifyRequest,
   buildSigningPayload,

@@ -22,9 +22,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   protected and whoever proves control can bind it again.
 - New commit rule, judged at max(tx.timestamp, certificate time) so a backdated tx
   cannot skip it:
-  - `owner_revoked` commits only with a fresh release signed by the binding's owner;
+  - `owner_revoked` commits only with a fresh release signed by the binding's owner
+    after the current binding (`409 release_before_binding` otherwise), so a release
+    copied from the chain cannot remove the site once it is bound again;
   - `tip_id_revoked` commits only if the owner's TIP-ID is revoked;
   - other reasons are refused.
+  - a released site takes only a claim signed after its last binding (`409
+    claim_before_release` at register, verify and commit), so a claim copied from
+    the chain cannot bind it again. "After" means later than both the binding's
+    `claimed_at` and `verified_at`, since claim and release times come from the
+    user's clock.
   Before the activation the original rule replays unchanged.
 - `UNBIND_DOMAIN` gains the optional signed fields `released_at` and `tip_id`. They
   are absent from older unbinds, so the signed bytes of those are unchanged.
