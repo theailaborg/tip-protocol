@@ -301,7 +301,10 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNED_BY: SIGNED_BY_KIND.NODE,
     buildSigningPayload: (data) => buildSignedPayload(data, {
       required: ["domain", "node_id", "reason", "revoked_at"],
+      optional: ["released_at", "tip_id"],
     }),
+    // owner_revoked: the owner's signed release rides as a cosignature.
+    getCosignatureContract: (tx) => require("./bind-domain").getUnbindCosignatureContract(tx),
   },
 });
 

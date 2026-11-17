@@ -1203,9 +1203,10 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
 
       case TX_TYPES.UNBIND_DOMAIN: {
         // Schema's verifyUnbindTx checks emitting node is active, payload
-        // shape, and that the domain has a current binding to unbind. Node
-        // signature itself is verified by the unified dispatcher.
-        const s = bindDomainSchema.verifyUnbindTx(tx, dag);
+        // shape, and that the domain has a current binding to unbind; from
+        // the release activation, who may unbind. Node signature and the
+        // owner's release cosignature are verified by the unified dispatcher.
+        const s = bindDomainSchema.verifyUnbindTx(tx, dag, { atMs: _siteAt(Number(tx.timestamp), certTimestamp) });
         return s.ok ? { valid: true } : { valid: false, error: s.error };
       }
 

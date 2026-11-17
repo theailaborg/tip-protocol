@@ -11,6 +11,24 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Domain release: an owner gives a protected site up** (consensus change, activation
+`DOMAIN_RELEASE_ACTIVATION_MS`, 2026-12-15 00:00 UTC; every node must run it first)
+- `POST /v1/domain/release` with `{ domain, tip_id, released_at, signature }`. The
+  owner signs `{ action: "domain_release", domain, released_at, tip_id }` (canonical
+  JSON, ML-DSA-65, the same way as a domain claim) within 15 minutes of the request.
+  The node checks the owner and the signature, then emits `UNBIND_DOMAIN` with
+  `reason: owner_revoked`, carrying the release as a cosignature (`signer_kind:
+  subject`). On commit the binding becomes `revoked`: the site stops being
+  protected and whoever proves control can bind it again.
+- New commit rule, judged at max(tx.timestamp, certificate time) so a backdated tx
+  cannot skip it:
+  - `owner_revoked` commits only with a fresh release signed by the binding's owner;
+  - `tip_id_revoked` commits only if the owner's TIP-ID is revoked;
+  - other reasons are refused.
+  Before the activation the original rule replays unchanged.
+- `UNBIND_DOMAIN` gains the optional signed fields `released_at` and `tip_id`. They
+  are absent from older unbinds, so the signed bytes of those are unchanged.
+
 **Node 2.9.8: signed emails a month by plan**
 - Before an email registration is written, the node asks the operator's billing
   service how many emails the signer may sign in a UTC calendar month

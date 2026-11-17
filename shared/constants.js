@@ -1163,6 +1163,16 @@ const WEBSITE_PROTECTION_ACTIVATION_MS = 1793491200000; // 2026-11-01 00:00:00 U
 // its CTID but loses the address. Same consensus discipline as above.
 const URL_TAKEOVER_ACTIVATION_MS = 1794700800000; // 2026-11-15 00:00:00 UTC
 
+// Domain release. From this instant (judged at max(tx.timestamp, certificate
+// time)) UNBIND_DOMAIN commits only as the owner's signed release or after the
+// owner's TIP-ID is revoked; before it the original node-only rule replays.
+const DOMAIN_RELEASE_ACTIVATION_MS = 1797292800000; // 2026-12-15 00:00:00 UTC
+const DOMAIN_RELEASE = Object.freeze({
+  ACTION: "domain_release",
+  MAX_AGE_MS: 15 * 60 * 1000,   // a release signature this old is refused
+  SKEW_MS: 60 * 1000,           // and this far ahead (client clock skew)
+});
+
 // Registered again. Copies of someone's content (same normalized
 // content_hash, by an unconnected TIP-ID) registered from this instant tell
 // the first author in their Inbox. Read side only, not consensus: nodes on
@@ -1335,6 +1345,8 @@ module.exports = {
   ADJUDICATION_PERSONAL_ONLY_ACTIVATION_MS,
   WEBSITE_PROTECTION_ACTIVATION_MS,
   URL_TAKEOVER_ACTIVATION_MS,
+  DOMAIN_RELEASE_ACTIVATION_MS,
+  DOMAIN_RELEASE,
   REGISTERED_AGAIN_ACTIVATION_MS,
   SHARED_HOST_DOMAINS,
   PRESCAN_REVIEW_CAP,
