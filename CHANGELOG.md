@@ -11,6 +11,32 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.9.9: an owner gives a protected site up** (consensus change, activation
+`DOMAIN_RELEASE_ACTIVATION_MS`, 2026-11-17 18:00 UTC; every node, partners included, must
+run 2.9.9 before it)
+- `POST /v1/domain/release` with `{ domain, tip_id, released_at, signature }`. The
+  owner signs `{ action: "domain_release", domain, released_at, tip_id }` (canonical
+  JSON, ML-DSA-65, the same way as a domain claim) within 15 minutes of the request.
+  The node checks the owner and the signature, then emits `UNBIND_DOMAIN` with
+  `reason: owner_revoked`, carrying the release as a cosignature (`signer_kind:
+  subject`). On commit the binding becomes `revoked`: the site stops being
+  protected and whoever proves control can bind it again.
+- New commit rule, judged at max(tx.timestamp, certificate time) so a backdated tx
+  cannot skip it:
+  - `owner_revoked` commits only with a fresh release signed by the binding's owner
+    after the current binding (`409 release_before_binding` otherwise), so a release
+    copied from the chain cannot remove the site once it is bound again;
+  - `tip_id_revoked` commits only if the owner's TIP-ID is revoked;
+  - other reasons are refused.
+  - a released site takes only a claim signed after its last binding (`409
+    claim_before_release` at register, verify and commit), so a claim copied from
+    the chain cannot bind it again. "After" means later than both the binding's
+    `claimed_at` and `verified_at`, since claim and release times come from the
+    user's clock.
+  Before the activation the original rule replays unchanged.
+- `UNBIND_DOMAIN` gains the optional signed fields `released_at` and `tip_id`. They
+  are absent from older unbinds, so the signed bytes of those are unchanged.
+
 **Node 2.9.8: signed emails a month by plan**
 - Before an email registration is written, the node asks the operator's billing
   service how many emails the signer may sign in a UTC calendar month

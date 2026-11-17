@@ -51,12 +51,12 @@ const DOMAIN_SPEC = Object.freeze({
 const {
   TX_TYPES, TIP_ID_TYPES,
   DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHOD_VALUES,
-  DOMAIN_UNBIND_REASON_VALUES,
+  DOMAIN_UNBIND_REASON_VALUES, DOMAIN_UNBIND_REASONS, DOMAIN_RELEASE,
   SIGNATURE_SCOPE, SIGNED_BY_KIND,
 } = require("../../../shared/constants");
 const { isValidMs } = require("../../../shared/time");
 const registerDomainSchema = require("./register-domain");
-const { mayBindDomain } = require("../validators/website-gate");
+const { mayBindDomain, domainReleaseOn } = require("../validators/website-gate");
 
 const TX_TYPE = TX_TYPES.BIND_DOMAIN;
 
@@ -153,7 +153,7 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
  * Returns { ok: true } on success, or
  * { ok: false, status, error, code } on any failure.
  */
-function verifyTx(tx, dag) {
+function verifyTx(tx, dag, opts = {}) {
   const d = tx.data || {};
 
   if (!d.node_id) {
@@ -182,6 +182,10 @@ function verifyTx(tx, dag) {
   if (!mayBindDomain(identity.tip_id_type, tx.timestamp)) {
     return { ok: false, status: 403, error: "Claimant TIP-ID is not an organization", code: "tip_id_not_authorised" };
   }
+
+  const at = Number.isFinite(opts.atMs) ? opts.atMs : Number(tx.timestamp);
+  const stale = registerDomainSchema.claimAfterRelease(dag, d.domain, d.claimed_at, at);
+  if (stale) return { ok: false, ...stale };
 
   // Cosignature verification runs in commit-handler via the cosignatures
   // dispatcher (calls getCosignatureContract below). Verify it here too
@@ -225,11 +229,14 @@ function getCosignatureContract(tx) {
 // emitting node; replicating nodes verify the node sig and the canonical
 // rebuild, same pattern as BIND_DOMAIN.
 //
-// Canonical 4-field signed payload (alphabetical):
-//   domain     string,  required (lowercased)
-//   node_id    string,  required (emitting node)
-//   reason     string,  required (enum: see DOMAIN_UNBIND_REASONS)
-//   revoked_at number,  required (epoch ms)
+// Canonical signed payload (alphabetical):
+//   domain      string,  required (lowercased)
+//   node_id     string,  required (emitting node)
+//   reason      string,  required (enum: see DOMAIN_UNBIND_REASONS)
+//   released_at number,  optional (owner_revoked: when the owner signed)
+//   revoked_at  number,  required (epoch ms)
+//   tip_id      string,  optional (owner_revoked: the releasing owner)
+// The optional fields are absent from older unbinds, so their bytes are unchanged.
 function buildUnbindSigningPayload(input) {
   if (!input || typeof input !== "object") {
     throw schemaError(400, "input must be an object", "input_invalid");
@@ -251,12 +258,61 @@ function buildUnbindSigningPayload(input) {
       "reason_invalid",
     );
   }
-  return {
+  if (input.released_at !== undefined && input.released_at !== null && !isValidMs(input.released_at)) {
+    throw schemaError(400, "released_at must be a valid epoch ms timestamp", "released_at_invalid");
+  }
+  if (input.tip_id !== undefined && input.tip_id !== null && (typeof input.tip_id !== "string" || !input.tip_id)) {
+    throw schemaError(400, "tip_id must be a non-empty string", "tip_id_invalid");
+  }
+  const out = {
     domain: input.domain,
     node_id: input.node_id,
     reason: input.reason,
     revoked_at: input.revoked_at,
   };
+  if (input.released_at !== undefined && input.released_at !== null) out.released_at = input.released_at;
+  if (input.tip_id !== undefined && input.tip_id !== null) out.tip_id = input.tip_id;
+  return out;
+}
+
+// The owner's release, carried as a cosignature on an owner_revoked unbind.
+// The action keeps it from ever verifying as a domain claim.
+function buildReleaseSigningPayload(input) {
+  if (!input || typeof input !== "object") {
+    throw schemaError(400, "input must be an object", "input_invalid");
+  }
+  if (typeof input.domain !== "string" || input.domain.length === 0) {
+    throw schemaError(400, "domain is required", "domain_required");
+  }
+  assertBounded(input.domain, DOMAIN_SPEC);
+  if (!isValidMs(input.released_at)) {
+    throw schemaError(400, "released_at must be a valid epoch ms timestamp", "released_at_invalid");
+  }
+  if (typeof input.tip_id !== "string" || input.tip_id.length === 0) {
+    throw schemaError(400, "tip_id is required", "tip_id_required");
+  }
+  return {
+    action: DOMAIN_RELEASE.ACTION,
+    domain: input.domain,
+    released_at: input.released_at,
+    tip_id: input.tip_id,
+  };
+}
+
+function signRelease(payload, privateKeyHex, opts) {
+  return signPayload(payload, privateKeyHex, opts);
+}
+
+// Required whenever an owner_revoked unbind names its owner, at any time:
+// gating it on tx.timestamp would let a backdated tx skip the owner's check.
+function getUnbindCosignatureContract(tx) {
+  const d = tx?.data || {};
+  if (d.reason !== DOMAIN_UNBIND_REASONS.OWNER_REVOKED || !d.tip_id) return [];
+  return [{
+    kind: SIGNED_BY_KIND.SUBJECT,
+    ref: d.tip_id,
+    body: buildReleaseSigningPayload({ domain: d.domain, released_at: d.released_at, tip_id: d.tip_id }),
+  }];
 }
 
 function signUnbind(payload, nodePrivateKeyHex, opts) {
@@ -273,8 +329,11 @@ function signUnbind(payload, nodePrivateKeyHex, opts) {
  *   2. Canonical payload shape rebuilds deterministically
  *   3. Domain has a current binding (otherwise unbind is a no-op /
  *      spurious)
+ *   4. From the domain release activation: owner_revoked needs the owner's
+ *      fresh signed release, made after the current binding; tip_id_revoked a
+ *      revoked owner; other reasons are refused.
  */
-function verifyUnbindTx(tx, dag) {
+function verifyUnbindTx(tx, dag, opts = {}) {
   const d = tx.data || {};
 
   if (!d.node_id) {
@@ -301,7 +360,38 @@ function verifyUnbindTx(tx, dag) {
     return { ok: false, status: 404, error: `No binding to unbind for ${d.domain}`, code: "domain_not_found" };
   }
 
-  return { ok: true };
+  // opts.atMs: the commit's max(tx.timestamp, certificate time), so a backdated
+  // tx is judged by the new rule; the API passes its own now.
+  const at = Number.isFinite(opts.atMs) ? opts.atMs : Number(tx.timestamp);
+  if (!domainReleaseOn(at)) return { ok: true };
+
+  if (d.reason === DOMAIN_UNBIND_REASONS.OWNER_REVOKED) {
+    if (existing.binding_state !== DOMAIN_BINDING_STATUS.VERIFIED) {
+      return { ok: false, status: 409, error: `${d.domain} is not bound`, code: "domain_not_bound" };
+    }
+    if (!d.tip_id || d.tip_id !== existing.tip_id) {
+      return { ok: false, status: 403, error: `Only the owner of ${d.domain} can release it`, code: "not_domain_owner" };
+    }
+    if (!isValidMs(d.released_at) || d.released_at > at + DOMAIN_RELEASE.SKEW_MS || at - d.released_at > DOMAIN_RELEASE.MAX_AGE_MS) {
+      return { ok: false, status: 400, error: "The release must be signed within the last 15 minutes", code: "release_stale" };
+    }
+    if (d.released_at < registerDomainSchema.bindingFloor(existing)) {
+      return { ok: false, status: 409, error: `This release was signed before ${d.domain} was last bound; sign a new release`, code: "release_before_binding" };
+    }
+    const cosig = verifyCosignatures(tx, getUnbindCosignatureContract(tx), dag);
+    if (!cosig.ok) return { ok: false, status: 403, error: cosig.error, code: cosig.code };
+    return { ok: true };
+  }
+  if (d.reason === DOMAIN_UNBIND_REASONS.TIP_ID_REVOKED) {
+    const revoked = typeof dag.isRevoked === "function"
+      ? dag.isRevoked(existing.tip_id)
+      : dag.getIdentity(existing.tip_id)?.status === "revoked";
+    if (!revoked) {
+      return { ok: false, status: 409, error: `The owner of ${d.domain} is not revoked`, code: "owner_not_revoked" };
+    }
+    return { ok: true };
+  }
+  return { ok: false, status: 409, error: `Unbind reason ${d.reason} is not accepted`, code: "unbind_reason_not_accepted" };
 }
 
 module.exports = {
@@ -310,8 +400,10 @@ module.exports = {
   BIND_DOMAIN_STATES,
   buildSigningPayload,
   buildUnbindSigningPayload,
+  buildReleaseSigningPayload,
   sign,
   signUnbind,
+  signRelease,
   verifySignature,
   verifyTx,
   verifyUnbindTx,
@@ -321,4 +413,5 @@ module.exports = {
   SIGNED_BY,
   // Cosignatures contract (user's claim sig)
   getCosignatureContract,
+  getUnbindCosignatureContract,
 };

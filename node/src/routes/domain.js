@@ -19,6 +19,10 @@ function createRouter({ domainService }) {
     res.status(out.renewed ? 202 : 200).json(out);
   }));
 
+  router.post("/domain/release", asyncHandler(async (req, res) => {
+    res.status(202).json(domainService.release(req.body));
+  }));
+
   router.get("/domains", asyncHandler((req, res) => {
     res.json(domainService.listByTip(req.query.tip_id));
   }));

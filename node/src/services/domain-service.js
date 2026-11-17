@@ -25,9 +25,10 @@ const {
   TX_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHODS,
   DOMAIN_DNS_TXT_PREFIX, DOMAIN_WELL_KNOWN_PATH,
   SIGNED_BY_KIND, DOMAIN_VERIFICATION_METHOD_VALUES,
+  DOMAIN_UNBIND_REASONS, DOMAIN_RELEASE,
 } = require("../../../shared/constants");
 const DOMAIN_VERIFICATION_METHOD_VALUES_LIST = [...DOMAIN_VERIFICATION_METHOD_VALUES];
-const { nowMs } = require("../../../shared/time");
+const { nowMs, isValidMs, toIso } = require("../../../shared/time");
 const registerDomainSchema = require("../schemas/register-domain");
 const bindDomainSchema = require("../schemas/bind-domain");
 const { schemaError } = require("../schemas/_common");
@@ -35,7 +36,7 @@ const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
 const domainVerifier = require("../domain/verifier");
-const { websiteProtectionOn } = require("../validators/website-gate");
+const { websiteProtectionOn, domainReleaseOn, RELEASE_MS } = require("../validators/website-gate");
 const { log } = require("../logger");
 
 /**
@@ -375,6 +376,54 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier,
     return { ...out, renewed: true };
   }
 
+  // ── POST /v1/domain/release ──────────────────────────────────────────
+  // The owner gives the site up. Their signed release (bind-domain
+  // buildReleaseSigningPayload) rides as a cosignature on a node-emitted
+  // UNBIND_DOMAIN (owner_revoked); every node checks it again at commit.
+  function release(body) {
+    const domain = registerDomainSchema.normalizeDomain(body && body.domain);
+    const tipId = body && body.tip_id;
+    const releasedAt = body && body.released_at;
+    if (typeof tipId !== "string" || !tipId) throw schemaError(400, "tip_id is required", "tip_id_required");
+    if (typeof body.signature !== "string" || !body.signature) throw schemaError(400, "signature is required", "signature_required");
+    const now = nowMs();
+    if (!domainReleaseOn(now)) {
+      throw schemaError(409, `Releasing a website opens on ${toIso(RELEASE_MS)}`, "domain_release_not_open");
+    }
+    const binding = dag.getDomainBinding(domain);
+    if (!binding || binding.binding_state !== DOMAIN_BINDING_STATUS.VERIFIED) {
+      throw schemaError(404, `No binding to release for ${domain}`, "domain_not_found");
+    }
+    if (binding.tip_id !== tipId) throw schemaError(403, `Only the owner of ${domain} can release it`, "not_domain_owner");
+    if (!isValidMs(releasedAt) || releasedAt > now + DOMAIN_RELEASE.SKEW_MS || now - releasedAt > DOMAIN_RELEASE.MAX_AGE_MS) {
+      throw schemaError(400, "The release must be signed within the last 15 minutes", "release_stale");
+    }
+    if (!config.nodePrivateKey) throw schemaError(500, "Node missing private key: cannot sign the unbind", "node_unconfigured");
+    const nodeId = config.nodeRegisteredId || config.nodeId;
+    if (!nodeId) throw schemaError(500, "Node id not configured", "node_unconfigured");
+
+    const data = {
+      domain,
+      node_id: nodeId,
+      reason: DOMAIN_UNBIND_REASONS.OWNER_REVOKED,
+      released_at: releasedAt,
+      revoked_at: now,
+      tip_id: tipId,
+      cosignatures: [{ signer_kind: SIGNED_BY_KIND.SUBJECT, signer_ref: tipId, signature: body.signature }],
+    };
+    const signature = bindDomainSchema.signUnbind(bindDomainSchema.buildUnbindSigningPayload(data), config.nodePrivateKey);
+    const signedTx = withTxId({ tx_type: TX_TYPES.UNBIND_DOMAIN, timestamp: now, data, signature }, dag);
+
+    const validation = validateTransaction(signedTx, dag, { skipState: true });
+    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
+    const state = bindDomainSchema.verifyUnbindTx(signedTx, dag, { atMs: now });
+    if (!state.ok) throw schemaError(state.status || 400, state.error, state.code);
+
+    submitTx(signedTx);
+    log.info(`Domain release proposed: ${domain} by ${tipId} (tx: ${signedTx.tx_id.slice(0, 16)})`);
+    return { domain, tip_id: tipId, released: true, tx_id: signedTx.tx_id, confirmation: "proposed" };
+  }
+
   // ── GET /v1/domains?tip_id= ──────────────────────────────────────────
   // Every site a TIP-ID has bound, in the same public shape as GET
   // /v1/domain/:domain. Bindings are public DAG state already.
@@ -397,6 +446,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier,
     register,
     verify,
     renew,
+    release,
     get,
     listByTip,
   };

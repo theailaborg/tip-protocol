@@ -88,7 +88,7 @@ const SCHEMA = {
     required: ["domain", "node_id", "reason", "revoked_at"],
     types: {
       domain: "string", node_id: "string", reason: "string",
-      revoked_at: "number",
+      revoked_at: "number", released_at: "number", tip_id: "string",
     },
   },
   // Org roster: each wire shape is exactly the signed canonical body
@@ -477,6 +477,12 @@ function validateBusinessRules(tx, dag = null) {
       }
       if (d.revoked_at !== undefined && !isValidMs(d.revoked_at)) {
         errors.push(`revoked_at must be a valid epoch ms timestamp`);
+      }
+      if (d.released_at !== undefined && !isValidMs(d.released_at)) {
+        errors.push(`released_at must be a valid epoch ms timestamp`);
+      }
+      if (d.tip_id !== undefined && !String(d.tip_id).startsWith("tip://id/")) {
+        errors.push(`tip_id must be a tip://id/... string`);
       }
       break;
     }
