@@ -31,9 +31,13 @@ network. It signs content as you.
 It is not needed to run your node. Keep it off the node host entirely,
 stored wherever you keep company signing material. File mode 0600,
 never committed to version control, never sent over an unencrypted
-channel. The private key inside is locked with your date of
-incorporation: import the file into the TIP VP app and enter that date
-(MM/DD/YYYY) to sign as your organization.
+channel. The private key inside is locked with a 12-word recovery
+phrase. We send you the phrase separately from this bundle. Import the
+file into the TIP VP app and enter the 12 words to sign as your
+organization. Write the words down and keep them apart from the file.
+Anyone with both can sign as you, and without the words the file can
+never be opened. A file issued before the recovery phrase is locked
+with your date of incorporation (MM/DD/YYYY) instead.
 
 ## node/ : your node identity and configuration
 
