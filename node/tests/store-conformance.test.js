@@ -704,6 +704,67 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getOrgMember(inviteTxId)).toBeNull();
   });
 
+  test("site snapshots: round-trip, latest and newest-first paging per domain, a repeat save is ignored, delete moves the head", async () => {
+    const dag = await makeDag();
+    const hex = (c) => c.repeat(64);
+    const snap = (domain, seq, prev, txId) => ({
+      tx_id: txId, domain, seq, prev_snapshot_tx: prev, root: hex("a"), page_count: 30,
+      template_hash: hex("b"), profile: "cf-web-1", wacz_hash: hex("c"), pack_hash: hex("d"),
+      ai_signals_hash: hex("e"), captured_at: T0 + seq, signer_tip_id: "tip://id/US-aaaaaaaaaaaaaaaa",
+      witness_vp_id: seq === 2 ? "tip://vp/US-0e7db4040667073a" : null, registered_at: T0 + 10 * seq,
+    });
+    const ids = ["1", "2", "3"].map(c => c.repeat(64));
+    const other = "9".repeat(64);
+    dag.saveSiteSnapshot(snap("a.example", 1, null, ids[0]));
+    dag.saveSiteSnapshot(snap("a.example", 2, ids[0], ids[1]));
+    dag.saveSiteSnapshot(snap("a.example", 3, ids[1], ids[2]));
+    dag.saveSiteSnapshot(snap("b.example", 1, null, other));
+
+    expect(dag.getSiteSnapshot(ids[1])).toEqual(snap("a.example", 2, ids[0], ids[1]));
+    expect(dag.getSiteSnapshot("0".repeat(64))).toBeNull();
+    expect(dag.getLatestSiteSnapshot("a.example").tx_id).toBe(ids[2]);
+    expect(dag.getLatestSiteSnapshot("b.example").tx_id).toBe(other);
+    expect(dag.getLatestSiteSnapshot("c.example")).toBeNull();
+    expect(dag.listSiteSnapshots("a.example", { limit: 2 }).map(r => r.seq)).toEqual([3, 2]);
+    expect(dag.listSiteSnapshots("a.example", { before: 2, limit: 5 }).map(r => r.seq)).toEqual([1]);
+
+    dag.saveSiteSnapshot({ ...snap("a.example", 2, ids[0], ids[1]), root: hex("f") });
+    expect(dag.getSiteSnapshot(ids[1]).root).toBe(hex("a"));
+
+    expect([...dag.iterateCanonicalState()].filter(r => r.table === "site_snapshots").map(r => r.row.tx_id))
+      .toEqual([ids[0], ids[1], ids[2], other]);
+    expect(dag.deleteCanonicalRow("site_snapshots", { tx_id: ids[2] })).toBe(true);
+    expect(dag.getLatestSiteSnapshot("a.example").tx_id).toBe(ids[1]);
+  });
+
+  test("site pages and ingest state (node-local): first page write wins, ingest upserts, due list skips done and future", async () => {
+    const dag = await makeDag();
+    const page = (key, tx, url, over = {}) => ({
+      page_key: key, snapshot_tx: tx, domain: "a.example", seq: 1, url, text_hash: "a".repeat(64), page_hash: "b".repeat(64),
+      offsite: false, changed: null, kept: null, paragraph_keys: "k1 k2", created_at: T0, ...over,
+    });
+    const tx = "1".repeat(64);
+    dag.saveSitePages([page("site:k2", tx, "https://a.example/b", { offsite: true }), page("site:k1", tx, "https://a.example/a", { changed: true, kept: 0.5 })]);
+    dag.saveSitePages([page("site:k1", tx, "https://a.example/a", { text_hash: "f".repeat(64) })]);
+    await dag.flush();
+    const a = await dag.getSitePage("site:k1");
+    expect([a.url, a.text_hash, Number(a.changed), Number(a.kept), Number(a.offsite)]).toEqual(["https://a.example/a", "a".repeat(64), 1, 0.5, 0]);
+    expect(Number((await dag.getSitePage("site:k2")).offsite)).toBe(1);
+    expect(await dag.getSitePage("site:none")).toBeNull();
+    expect((await dag.listSitePages(tx)).map(r => r.page_key)).toEqual(["site:k1", "site:k2"]);
+
+    const ingest = (snap, seq, state, next) => ({ snapshot_tx: snap, domain: "a.example", seq, state, attempts: 1, next_attempt_at: next, last_error: null, pages: null, offsite: null, source: null, updated_at: T0 });
+    dag.saveSiteIngest(ingest("2".repeat(64), 2, "failed", T0 + 100));
+    dag.saveSiteIngest(ingest("3".repeat(64), 1, "pending", T0));
+    dag.saveSiteIngest(ingest("4".repeat(64), 3, "done", 0));
+    dag.saveSiteIngest({ ...ingest("3".repeat(64), 1, "done", 0), pages: 30, offsite: 1, source: "https://archive.test" });
+    await dag.flush();
+    expect(await dag.getSiteIngest("3".repeat(64))).toEqual(expect.objectContaining({ state: "done", source: "https://archive.test" }));
+    expect((await dag.listSiteIngestsDue(T0 + 100)).map(r => r.snapshot_tx)).toEqual(["2".repeat(64)]);
+    expect(await dag.listSiteIngestsDue(T0 + 99)).toEqual([]);
+    expect(dag.listSiteSnapshotsAfter("", 10)).toEqual([]);
+  });
+
   test("bylined content: credited in authors[] without being author_tip_id, in both the lookup and the list filter", async () => {
     const dag = await makeDag();
     const org = uniq("GB-org");

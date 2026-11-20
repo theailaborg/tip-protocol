@@ -258,6 +258,8 @@ Near-duplicates of this record among the content this node has indexed, as cards
 
 `similarity` carries the kind's own figures: `similarity` (text, MinHash), `distance` (image, PDQ bits of 256), `target_match_pct` and `query_match_pct` (video), `landmark_matches` and `score_ratio` (audio). For documents it is the library's `compareDocument` result: `shared_text` says how much of each document's text is in the other (`a_in_b`, `b_in_a`), about how many characters, and on which pages (`at_a`, `at_b`); `shared_text.score` is those characters with each passage weighted by 1 / (1 + the number of other owners whose records hold it), so text many people hold (a licence, a disclaimer) ranks last. A document is listed when `shared_text.worth_listing` holds (at least 300 characters shared, or the same wording) or it shares a scanned page image (the same scan or the same form). Its `score` is the larger of `shared_text.score / (shared_text.score + 300)` and the share of scanned pages that match. The text MinHash never lists or ranks one document against another: two large unrelated texts in one language can pass 0.30. A document also lists posts with the same text and images posted alone that match one of its pictures or pages.
 
+`sites` lists archived website pages (from site snapshots this node has indexed) that resemble the record, one card per page at the latest snapshot that matched: `{ domain, url, seq, snapshot_tx, captured_at, signer_tip_id, similarity }`. A post matches a page by its text (MinHash) or a picture (PDQ); a document also by paragraph keys, with `similarity: { modality: "site_text", shared_keys, page_keys, weighted, score }`, where each shared key weighs 1 / (the number of site owners holding it) and `score` is `weighted / page_keys`. `POST /v1/content/register` returns the same cards as `near_duplicate_sites`.
+
 #### `GET /v1/content`
 List content, newest first. Cursor-paginated, public.
 
@@ -449,6 +451,56 @@ Get VP details.
 ```
 
 ---
+
+### Site snapshots
+
+A site snapshot is one record per version of a whole protected website: a Merkle root over the exact text of every page (profile `cf-web-1`, rules in `tip-content-fingerprint`), the hash of the full archive and of its fingerprint pack, signed by the site's owner and chained per domain by `seq`. Accepted from `SITE_SNAPSHOT.ACTIVATION_MS` (provisional 2026-12-15 00:00 UTC). Every hash is SHAKE-256, 64 lowercase hex characters.
+
+#### `POST /v1/site/snapshot`
+
+The owner, or an active member of the organization that owns the site, signs the 12-field payload (canonical JSON, ML-DSA-65, the same helper as other body-signed records):
+
+```json
+{
+  "domain": "example.com", "seq": 2, "prev_snapshot_tx": "<previous snapshot tx_id, null for seq 1>",
+  "root": "<hex>", "page_count": 30, "template_hash": "<hex>", "profile": "cf-web-1",
+  "wacz_hash": "<SHAKE-256 of the archive's datapackage.json>", "pack_hash": "<hex>", "ai_signals_hash": "<hex>",
+  "captured_at": 1794672650000, "signer_tip_id": "tip://id/US-...",
+  "signature": "<hex>",
+  "witness": { "vp_id": "tip://vp/US-...", "signature": "<the capturing VP's signature over the same payload>" }
+}
+```
+
+- `domain` is the site's name without `www.`; `witness` is optional.
+- **202** `{ domain, seq, tx_id, witness_vp_id, proposed_at, confirmation: "proposed" }`.
+- Errors:
+  - `400`: a malformed field (`<field>_invalid`, `domain_not_canonical`, `prev_snapshot_tx_invalid`), `captured_at_not_after_previous`, `captured_at_in_future`;
+  - `403`: `site_not_protected`, `not_site_owner`, `tip_id_revoked`, `signature_invalid`, `witness_invalid`, `site_snapshot_witness_invalid` (the VP is not active);
+  - `409`: `site_snapshot_stale` (`seq` / `prev_snapshot_tx` do not extend the latest snapshot), `site_snapshot_pending`, `site_snapshot_not_open`;
+  - `412`: `signer_not_registered`, `site_snapshot_witness_invalid` (the VP is not registered);
+  - `429`: `site_snapshot_too_soon` (less than 10 minutes after the previous snapshot), `website_snapshot_limit` (the operator's plan, `{ domain, reason, next_allowed_at, upgrade_url }`).
+
+Every node checks the same rules again at commit, judged at max(tx time, certificate time); a snapshot that loses a race is recorded in `tx_rejections` as `site_snapshot_stale`.
+
+#### `GET /v1/site/:domain/snapshots?before=&limit=`
+
+Newest first. `limit` 1 to 100 (default 20); `before` is an exclusive `seq`.
+
+**Response 200:** `{ domain, snapshots: [{ seq, tx_id, root, page_count, captured_at, registered_at, wacz_hash, pack_hash, witness_vp_id }], next_before }`.
+
+#### `GET /v1/site/snapshot/:tx`
+
+The full record, with the owner's `signature`, `witness: { vp_id, signature } | null` (so a viewer can verify both), and `ingest: { state, pages, offsite, attempts, last_error }`, this node's index of the snapshot's fingerprint pack: `pending`, `done`, `failed` (no source served it yet; retried with backoff) or `mismatch` (the pack named by `pack_hash` does not match the record's domain, seq, page count or root, or names one URL twice; never retried, show the snapshot as not verified). **404** `site_snapshot_not_found`.
+
+#### `GET /v1/site/:domain/page?url=&at=`
+
+One page of the snapshot that covered the site at `at` (epoch ms, default now: the latest snapshot captured at or before it), from this node's index of that snapshot's pack. Only URLs on the domain or its `www.` host.
+
+**Response 200:** `{ domain, url, seq, tx_id, captured_at, registered_at, root, text_hash, page_hash, leaf, proof, changed, kept }`. `proof` is the Merkle path from `leaf` to the signed `root`; check it with `tip-content-fingerprint`'s `web.verifyPage(url, text_hash, proof, root)` (the node checks it before answering). `changed` says whether the page's matching hash differs from the previous snapshot (`null` for a page new in this snapshot) and `kept` is the share of the previous version's paragraph keys still present (0 to 1), a degree of change for pages whose side lists or dates change on every capture.
+
+Errors: `400 url_invalid`, `400 at_invalid`, `404 site_page_not_found` (another domain, an off-site page, or not in that snapshot), `404 site_snapshot_not_found`, `409 site_page_not_ready` (the pack is not indexed on this node yet, with `details.ingest`), `422 site_snapshot_pack_mismatch` (the snapshot's pack does not match its record).
+
+The node fetches each committed snapshot's pack by `pack_hash` from `TIP_SITE_ARCHIVE_URLS` (`<source>/api/archive/pack/<pack_hash>`, tried in order) and indexes it only if its SHAKE-256, header, page count and Merkle root (`web.packRoot`, over every page line) match the record. Downloads stop at 64 MiB, and the library stops unpacking at 256 MiB, so a signed gzip bomb cannot exhaust a node. Pages whose URL left the site (a redirect to a login provider or shop) stay in the root but are never indexed or served.
 
 ## Rate Limits
 

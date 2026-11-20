@@ -11,6 +11,42 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Site snapshots: one owner-signed record per version of a whole website** (consensus
+change behind `SITE_SNAPSHOT.ACTIVATION_MS`, provisional 2026-12-15 00:00 UTC; every node
+upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside production)
+- New tx type `SITE_SNAPSHOT`: the site's owner, or an active member of the owning
+  organization, signs 12 fields (domain, seq, prev_snapshot_tx, root, page_count,
+  template_hash, profile `cf-web-1`, wacz_hash, pack_hash, ai_signals_hash, captured_at,
+  signer_tip_id). Every hash is SHAKE-256. An optional witness is the capturing VP's
+  ML-DSA-65 signature over the same payload, carried as a VP cosignature.
+- Commit rules, judged at max(tx time, certificate time): live binding and owner or
+  member, chain (`prev_snapshot_tx` is the domain's latest, `seq` + 1, first wins, the
+  loser is `site_snapshot_stale`), at least 10 minutes after the previous snapshot,
+  `captured_at` later than the previous and not ahead of the commit time, witness VP
+  registered and active (`site_snapshot_witness_invalid`).
+- Canonical table `site_snapshots` (migration `017_site_snapshots`, in the state root
+  and snapshot install), on every store.
+- `POST /v1/site/snapshot`, `GET /v1/site/:domain/snapshots`, `GET /v1/site/snapshot/:tx`
+  (`docs/API.md`); the operator's plan is asked first (`POST /api/websites/snapshot`,
+  fails open, a refusal is kept until `next_allowed_at`).
+- Off-DAG pack ingest (node-local, advisory, rebuildable): after commit each node fetches
+  the snapshot's fingerprint pack by `pack_hash` from `TIP_SITE_ARCHIVE_URLS`, and indexes
+  it only if its SHAKE-256, header (domain, seq), page count and Merkle root match the
+  record (`web.packRoot` over every page line, so a URL twice is refused too); off-site
+  pages stay in the root but are never indexed; an unreachable pack retries with backoff
+  (`failed`), a pack that does not match is refused for good (`mismatch`, shown as not
+  verified); downloads stop at 64 MiB and unpacking at 256 MiB; tables `site_page` and `site_ingest`
+  (migration `018_site_pages`, node-local).
+- `GET /v1/site/:domain/page?url=&at=`: one page of the snapshot covering `at`, with a
+  Merkle proof the node checks with `web.verifyPage`, and `changed` / `kept` against the
+  previous snapshot.
+- Similar search: archived pages are found by text and pictures, and by documents
+  through paragraph keys weighted by how many site owners hold them; returned apart from
+  content as `sites` (`GET /v1/content/:ctid/similar`) and `near_duplicate_sites`
+  (`POST /v1/content/register`).
+- tip-content-fingerprint 2.8.0 (`cf-web-1`), vendored from its release PR head until the
+  tag; 2.7.1 to 2.8.0 changes nothing the node already used.
+
 **Node 2.9.10: a licensed organization's signed emails are one pool** (API time only,
 no consensus change and no activation; mixed versions are safe)
 - The billing answer to `POST /api/email-signs/check` may now carry

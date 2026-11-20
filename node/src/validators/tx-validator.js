@@ -115,6 +115,19 @@ const SCHEMA = {
       claimed_at: "number", signer_tip_id: "string",
     },
   },
+  // prev_snapshot_tx is null for seq 1, so the schema's buildSigningPayload
+  // checks it rather than `required` (which refuses null).
+  [TX_TYPES.SITE_SNAPSHOT]: {
+    required: [
+      "domain", "seq", "root", "page_count", "template_hash", "profile",
+      "wacz_hash", "pack_hash", "ai_signals_hash", "captured_at", "signer_tip_id",
+    ],
+    types: {
+      domain: "string", seq: "number", root: "string", page_count: "number", template_hash: "string",
+      profile: "string", wacz_hash: "string", pack_hash: "string", ai_signals_hash: "string",
+      captured_at: "number", signer_tip_id: "string",
+    },
+  },
   [TX_TYPES.CONTENT_DISPUTED]: {
     required: ["ctid"],
     types: { ctid: "string" },
@@ -589,7 +602,8 @@ function validateBusinessRules(tx, dag = null) {
     case TX_TYPES.ORG_MEMBER_INVITED:
     case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
     case TX_TYPES.ORG_MEMBER_ADDED:
-    case TX_TYPES.ORG_MEMBER_REMOVED: {
+    case TX_TYPES.ORG_MEMBER_REMOVED:
+    case TX_TYPES.SITE_SNAPSHOT: {
       // Shape only: the schema's buildSigningPayload rejects a malformed
       // body with the same codes the API returns. Roster state (open
       // invite, seat limit, party check) lives in the schema's verifyTx.
@@ -784,7 +798,8 @@ function validateState(tx, dag) {
     }
 
     case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
-    case TX_TYPES.ORG_MEMBER_REMOVED: {
+    case TX_TYPES.ORG_MEMBER_REMOVED:
+    case TX_TYPES.SITE_SNAPSHOT: {
       if (d.signer_tip_id && dag.isRevoked(d.signer_tip_id)) errors.push(`TIP-ID is revoked: ${d.signer_tip_id}`);
       break;
     }

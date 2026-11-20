@@ -60,9 +60,9 @@ test("up adds the index the My Content query uses; down removes it; up again res
     const [, pendingBefore] = await k.migrate.list();
     expect(pendingBefore).toHaveLength(0);
 
-    await k.migrate.down();                       // 016 is the newest migration
+    await k.migrate.down({ name: "016_content_author_time.js" });
     expect(await indexColumns(k)).toEqual([]);
-    await k.migrate.up();
+    await k.migrate.up({ name: "016_content_author_time.js" });
     expect(await indexColumns(k)).toEqual(["author_tip_id", "registered_at", "tip_ctid"]);
     // The row is untouched by either direction.
     const [{ n }] = await k("content").count({ n: "*" });

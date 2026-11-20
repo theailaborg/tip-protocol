@@ -14,7 +14,7 @@
 
 "use strict";
 
-const { WEBSITE_PROTECTION_ACTIVATION_MS, URL_TAKEOVER_ACTIVATION_MS, DOMAIN_RELEASE_ACTIVATION_MS, TIP_ID_TYPES } = require("../../../shared/constants");
+const { WEBSITE_PROTECTION_ACTIVATION_MS, URL_TAKEOVER_ACTIVATION_MS, DOMAIN_RELEASE_ACTIVATION_MS, SITE_SNAPSHOT, TIP_ID_TYPES } = require("../../../shared/constants");
 const { toIso } = require("../../../shared/time");
 
 // The override changes commit rules, so a production node that set it alone
@@ -46,6 +46,18 @@ function domainReleaseOn(atMs) {
   return Number.isFinite(atMs) && atMs >= RELEASE_MS;
 }
 
+// Site snapshots have their own instant (same override rules).
+const _sOverride = process.env.NODE_ENV === "production" ? NaN : parseInt(process.env.TIP_SITE_SNAPSHOT_ACTIVATION_MS, 10);
+const SITE_SNAPSHOT_MS = Number.isFinite(_sOverride) ? _sOverride : SITE_SNAPSHOT.ACTIVATION_MS;
+if (Number.isFinite(_sOverride)) {
+  // eslint-disable-next-line no-console
+  console.warn(`[website-gate] TIP_SITE_SNAPSHOT_ACTIVATION_MS override in effect: ${toIso(SITE_SNAPSHOT_MS)}`);
+}
+
+function siteSnapshotOn(atMs) {
+  return Number.isFinite(atMs) && atMs >= SITE_SNAPSHOT_MS;
+}
+
 // Before the gate only organizations bind domains; from it, people can
 // protect their own sites too.
 function mayBindDomain(tipIdType, atMs) {
@@ -54,4 +66,4 @@ function mayBindDomain(tipIdType, atMs) {
   return t === TIP_ID_TYPES.PERSONAL && websiteProtectionOn(atMs);
 }
 
-module.exports = { websiteProtectionOn, takeoverOn, domainReleaseOn, mayBindDomain, GATE_MS, TAKEOVER_MS, RELEASE_MS };
+module.exports = { websiteProtectionOn, takeoverOn, domainReleaseOn, siteSnapshotOn, mayBindDomain, GATE_MS, TAKEOVER_MS, RELEASE_MS, SITE_SNAPSHOT_MS };

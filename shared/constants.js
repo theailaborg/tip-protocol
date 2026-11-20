@@ -714,6 +714,9 @@ const TX_TYPES = Object.freeze({
   // Domain binding (org-only)
   BIND_DOMAIN: "BIND_DOMAIN",
   UNBIND_DOMAIN: "UNBIND_DOMAIN",
+  // One owner-signed record per version of a whole protected site; rows live
+  // in site_snapshots (canonical), chained per domain by seq.
+  SITE_SNAPSHOT: "SITE_SNAPSHOT",
   // Content
   REGISTER_CONTENT: "REGISTER_CONTENT",
   UPDATE_ORIGIN: "UPDATE_ORIGIN",
@@ -862,6 +865,11 @@ const TX_REJECTION_REASON = Object.freeze({
   // Signer (or cosigner) key already retired by a rotation / recovery when the
   // round certified; see KEY_RETIREMENT_GRACE_MS.
   SIGNER_KEY_RETIRED: "signer_key_retired",
+  // SITE_SNAPSHOT whose prev/seq no longer extends the domain's latest snapshot
+  // (another snapshot committed first); the owner signs the next one again.
+  SITE_SNAPSHOT_STALE: "site_snapshot_stale",
+  // SITE_SNAPSHOT witness from an inactive VP, or a malformed witness.
+  SITE_SNAPSHOT_WITNESS_INVALID: "site_snapshot_witness_invalid",
   // Site 5 — generic fallback for unexpected drops; always logs detail.
   TX_DECODE_FAILED: "tx_decode_failed",
 });
@@ -1173,6 +1181,37 @@ const DOMAIN_RELEASE = Object.freeze({
   SKEW_MS: 60 * 1000,           // and this far ahead (client clock skew)
 });
 
+// Site snapshots (SITE_SNAPSHOT). New commit rules, so judged at max(tx.timestamp,
+// certificate time) against ACTIVATION_MS and the fleet upgrades first
+// (TIP_SITE_SNAPSHOT_ACTIVATION_MS overrides it outside production only).
+const SITE_SNAPSHOT = Object.freeze({
+  ACTIVATION_MS: 1797292800000,          // 2026-12-15 00:00:00 UTC, provisional mainnet activation
+  MIN_INTERVAL_MS: 10 * 60 * 1000,       // per domain, after the previous snapshot's tx time
+  CAPTURE_SKEW_MS: 60 * 1000,            // captured_at may be this far ahead of the commit time
+  MAX_PAGES: 1000000,
+  PROFILES: Object.freeze(["cf-web-1"]),
+  HASH_PATTERN: /^[0-9a-f]{64}$/,        // SHAKE-256, 32 bytes, lowercase hex
+  TX_ID_PATTERN: /^[0-9a-f]{64}$/,
+  VP_ID_PATTERN: /^tip:\/\/vp\/[A-Za-z0-9._-]{1,128}$/,
+  LIST_MAX: 100,
+});
+
+// Off-DAG ingest of each committed snapshot's fingerprint pack (node-local,
+// advisory, rebuildable). Packs come from TIP_SITE_ARCHIVE_URLS by pack_hash.
+const SITE_INGEST = Object.freeze({
+  PAGE_KEY_PREFIX: "site:",              // perceptual-index key: site:<snapshot tx_id>:<16 hex of SHAKE-256(url)>
+  PASSAGE_PROFILE: "cf-web-1",           // document_passage profile for site paragraph keys
+  MAX_PACK_BYTES: 64 * 1024 * 1024,      // downloaded (gzip) bytes; readPack caps the unpacked size
+  FETCH_TIMEOUT_MS: 60 * 1000,
+  RETRY_BASE_MS: 60 * 1000,              // doubles per failed attempt
+  RETRY_MAX_MS: 6 * 60 * 60 * 1000,
+  RECONCILE_MS: 10 * 60 * 1000,          // also picks up snapshots installed by state sync
+  YIELD_EVERY_PAGES: 25,
+  // failed: retried with backoff. mismatch: the pack named by pack_hash does not
+  // match its record (header, pages, root), never retried; shown as not verified.
+  STATES: Object.freeze({ PENDING: "pending", DONE: "done", FAILED: "failed", MISMATCH: "mismatch" }),
+});
+
 // Registered again. Copies of someone's content (same normalized
 // content_hash, by an unconnected TIP-ID) registered from this instant tell
 // the first author in their Inbox. Read side only, not consensus: nodes on
@@ -1347,6 +1386,8 @@ module.exports = {
   URL_TAKEOVER_ACTIVATION_MS,
   DOMAIN_RELEASE_ACTIVATION_MS,
   DOMAIN_RELEASE,
+  SITE_SNAPSHOT,
+  SITE_INGEST,
   REGISTERED_AGAIN_ACTIVATION_MS,
   SHARED_HOST_DOMAINS,
   PRESCAN_REVIEW_CAP,

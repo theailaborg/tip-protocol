@@ -397,6 +397,7 @@ function verifyUnbindTx(tx, dag, opts = {}) {
 module.exports = {
   TX_TYPE,
   TX_TYPE_UNBIND: TX_TYPES.UNBIND_DOMAIN,
+  DOMAIN_SPEC,
   BIND_DOMAIN_STATES,
   buildSigningPayload,
   buildUnbindSigningPayload,

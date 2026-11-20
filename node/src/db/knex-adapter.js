@@ -19,7 +19,7 @@
 // MemoryStore is exported from dag.js. dag.js does NOT require knex-adapter at
 // load time (only inside initDAGAsync), so by the time knex-adapter.js first
 // loads, dag.js is fully cached — no circular-dep hazard.
-const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx } = require("../dag");
+const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx, _sitePageRow, _siteIngestRow } = require("../dag");
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
@@ -369,6 +369,7 @@ class KnexAdapter {
       owner_heads: this.mirror._ownerHeads.size,
       platform_links: this.mirror._platformLinks.size,
       org_members: this.mirror._orgMembers.size,
+      site_snapshots: this.mirror._siteSnapshots.size,
     };
   }
 
@@ -641,6 +642,12 @@ class KnexAdapter {
     const omRows = await this.knex("org_members").select("*");
     for (const row of omRows) {
       this.mirror._orgMembers.set(row.invite_tx_id, { ...row });
+    }
+
+    // Site snapshots (canonical); the mirror keeps the per-domain index
+    const ssRows = await this.knex("site_snapshots").select("*");
+    for (const row of ssRows) {
+      this.mirror.saveSiteSnapshot(row);
     }
 
     // Pending domain claims (per-node local)
@@ -1477,7 +1484,7 @@ class KnexAdapter {
       "identities", "content", "scores", "dedup_registry", "revocations",
       "verification_providers", "nodes",
       "entity_keys", // GH #60 — entity_keys is canonical state too.
-      "platform_links", "org_members", "domain_bindings", "prescan_reviews", "interests_registry",
+      "platform_links", "org_members", "site_snapshots", "domain_bindings", "prescan_reviews", "interests_registry",
       "protocol_params", // #39 — canonical state, cleared + rebuilt on install
       "owner_heads",
     ];
@@ -1498,6 +1505,7 @@ class KnexAdapter {
       case "domain_bindings": return { domain: row.domain };
       case "platform_links": return { id: row.id };
       case "org_members": return { invite_tx_id: row.invite_tx_id };
+      case "site_snapshots": return { tx_id: row.tx_id };
       case "verification_providers": return { vp_id: row.vp_id };
       case "nodes": return { node_id: row.node_id };
       case "entity_keys": return {
@@ -1628,6 +1636,41 @@ class KnexAdapter {
   getOrgMemberByAddTxId(addTxId) { return this.mirror.getOrgMemberByAddTxId(addTxId); }
   getOrgMembersByOrg(orgTipId) { return this.mirror.getOrgMembersByOrg(orgTipId); }
   getOrgMembersByMember(memberTipId) { return this.mirror.getOrgMembersByMember(memberTipId); }
+
+  // ── Site snapshots (canonical, in state_merkle_root) ──────────────────────
+  // Rows never change once written, so a repeat insert is ignored.
+  saveSiteSnapshot(rec) {
+    this.mirror.saveSiteSnapshot(rec);
+    this._ff(() => this._dbInsert("site_snapshots", "tx_id", this.mirror.getSiteSnapshot(rec.tx_id), "ignore"));
+  }
+  getSiteSnapshot(txId) { return this.mirror.getSiteSnapshot(txId); }
+  getLatestSiteSnapshot(domain) { return this.mirror.getLatestSiteSnapshot(domain); }
+  listSiteSnapshots(domain, opts) { return this.mirror.listSiteSnapshots(domain, opts); }
+  listSiteSnapshotsAfter(afterTxId, limit) { return this.mirror.listSiteSnapshotsAfter(afterTxId, limit); }
+
+  // ── Site pages and ingest state (node-local, off-DAG, not mirrored) ───────
+  saveSitePages(rows) {
+    if (!rows || !rows.length) return;
+    this._ff(() => this._chunkedInsertIgnore("site_page", rows.map(_sitePageRow), ["page_key"]));
+  }
+  async getSitePage(pageKey) {
+    const r = await this.knex("site_page").where({ page_key: pageKey }).first();
+    return r || null;
+  }
+  async listSitePages(snapshotTx) {
+    return this.knex("site_page").where({ snapshot_tx: snapshotTx }).orderBy("page_key").select("*");
+  }
+  saveSiteIngest(row) {
+    this._ff(() => this._dbInsert("site_ingest", "snapshot_tx", _siteIngestRow(row), "merge"));
+  }
+  async getSiteIngest(snapshotTx) {
+    const r = await this.knex("site_ingest").where({ snapshot_tx: snapshotTx }).first();
+    return r || null;
+  }
+  async listSiteIngestsDue(atMs) {
+    return this.knex("site_ingest").whereNot({ state: "done" }).andWhere("next_attempt_at", "<=", atMs)
+      .orderBy([{ column: "domain" }, { column: "seq" }]).select("*");
+  }
 
   savePendingDomainClaim(rec) {
     this.mirror.savePendingDomainClaim(rec);
