@@ -59,7 +59,7 @@ exports.up = async (knex) => {
       t.string("page_hash", 64).notNullable();
       t.integer("offsite").notNullable().defaultTo(0);
       t.integer("changed").nullable();
-      t.float("kept").nullable();
+      t.double("kept").nullable();   // double: Postgres stores t.float as float4
       t.text("paragraph_keys").notNullable();
       t.bigInteger("created_at").notNullable();
     });
