@@ -116,7 +116,8 @@ function createMediaQuotaClient(opts = {}) {
   /**
    * How many emails may this TIP-ID sign a UTC month (node 2.9.8)? Resolves to
    * the billing service's answer ({limit, enforced, from, month, resets_at,
-   * upgrade_url}), or null when the client is disabled or the service is
+   * upgrade_url}, and for a licensed organization's people pool {org_tip_id,
+   * limit, member_limit}, node 2.9.10), or null when the client is disabled or the service is
    * unreachable, slow, malformed or answers non-2xx (a VP without the
    * endpoint answers 404), which means let the email through. The node counts
    * the emails itself; the answer carries no count.

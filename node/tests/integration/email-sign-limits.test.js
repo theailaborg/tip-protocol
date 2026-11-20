@@ -190,3 +190,84 @@ describe("email sign limits", () => {
     expect(mediaQuota.checkEmailSigns).not.toHaveBeenCalled();
   });
 });
+
+// One pool for a licensed organization (node 2.9.10, founder 2026-11-19):
+// 5,000 signed emails a month for the organization's TIP-ID and its active
+// members together, each member held to 500. Here the pool is 3 and a member 2.
+describe("a licensed organization's shared pool", () => {
+  const ORG = "tip://id/US-0a0a0a0a0a0a0a0a";
+  const OTHER = "tip://id/US-0b0b0b0b0b0b0b0b";
+  const GONE = "tip://id/US-0c0c0c0c0c0c0c0c";
+  const POOL_3 = { ...LIMIT_2, pool: { org_tip_id: ORG, limit: 3, member_limit: 2 } };
+  let n = 0;
+  function member(dag, tip, status = "active") {
+    n += 1;
+    dag.saveOrgMember({
+      invite_tx_id: `tx_pool_${n}`, org_tip_id: ORG, member_tip_id: tip, role: "author",
+      status, invited_at: NOV_10 - 1000, invited_claim: NOV_10 - 1000, accepted_at: NOV_10 - 500, add_tx_id: `tx_add_${n}`,
+      removed_at: status === "removed" ? NOV_10 - 100 : null, remove_tx_id: null, removed_by: null,
+    });
+  }
+  // The month's committed emails of every TIP-ID but the signer, as this node's summary reads them.
+  function others(dag, counts) {
+    const real = dag.summarizeContent.bind(dag);
+    jest.spyOn(dag, "summarizeContent").mockImplementation((q) =>
+      q && q.author in counts ? { months: [{ month: "2026-11", emails: counts[q.author] }] } : real(q));
+  }
+
+  test("the pool full: 429 email_sign_pool_limit, even with the member under 500", async () => {
+    const fx = setup({ mediaQuota: billing(POOL_3) });
+    member(fx.dag, AUTHOR); member(fx.dag, OTHER);
+    at(NOV_10);
+    others(fx.dag, { [ORG]: 2, [OTHER]: 1 });
+    const save = jest.spyOn(fx.dag, "saveMempoolTx");
+    const err = await fx.contentService.register(fx.body({ content: "Pool email\nHello" })).catch((e) => e);
+    expect(err).toEqual({
+      status: 429, code: "email_sign_pool_limit",
+      error: "This organization has signed 3 emails this month, all that its license includes. The count starts again on the 1st.",
+      details: { used: 3, limit: 3, org_tip_id: ORG, resets_at: DEC_1 / 1000, upgrade_url: "https://vp.theailab.org/plans#personal" },
+    });
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  test("room in the pool: registers, and one member may use most of it", async () => {
+    const fx = setup({ mediaQuota: billing({ ...POOL_3, pool: { ...POOL_3.pool, limit: 5 } }) });
+    member(fx.dag, AUTHOR); member(fx.dag, OTHER);
+    at(NOV_10);
+    others(fx.dag, { [ORG]: 0, [OTHER]: 0 });
+    await fx.contentService.register(fx.body({ content: "First\nHello" }));
+    const out = await fx.contentService.register(fx.body({ content: "Second\nHello" }));
+    expect(out.confirmation).toBe("proposed");
+    // The member's own cap (2) still holds.
+    await expect(fx.contentService.register(fx.body({ content: "Third\nHello" })))
+      .rejects.toMatchObject({ status: 429, code: "email_sign_limit" });
+  });
+
+  test("a removed member's emails do not count toward the pool", async () => {
+    const fx = setup({ mediaQuota: billing(POOL_3) });
+    member(fx.dag, AUTHOR); member(fx.dag, GONE, "removed");
+    at(NOV_10);
+    others(fx.dag, { [ORG]: 1, [GONE]: 5 });
+    const out = await fx.contentService.register(fx.body({ content: "Counted once\nHello" }));
+    expect(out.confirmation).toBe("proposed");
+  });
+
+  test("a pool for an organization the signer is not on is ignored", async () => {
+    const fx = setup({ mediaQuota: billing(POOL_3) });
+    at(NOV_10);
+    others(fx.dag, { [ORG]: 99 });
+    const out = await fx.contentService.register(fx.body({ content: "Not a member\nHello" }));
+    expect(out.confirmation).toBe("proposed");
+  });
+
+  test("a malformed pool is ignored", async () => {
+    at(NOV_10);
+    for (const [i, pool] of [{ org_tip_id: "nope", limit: 0 }, { org_tip_id: ORG, limit: "0" }, { org_tip_id: ORG }, null].entries()) {
+      const fx = setup({ mediaQuota: billing({ ...LIMIT_2, pool }) });
+      member(fx.dag, AUTHOR);
+      others(fx.dag, { [ORG]: 99 });
+      const out = await fx.contentService.register(fx.body({ content: `Malformed ${i}\nHello` }));
+      expect(out.confirmation).toBe("proposed");
+    }
+  });
+});
