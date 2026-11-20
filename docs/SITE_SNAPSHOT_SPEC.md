@@ -1,6 +1,6 @@
 # Site snapshots on the node: `SITE_SNAPSHOT` spec
 
-Status: the record, its rules, state and API, pack ingest, the page lookup and similar search for site pages ("built") are implemented, not yet released, on tip-content-fingerprint 2.8.0 vendored from its release PR. Paragraph keys for ordinary posts ("next") wait for the library's `cf-text-4`. Consensus change, gated by an activation date. Part of the **Website Archive** project.
+Status: the record, its rules, state and API, pack ingest, the page lookup and similar search for site pages ("built") are implemented, not yet released, on tip-content-fingerprint 2.8.0 (vendored release tarball). Paragraph keys for ordinary posts ("next") wait for the library's `cf-text-4`. Consensus change, gated by an activation date. Part of the **Website Archive** project.
 
 **Shared hosts cannot be protected.** `theailab.org` and `findtip.org` are in `SHARED_HOST_DOMAINS` (as are x.com, medium.com and the like), so no binding of them counts and a `SITE_SNAPSHOT` for them is refused (`site_not_protected`). A live test of the whole flow needs a site that can be bound: another domain, or a subdomain such as `archive-test.theailab.org`.
 
@@ -72,7 +72,7 @@ The node does not recompute roots; it stores and indexes them. Verifiers (viewer
 
 Golden vectors: `tip-content-fingerprint/test/web-vectors.json` (Test 1, theailab.org, 30 pages: root `15bb6f0d2d36256e0250b92e318c00f6098538002974be2ee62abafe68d01f8c`). The 2.8.0 package ships them and the Test 1 capture they name, so node tests replay Test 1 from `node_modules` (`require.resolve("tip-content-fingerprint/test/fixtures/web/theailab-test-1.json.gz")`).
 
-Library version: the node bundles 2.8.0 packed from the library's release PR (#20); replace it with the tagged release before this ships. 2.8.0 keeps `cf-text-3` and the default LSH bands, and its exports map keeps the node's deep imports working; the full suite gives the same result on 2.7.1 and 2.8.0.
+Library version: the node bundles the v2.8.0 release tarball (`node/vendor/tip-content-fingerprint-2.8.0.tgz`, SHA-256 `8a630bc4ee5a3b3a35e96bf23386864298d17f54406f646645eb0c1a88aecf91`, the release asset's checksum). It keeps `cf-text-3` and the default LSH bands, and its exports map keeps the node's deep imports working; the full suite gives the same result on 2.7.1 and 2.8.0.
 
 Library functions the node uses (2.8.0):
 - **`web.readPack(bytes)`**, only after `shake256(bytes) === pack_hash`. It reads every gzip member (a pack written in several members loses no pages) and throws on a header whose `web_profile` is not `cf-web-1` or that lacks `domain` or `seq >= 1`.
