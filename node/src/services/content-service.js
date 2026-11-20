@@ -113,24 +113,46 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return committed + pending;
   }
 
-  // Signed emails a month by plan (founder, 2026-11-13: Free 100, Plus 500,
-  // Pro 1,000, Max 5,000, a commercial licence 5,000). The allowance comes
-  // from the operator's billing service; the count from this node's own
-  // records. Asked only for an email; an unreachable billing service, or one
-  // whose limits have not started, lets it through.
+  // Signed emails a month by plan (founder, 2026-11-13: Free 100, Plus 500;
+  // since 2026-11-19 Pro 5,000 and Max 10,000). The allowance comes from the
+  // operator's billing service; the count from this node's own records. Asked
+  // only for an email; an unreachable billing service, or one whose limits
+  // have not started, lets it through.
+  //
+  // A licensed organization's emails are one pool (node 2.9.10, founder
+  // 2026-11-19): when the answer carries pool {org_tip_id, limit}, the month's
+  // emails of that organization's TIP-ID and of its active team members on
+  // this node's records add up to at most pool.limit. Each member is still
+  // held to answer.limit (500). The pool applies only to a signer who is that
+  // organization or one of its active members here; otherwise it is ignored.
   async function _checkEmailSigns(extras, signerTipId, atMs) {
     if (!mediaQuota || !mediaQuota.enabled || typeof mediaQuota.checkEmailSigns !== "function") return;
     if (!contentRegisterSchema.isEmailExtras(extras)) return;
     const answer = await mediaQuota.checkEmailSigns({ tip_id: signerTipId });
     if (!answer || answer.enforced !== true || typeof answer.limit !== "number") return;
-    const used = _emailsThisMonth(signerTipId, atMs);
-    if (used < answer.limit) return;
     const resetsAt = Math.floor(utcMonth(atMs).nextStartMs / 1000);
+    const upgradeUrl = answer.upgrade_url || "https://vp.theailab.org/plans#personal";
+    const used = _emailsThisMonth(signerTipId, atMs);
+    if (used >= answer.limit) {
+      throw schemaError(429,
+        `This TIP-ID has signed ${answer.limit.toLocaleString("en-US")} emails this month, all that its plan includes. ` +
+        "The count starts again on the 1st, or choose a plan with more emails at vp.theailab.org/plans.",
+        "email_sign_limit",
+        { used, limit: answer.limit, resets_at: resetsAt, upgrade_url: upgradeUrl });
+    }
+    const pool = answer.pool;
+    if (!pool || typeof pool.limit !== "number" || !Number.isFinite(pool.limit) || !roster.isTipId(pool.org_tip_id)) return;
+    const org = pool.org_tip_id;
+    const members = roster.activeMembers(dag, org).map((r) => r.member_tip_id).filter((m) => m !== org);
+    if (signerTipId !== org && !members.includes(signerTipId)) return;
+    let total = _emailsThisMonth(org, atMs);
+    for (const m of members) total += _emailsThisMonth(m, atMs);
+    if (total < pool.limit) return;
     throw schemaError(429,
-      `This TIP-ID has signed ${answer.limit.toLocaleString("en-US")} emails this month, all that its plan includes. ` +
-      "The count starts again on the 1st, or choose a plan with more emails at vp.theailab.org/plans.",
-      "email_sign_limit",
-      { used, limit: answer.limit, resets_at: resetsAt, upgrade_url: answer.upgrade_url || "https://vp.theailab.org/plans#personal" });
+      `This organization has signed ${pool.limit.toLocaleString("en-US")} emails this month, all that its license includes. ` +
+      "The count starts again on the 1st.",
+      "email_sign_pool_limit",
+      { used: total, limit: pool.limit, org_tip_id: org, resets_at: resetsAt, upgrade_url: upgradeUrl });
   }
 
   // Enqueue the prescan job for the worker. The job payload carries

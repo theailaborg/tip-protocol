@@ -11,6 +11,24 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.9.10: a licensed organization's signed emails are one pool** (API time only,
+no consensus change and no activation; mixed versions are safe)
+- The billing answer to `POST /api/email-signs/check` may now carry
+  `pool: { org_tip_id, limit, member_limit }` (VP sends it from January 1, 2027,
+  founder 2026-11-19: a TIPCL-1.0 commercial license includes 5,000 signed emails a
+  month for the whole organization, and each member can sign up to 500 of them).
+- After the signer's own check (`limit`, 500 for a member), the node adds up the
+  month's emails of the organization's TIP-ID and of its active team members on its
+  own records, mempool included, and refuses at the pool's limit with
+  `429 email_sign_pool_limit { used, limit, org_tip_id, resets_at, upgrade_url }`
+  before any tx exists. One member may use most of the pool.
+- The pool applies only to a signer who is that organization or one of its active
+  members on this node; a removed member's emails do not count, and a missing or
+  malformed pool is ignored. An older node ignores `pool` and still holds each member
+  to `limit`.
+- Tests: email-sign-limits gains 5 (pool full, room left, removed member, not a
+  member, malformed pool).
+
 **Node 2.9.9: an owner gives a protected site up** (consensus change, activation
 `DOMAIN_RELEASE_ACTIVATION_MS`, 2026-11-17 18:00 UTC; every node, partners included, must
 run 2.9.9 before it)
