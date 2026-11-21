@@ -229,7 +229,7 @@ function siteOwnerOf(dag, url, atMs) {
 }
 
 // The owner itself, or an active member of the owning organization.
-function _mayPublishOn(dag, owner, signerTipId) {
+function mayPublishOn(dag, owner, signerTipId) {
   if (owner.tip_id === signerTipId) return true;
   if (typeof dag.getOrgMembersByOrg !== "function") return false;
   return dag.getOrgMembersByOrg(owner.tip_id)
@@ -241,7 +241,7 @@ function _protectedUrlFail(dag, urls, signerTipId, atMs, skip) {
   for (const u of urls) {
     if (typeof u !== "string" || !u || (skip && skip.has(u))) continue;
     const owner = siteOwnerOf(dag, u, atMs);
-    if (owner && !_mayPublishOn(dag, owner, signerTipId)) {
+    if (owner && !mayPublishOn(dag, owner, signerTipId)) {
       return fail(
         403,
         `${owner.domain} is a protected website. Only its owner can register its pages: ${u}`,
@@ -277,7 +277,7 @@ function urlTakeoverPlan(dag, { signer_tip_id, ctid, urls, at_ms, skip }) {
     const owner = takeoverOn(at_ms) ? siteOwnerOf(dag, u, at_ms) : null;
     for (const c of live) {
       const holder = _claimantOf(c);
-      const winnable = owner && _mayPublishOn(dag, owner, signer_tip_id) && !_mayPublishOn(dag, owner, holder);
+      const winnable = owner && mayPublishOn(dag, owner, signer_tip_id) && !mayPublishOn(dag, owner, holder);
       if (!winnable) {
         return {
           fail: fail(
@@ -936,7 +936,9 @@ module.exports = {
   canRegisterContent,
   websiteProtectionOn,
   siteKey,
+  liveBindingFor,
   siteOwnerOf,
+  mayPublishOn,
   liveSitesOf,
   urlTakeoverPlan,
   takeoverOn,

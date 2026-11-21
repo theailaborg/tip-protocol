@@ -34,6 +34,7 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.ORG_MEMBER_INVITE_CANCELLED]: require("./org-member-invite-cancelled"),
   [TX_TYPES.ORG_MEMBER_ADDED]: require("./org-member-added"),
   [TX_TYPES.ORG_MEMBER_REMOVED]: require("./org-member-removed"),
+  [TX_TYPES.SITE_SNAPSHOT]: require("./site-snapshot"),
 });
 
 module.exports = { SCHEMA_FOR_TX_TYPE };

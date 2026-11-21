@@ -78,6 +78,7 @@ const STATE_PK = {
   domain_bindings: r => r.domain,
   platform_links: r => r.id,
   org_members: r => r.invite_tx_id,
+  site_snapshots: r => r.tx_id,
   verification_providers: r => r.vp_id,
   nodes: r => r.node_id,
   entity_keys: r => `${r.entity_type}:${r.entity_id}:${r.valid_from_ts}`,

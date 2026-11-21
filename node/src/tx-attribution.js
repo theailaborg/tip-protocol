@@ -79,6 +79,9 @@ function subjectTipIds(tx) {
     case TX_TYPES.ORG_MEMBER_REMOVED:
       return _clean([d.signer_tip_id, d.org_tip_id, d.member_tip_id]);
 
+    case TX_TYPES.SITE_SNAPSHOT:
+      return _clean([d.signer_tip_id]);
+
     // ── Author actions on owned content ─────────────────────────────────
     case TX_TYPES.REGISTER_CONTENT:
       // CNA-2.2: signer_tip_id is the canonical field; in self-attribution

@@ -30,6 +30,7 @@ const { noteRegistration } = require("../services/registered-again");
 const contentRegisterSchema = require("../schemas/content-register");
 const registerIdentitySchema = require("../schemas/register-identity");
 const bindDomainSchema = require("../schemas/bind-domain");
+const siteSnapshotSchema = require("../schemas/site-snapshot");
 const nodeEndpointUpdateSchema = require("../schemas/node-endpoint-update");
 const updateProfileSchema = require("../schemas/update-profile");
 const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggered");
@@ -108,6 +109,8 @@ function _mapBusinessRuleReason(error) {
   if (error.includes("Content already registered")) return TX_REJECTION_REASON.CONTENT_ALREADY_REGISTERED;
   if (error.includes("already bound to a different TIP-ID")) return TX_REJECTION_REASON.DOMAIN_ALREADY_CLAIMED;
   if (error.includes("reg_credit rate cap reached")) return TX_REJECTION_REASON.REG_CREDIT_CAP_REACHED;
+  if (error.startsWith(siteSnapshotSchema.STALE)) return TX_REJECTION_REASON.SITE_SNAPSHOT_STALE;
+  if (error.startsWith(siteSnapshotSchema.WITNESS_INVALID)) return TX_REJECTION_REASON.SITE_SNAPSHOT_WITNESS_INVALID;
   return TX_REJECTION_REASON.REVALIDATION_FAILED;
 }
 
@@ -178,6 +181,7 @@ function _actorTipId(tx) {
       return d.member_tip_id ?? null;
     case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
     case TX_TYPES.ORG_MEMBER_REMOVED:
+    case TX_TYPES.SITE_SNAPSHOT:
       return d.signer_tip_id ?? null;
     // Content actions — actor field name varies by role.
     case TX_TYPES.REGISTER_CONTENT:
@@ -208,7 +212,7 @@ function _actorTipId(tx) {
   }
 }
 
-function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId, isLocallyVerified }) {
+function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, siteIngest, config, nodeId, isLocallyVerified }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
   // as mempool rejections. nodeId precedence: explicit option →
@@ -713,6 +717,15 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           (t.tx_type === TX_TYPES.ORG_MEMBER_INVITE_CANCELLED || t.tx_type === TX_TYPES.ORG_MEMBER_ADDED)
           && t.data?.invite_tx_id === d.invite_tx_id);
         if (inBatch) return { valid: false, error: `invite ${d.invite_tx_id} already closed in this batch` };
+        return { valid: true };
+      }
+
+      // Siblings in one batch all extend the same committed head, so only the
+      // first snapshot per domain can be the next link.
+      case TX_TYPES.SITE_SNAPSHOT: {
+        if (typeof d.domain !== "string") return { valid: true };
+        const inBatch = validated.find(t => t.tx_type === TX_TYPES.SITE_SNAPSHOT && t.data?.domain === d.domain);
+        if (inBatch) return { valid: false, error: `${siteSnapshotSchema.STALE}: another snapshot of ${d.domain} is in this batch` };
         return { valid: true };
       }
 
@@ -1391,6 +1404,13 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
+      // Judged at max(tx.timestamp, certificate time), so a backdated tx can
+      // neither enter before activation nor skip the owner and rate checks.
+      case TX_TYPES.SITE_SNAPSHOT: {
+        const r = siteSnapshotSchema.verifyTx(tx, dag, { atMs: _siteAt(Number(tx.timestamp), certTimestamp) });
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
       default:
         return { valid: true };
     }
@@ -1916,6 +1936,31 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         }
         break;
       }
+
+      // registered_at is the tx envelope time, so every node writes the same row.
+      case TX_TYPES.SITE_SNAPSHOT:
+        dag.saveSiteSnapshot({
+          tx_id: tx.tx_id,
+          domain: d.domain,
+          seq: d.seq,
+          prev_snapshot_tx: d.prev_snapshot_tx ?? null,
+          root: d.root,
+          page_count: d.page_count,
+          template_hash: d.template_hash,
+          profile: d.profile,
+          wacz_hash: d.wacz_hash,
+          pack_hash: d.pack_hash,
+          ai_signals_hash: d.ai_signals_hash,
+          captured_at: d.captured_at,
+          signer_tip_id: d.signer_tip_id,
+          witness_vp_id: d.witness_vp_id ?? null,
+          registered_at: tx.timestamp,
+        });
+        // Off-DAG pack ingest runs later and never touches consensus.
+        if (siteIngest) {
+          try { siteIngest.enqueue(tx.tx_id); } catch (err) { log.warn(`site ingest enqueue failed for ${tx.tx_id.slice(0, 16)}: ${err.message}`); }
+        }
+        break;
 
       case TX_TYPES.ORG_MEMBER_REMOVED: {
         const row = dag.getOrgMemberByAddTxId(d.add_tx_id);

@@ -13,7 +13,7 @@ const contentListSchema = require("../schemas/content-list");
 const roster = require("../schemas/_org-members");
 const { ingestFingerprint } = require("../perceptual/ingest");
 const { maxDocumentPages } = require("../perceptual/document-pages");
-const { findSimilarCtids, matchFingerprintItems } = require("../perceptual/similar");
+const { findSimilarCtids, findSimilar: findSimilarWithSites, matchFingerprintItemsWithSites } = require("../perceptual/similar");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -290,8 +290,32 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   // Advisory two-layer near-dup lookup: step 0 exact content_hash (committed +
   // mempool-pending), step 1 perceptual via the request's fingerprint envelope.
   // Never blocks: every failure degrades to "no warning".
+  // One card per archived site page: the latest snapshot that matched, so several
+  // snapshots of one page do not crowd out other sites. Off-site pages never show.
+  async function _siteCards(hits, limit) {
+    const byPage = new Map();
+    for (const h of hits) {
+      const page = await dag.getSitePage(h.ctid);
+      if (!page || Number(page.offsite)) continue;
+      const snap = dag.getSiteSnapshot(page.snapshot_tx);
+      if (!snap) continue;
+      const k = `${page.domain} ${page.url}`;
+      const prev = byPage.get(k);
+      if (prev && prev.seq >= snap.seq) continue;
+      byPage.set(k, {
+        domain: page.domain, url: page.url, seq: snap.seq, snapshot_tx: snap.tx_id,
+        captured_at: snap.captured_at, signer_tip_id: snap.signer_tip_id,
+        similarity: { ...h.metric, score: Math.round(h.score * 1000) / 1000, modality: h.modality },
+      });
+    }
+    return [...byPage.values()]
+      .sort((a, b) => (b.similarity.score - a.similarity.score) || (a.url < b.url ? -1 : a.url > b.url ? 1 : 0))
+      .slice(0, limit);
+  }
+
   async function _findNearDuplicates({ ctid, contentHash, fingerprints, owner, email = false }) {
     const out = [];
+    let sites = [];
     const seen = new Set([ctid]); // never report the registration itself
     // step 0a , committed exact matches (indexed content_hash lookup;
     // Promise.resolve because the store may be sync (SQLite/Memory) or async).
@@ -340,8 +364,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       try {
         const parsed = contentRegisterSchema.parseFingerprintItems(fingerprints);
         const items = email ? _withoutTextItems(parsed) : parsed;
-        const hits = await matchFingerprintItems(dag, items, { excludeCtid: ctid, owner });
-        for (const hit of hits) {
+        const found = await matchFingerprintItemsWithSites(dag, items, { excludeCtid: ctid, owner });
+        sites = await _siteCards(found.sites, 5);
+        for (const hit of found.content) {
           // An exact hit is the stronger signal , don't double-report.
           if (seen.has(hit.ctid)) continue;
           seen.add(hit.ctid);
@@ -352,7 +377,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         log.warn(`near-dup perceptual check failed for ${ctid}: ${err.message || err}`);
       }
     }
-    return out;
+    return { cards: out, sites };
   }
 
   // True if this signer already has a REGISTER_CONTENT for this exact ctid in
@@ -607,7 +632,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // registration's own ingest, so only pre-existing content can surface.
     // The record's owner as commit-handler will store it (primary byline, else signer).
     const owner = (canonicalPayload.authors[0] && canonicalPayload.authors[0].tip_id) || signer_tip_id;
-    const nearDuplicates = await _findNearDuplicates({
+    const { cards: nearDuplicates, sites: nearDuplicateSites } = await _findNearDuplicates({
       ctid, contentHash: contentHashFull, fingerprints: body.fingerprints, owner, email,
     });
     if (nearDuplicates.length > 0) {
@@ -646,6 +671,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       // Advisory near-duplicate cards; empty = no matches. Never blocks the
       // registration and never affects the matched content's ctid.
       near_duplicates: nearDuplicates,
+      // Archived site pages this content resembles (latest snapshot per page).
+      near_duplicate_sites: nearDuplicateSites,
       author_name: identity?.creator_name || null,
       registered_urls: canonicalPayload.registered_urls,
       parent_url: canonicalPayload.parent_url || null,
@@ -1329,9 +1356,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     if (!dag.getContent(ctid)) throw schemaError(404, "Content not found", "content_not_found");
     const requested = Number(opts.limit);
     const limit = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 20) : 5;
-    const matches = await findSimilarCtids(dag, ctid, { limit });
-    const similar = matches.map(_similarCard).filter(Boolean);
-    return { ctid, count: similar.length, similar };
+    const matches = await findSimilarWithSites(dag, ctid, { limit });
+    const similar = matches.content.map(_similarCard).filter(Boolean);
+    const sites = await _siteCards(matches.sites, limit);
+    return { ctid, count: similar.length, similar, sites };
   }
 
   return { register, resolve, resolveForOg, list, verify, updateOrigin, updateRegisteredUrls, retract, getPrescanStatus, findSimilar, matchesByHash };

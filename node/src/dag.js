@@ -308,6 +308,44 @@ function _canonOrgMember(r) {
     removed_by: r.removed_by ?? null,
   };
 }
+// Site snapshots: every column participates in state_merkle_root. The owner's
+// and witness signatures stay on the tx, reachable through tx_id.
+function _canonSiteSnapshot(r) {
+  return {
+    tx_id: r.tx_id,
+    domain: r.domain,
+    seq: Number(r.seq),
+    prev_snapshot_tx: r.prev_snapshot_tx ?? null,
+    root: r.root,
+    page_count: Number(r.page_count),
+    template_hash: r.template_hash,
+    profile: r.profile,
+    wacz_hash: r.wacz_hash,
+    pack_hash: r.pack_hash,
+    ai_signals_hash: r.ai_signals_hash,
+    captured_at: Number(r.captured_at),
+    signer_tip_id: r.signer_tip_id,
+    witness_vp_id: r.witness_vp_id ?? null,
+    registered_at: Number(r.registered_at),
+  };
+}
+// Off-DAG rows with every column present, so prepared statements and Knex
+// inserts never see an undefined binding.
+function _sitePageRow(r) {
+  return {
+    page_key: r.page_key, snapshot_tx: r.snapshot_tx, domain: r.domain, seq: r.seq, url: r.url,
+    text_hash: r.text_hash, page_hash: r.page_hash, offsite: r.offsite ? 1 : 0,
+    changed: r.changed == null ? null : (r.changed ? 1 : 0), kept: r.kept ?? null,
+    paragraph_keys: r.paragraph_keys, created_at: r.created_at,
+  };
+}
+function _siteIngestRow(r) {
+  return {
+    snapshot_tx: r.snapshot_tx, domain: r.domain, seq: r.seq, state: r.state, attempts: r.attempts ?? 0,
+    next_attempt_at: r.next_attempt_at ?? 0, last_error: r.last_error ?? null, pages: r.pages ?? null,
+    offsite: r.offsite ?? null, source: r.source ?? null, updated_at: r.updated_at,
+  };
+}
 function _canonVP(r) {
   // GH #60: public_key in entity_keys, not here.
   return {
@@ -496,6 +534,7 @@ const SMT_READ = {
   domain_bindings: (st, pk) => { const r = st._domainBindings.get(pk); return r ? _canonDomainBinding(r) : null; },
   platform_links: (st, pk) => { const r = st._platformLinks.get(pk); return r ? _canonPlatformLink(r) : null; },
   org_members: (st, pk) => { const r = st._orgMembers.get(pk); return r ? _canonOrgMember(r) : null; },
+  site_snapshots: (st, pk) => { const r = st._siteSnapshots.get(pk); return r ? _canonSiteSnapshot(r) : null; },
   verification_providers: (st, pk) => { const r = st._vps.get(pk); return r ? _canonVP(r) : null; },
   nodes: (st, pk) => { const r = st._nodes.get(pk); return r ? _canonNode(r) : null; },
   entity_keys: (st, pk) => { const r = st._entityKeys.get(pk); return r ? _canonEntityKey(r) : null; },
@@ -526,6 +565,7 @@ const CANONICAL_PK = {
   domain_bindings: r => r.domain,
   platform_links: r => r.id,
   org_members: r => r.invite_tx_id,
+  site_snapshots: r => r.tx_id,
   verification_providers: r => r.vp_id,
   nodes: r => r.node_id,
   entity_keys: r => `${r.entity_type}:${r.entity_id}:${r.valid_from_ts}`,
@@ -612,6 +652,53 @@ class ContentMap extends SmtMap {
   }
 }
 
+// Site snapshots keyed by tx_id, with a per-domain seq index so the chain
+// head is found without walking every snapshot of every site.
+class SiteSnapshotMap extends SmtMap {
+  constructor(owner, table) { super(owner, table); this._byDomain = new Map(); }
+  set(k, v) {
+    const prev = super.get(k);
+    super.set(k, v);
+    if (prev) this._unindex(prev);
+    if (!this._byDomain.has(v.domain)) this._byDomain.set(v.domain, new Map());
+    this._byDomain.get(v.domain).set(v.seq, k);
+    return this;
+  }
+  delete(k) {
+    const prev = super.get(k);
+    const r = super.delete(k);
+    if (r && prev) this._unindex(prev);
+    return r;
+  }
+  clear() {
+    super.clear();
+    this._byDomain.clear();
+  }
+  latest(domain) {
+    const seqs = this._byDomain.get(domain);
+    if (!seqs || seqs.size === 0) return null;
+    let top = -Infinity;
+    for (const seq of seqs.keys()) if (seq > top) top = seq;
+    return super.get(seqs.get(top)) || null;
+  }
+  // Newest first; `before` is an exclusive seq bound.
+  list(domain, before, limit) {
+    const seqs = this._byDomain.get(domain);
+    if (!seqs) return [];
+    return [...seqs.keys()]
+      .filter(seq => before == null || seq < before)
+      .sort((a, b) => b - a)
+      .slice(0, limit)
+      .map(seq => super.get(seqs.get(seq)));
+  }
+  _unindex(row) {
+    const seqs = this._byDomain.get(row.domain);
+    if (!seqs) return;
+    seqs.delete(row.seq);
+    if (seqs.size === 0) this._byDomain.delete(row.domain);
+  }
+}
+
 class MemoryStore {
   constructor() {
     this._smt = createSMT();   // #88 , must exist before any canonical map
@@ -668,6 +755,9 @@ class MemoryStore {
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new SmtMap(this, "platform_links"); // key: `${tip_id}::${platform}` (== row.id)
     this._orgMembers = new SmtMap(this, "org_members"); // invite_tx_id -> roster row (canonical)
+    this._siteSnapshots = new SiteSnapshotMap(this, "site_snapshots"); // tx_id -> snapshot row (canonical)
+    this._sitePages = new Map();      // page_key -> site_page row (node-local, off-DAG)
+    this._siteIngests = new Map();    // snapshot_tx -> site_ingest row (node-local)
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -1045,6 +1135,51 @@ class MemoryStore {
     return [...this._orgMembers.values()].filter(r => r.member_tip_id === memberTipId);
   }
 
+  // ── Site snapshots (canonical, in state_merkle_root) ──────────────────────
+  // Rows never change once written: first write wins, as INSERT OR IGNORE.
+  saveSiteSnapshot(rec) {
+    if (this._siteSnapshots.has(rec.tx_id)) return;
+    this._siteSnapshots.set(rec.tx_id, _canonSiteSnapshot(rec));
+  }
+  getSiteSnapshot(txId) {
+    return this._siteSnapshots.get(txId) || null;
+  }
+  getLatestSiteSnapshot(domain) {
+    return this._siteSnapshots.latest(domain);
+  }
+  listSiteSnapshots(domain, { before = null, limit = 20 } = {}) {
+    return this._siteSnapshots.list(domain, before, limit);
+  }
+  listSiteSnapshotsAfter(afterTxId, limit) {
+    return [...this._siteSnapshots.keys()].filter(k => k > afterTxId).sort(cmpBin).slice(0, limit)
+      .map(k => this._siteSnapshots.get(k));
+  }
+
+  // ── Site pages and ingest state (node-local, off-DAG) ─────────────────────
+  saveSitePages(rows) {
+    for (const r of rows) if (!this._sitePages.has(r.page_key)) this._sitePages.set(r.page_key, { ...r });
+  }
+  getSitePage(pageKey) {
+    const r = this._sitePages.get(pageKey);
+    return r ? { ...r } : null;
+  }
+  listSitePages(snapshotTx) {
+    return [...this._sitePages.values()].filter(r => r.snapshot_tx === snapshotTx)
+      .sort((a, b) => cmpBin(a.page_key, b.page_key)).map(r => ({ ...r }));
+  }
+  saveSiteIngest(row) {
+    this._siteIngests.set(row.snapshot_tx, { ...row });
+  }
+  getSiteIngest(snapshotTx) {
+    const r = this._siteIngests.get(snapshotTx);
+    return r ? { ...r } : null;
+  }
+  listSiteIngestsDue(atMs) {
+    return [...this._siteIngests.values()]
+      .filter(r => r.state !== "done" && Number(r.next_attempt_at) <= atMs)
+      .sort((a, b) => cmpBin(a.domain, b.domain) || Number(a.seq) - Number(b.seq)).map(r => ({ ...r }));
+  }
+
   // ── Domain pending claims (local-only; NOT canonical, NOT in merkle root) ─
   // Stores the user-signed claim between POST /register and POST /verify.
   // Only the receiving node has the claim — verification re-establishes
@@ -1244,6 +1379,7 @@ class MemoryStore {
     this._entityKeys.clear();
     this._platformLinks.clear();
     this._orgMembers.clear();
+    this._siteSnapshots.clear();
     // Every table that iterateCanonicalState yields MUST be cleared here,
     // otherwise leftover rows survive a snapshot install and contribute to
     // state_merkle_root → permanent Merkle divergence vs the snapshot author.
@@ -1266,6 +1402,7 @@ class MemoryStore {
       case "domain_bindings": return this._domainBindings.delete(pk);
       case "platform_links": return this._platformLinks.delete(pk);
       case "org_members": return this._orgMembers.delete(pk);
+      case "site_snapshots": return this._siteSnapshots.delete(pk);
       case "verification_providers": return this._vps.delete(pk);
       case "nodes": return this._nodes.delete(pk);
       case "entity_keys": return this._entityKeys.delete(pk);
@@ -1873,6 +2010,10 @@ class MemoryStore {
     for (const r of [...this._orgMembers.values()]
       .sort((a, b) => cmpBin(a.invite_tx_id, b.invite_tx_id))) {
       yield { table: "org_members", row: _canonOrgMember(r) };
+    }
+    for (const r of [...this._siteSnapshots.values()]
+      .sort((a, b) => cmpBin(a.tx_id, b.tx_id))) {
+      yield { table: "site_snapshots", row: _canonSiteSnapshot(r) };
     }
     for (const [entity_key, tx_id] of [...this._ownerHeads.entries()]
       .sort((a, b) => cmpBin(a[0], b[0]))) {
@@ -2893,6 +3034,33 @@ class SQLiteStore {
       getOrgMembersByOrg: this.db.prepare("SELECT * FROM org_members WHERE org_tip_id=?"),
       getOrgMembersByMember: this.db.prepare("SELECT * FROM org_members WHERE member_tip_id=?"),
 
+      saveSiteSnapshot: this.db.prepare(
+        `INSERT OR IGNORE INTO site_snapshots
+         (tx_id, domain, seq, prev_snapshot_tx, root, page_count, template_hash, profile,
+          wacz_hash, pack_hash, ai_signals_hash, captured_at, signer_tip_id, witness_vp_id, registered_at)
+         VALUES (@tx_id, @domain, @seq, @prev_snapshot_tx, @root, @page_count, @template_hash, @profile,
+                 @wacz_hash, @pack_hash, @ai_signals_hash, @captured_at, @signer_tip_id, @witness_vp_id, @registered_at)`
+      ),
+      getSiteSnapshot: this.db.prepare("SELECT * FROM site_snapshots WHERE tx_id=?"),
+      getLatestSiteSnapshot: this.db.prepare("SELECT * FROM site_snapshots WHERE domain=? ORDER BY seq DESC LIMIT 1"),
+      listSiteSnapshots: this.db.prepare("SELECT * FROM site_snapshots WHERE domain=? AND seq < ? ORDER BY seq DESC LIMIT ?"),
+      listSiteSnapshotsAfter: this.db.prepare("SELECT * FROM site_snapshots WHERE tx_id > ? ORDER BY tx_id LIMIT ?"),
+
+      saveSitePage: this.db.prepare(
+        `INSERT OR IGNORE INTO site_page
+         (page_key, snapshot_tx, domain, seq, url, text_hash, page_hash, offsite, changed, kept, paragraph_keys, created_at)
+         VALUES (@page_key, @snapshot_tx, @domain, @seq, @url, @text_hash, @page_hash, @offsite, @changed, @kept, @paragraph_keys, @created_at)`
+      ),
+      getSitePage: this.db.prepare("SELECT * FROM site_page WHERE page_key=?"),
+      listSitePages: this.db.prepare("SELECT * FROM site_page WHERE snapshot_tx=? ORDER BY page_key"),
+      saveSiteIngest: this.db.prepare(
+        `INSERT OR REPLACE INTO site_ingest
+         (snapshot_tx, domain, seq, state, attempts, next_attempt_at, last_error, pages, offsite, source, updated_at)
+         VALUES (@snapshot_tx, @domain, @seq, @state, @attempts, @next_attempt_at, @last_error, @pages, @offsite, @source, @updated_at)`
+      ),
+      getSiteIngest: this.db.prepare("SELECT * FROM site_ingest WHERE snapshot_tx=?"),
+      listSiteIngestsDue: this.db.prepare("SELECT * FROM site_ingest WHERE state <> 'done' AND next_attempt_at <= ? ORDER BY domain, seq"),
+
       savePendingDomainClaim: this.db.prepare(
         `INSERT OR REPLACE INTO pending_domain_claims
            (domain,tip_id,method,claimed_at,signature,received_at)
@@ -3852,6 +4020,37 @@ class SQLiteStore {
   getOrgMembersByOrg(orgTipId) { return this._stmts.getOrgMembersByOrg.all(orgTipId); }
   getOrgMembersByMember(memberTipId) { return this._stmts.getOrgMembersByMember.all(memberTipId); }
 
+  // ── Site snapshots (canonical) ───────────────────────────────────────────
+  saveSiteSnapshot(rec) { this._stmts.saveSiteSnapshot.run(_canonSiteSnapshot(rec)); }
+  getSiteSnapshot(txId) {
+    const r = this._stmts.getSiteSnapshot.get(txId);
+    return r ? _canonSiteSnapshot(r) : null;
+  }
+  getLatestSiteSnapshot(domain) {
+    const r = this._stmts.getLatestSiteSnapshot.get(domain);
+    return r ? _canonSiteSnapshot(r) : null;
+  }
+  listSiteSnapshots(domain, { before = null, limit = 20 } = {}) {
+    return this._stmts.listSiteSnapshots
+      .all(domain, before == null ? Number.MAX_SAFE_INTEGER : before, limit)
+      .map(_canonSiteSnapshot);
+  }
+
+  listSiteSnapshotsAfter(afterTxId, limit) {
+    return this._stmts.listSiteSnapshotsAfter.all(afterTxId, limit).map(_canonSiteSnapshot);
+  }
+
+  // ── Site pages and ingest state (node-local, off-DAG) ─────────────────────
+  saveSitePages(rows) {
+    const tx = this.db.transaction((list) => { for (const r of list) this._stmts.saveSitePage.run(_sitePageRow(r)); });
+    tx(rows);
+  }
+  getSitePage(pageKey) { return this._stmts.getSitePage.get(pageKey) || null; }
+  listSitePages(snapshotTx) { return this._stmts.listSitePages.all(snapshotTx); }
+  saveSiteIngest(row) { this._stmts.saveSiteIngest.run(_siteIngestRow(row)); }
+  getSiteIngest(snapshotTx) { return this._stmts.getSiteIngest.get(snapshotTx) || null; }
+  listSiteIngestsDue(atMs) { return this._stmts.listSiteIngestsDue.all(atMs); }
+
   // ── Pending domain claims (local-only) ───────────────────────────────────
   savePendingDomainClaim(rec) {
     this._stmts.savePendingDomainClaim.run(
@@ -4370,6 +4569,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM org_members ORDER BY invite_tx_id").iterate()) {
       yield { table: "org_members", row: _canonOrgMember(r) };
     }
+    for (const r of db.prepare("SELECT * FROM site_snapshots ORDER BY tx_id").iterate()) {
+      yield { table: "site_snapshots", row: _canonSiteSnapshot(r) };
+    }
     for (const r of db.prepare("SELECT * FROM owner_heads ORDER BY entity_key").iterate()) {
       yield { table: "owner_heads", row: _canonOwnerHead(r) };
     }
@@ -4414,6 +4616,7 @@ class SQLiteStore {
       this.db.prepare("DELETE FROM entity_keys").run();
       this.db.prepare("DELETE FROM platform_links").run();
       this.db.prepare("DELETE FROM org_members").run();
+      this.db.prepare("DELETE FROM site_snapshots").run();
       // Every table that iterateCanonicalState yields MUST be cleared here,
       // otherwise leftover rows survive a snapshot install and contribute
       // to state_merkle_root → permanent Merkle divergence.
@@ -4435,6 +4638,7 @@ class SQLiteStore {
       case "domain_bindings": return del("DELETE FROM domain_bindings WHERE domain=?", row.domain);
       case "platform_links": return del("DELETE FROM platform_links WHERE id=?", row.id);
       case "org_members": return del("DELETE FROM org_members WHERE invite_tx_id=?", row.invite_tx_id);
+      case "site_snapshots": return del("DELETE FROM site_snapshots WHERE tx_id=?", row.tx_id);
       case "verification_providers": return del("DELETE FROM verification_providers WHERE vp_id=?", row.vp_id);
       case "nodes": return del("DELETE FROM nodes WHERE node_id=?", row.node_id);
       case "entity_keys": return del(
@@ -5121,6 +5325,19 @@ function _buildDagHandle(store, config) {
     getOrgMembersByOrg: (orgTipId) => store.getOrgMembersByOrg(orgTipId),
     getOrgMembersByMember: (memberTipId) => store.getOrgMembersByMember(memberTipId),
 
+    // ── Site snapshots (canonical) ────────────────────────────────────────
+    saveSiteSnapshot: (rec) => store.saveSiteSnapshot(rec),
+    getSiteSnapshot: (txId) => store.getSiteSnapshot(txId),
+    getLatestSiteSnapshot: (domain) => store.getLatestSiteSnapshot(domain),
+    listSiteSnapshots: (domain, opts) => store.listSiteSnapshots(domain, opts),
+    listSiteSnapshotsAfter: (afterTxId, limit) => store.listSiteSnapshotsAfter(afterTxId, limit),
+    saveSitePages: (rows) => store.saveSitePages(rows),
+    getSitePage: (pageKey) => store.getSitePage(pageKey),
+    listSitePages: (snapshotTx) => store.listSitePages(snapshotTx),
+    saveSiteIngest: (row) => store.saveSiteIngest(row),
+    getSiteIngest: (snapshotTx) => store.getSiteIngest(snapshotTx),
+    listSiteIngestsDue: (atMs) => store.listSiteIngestsDue(atMs),
+
     // ── Verification Providers ────────────────────────────────────────────
     saveVP: (rec) => store.saveVP(rec),
     getVP: (id) => store.getVP(id),
@@ -5638,4 +5855,4 @@ function _writeGenesisBlock(store, config) {
   if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);
 }
 
-module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore, canonicalPk, _computeExpectedOwnerHead, _computePrevFor, _noteSealedTx };
+module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore, canonicalPk, _computeExpectedOwnerHead, _computePrevFor, _noteSealedTx, _sitePageRow, _siteIngestRow };

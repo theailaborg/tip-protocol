@@ -21,6 +21,7 @@ function createWebsitePagesClient(opts = {}) {
   const now = opts.now ?? nowMs;
   const enabled = Boolean(url && key && typeof fetchImpl === "function");
   const full = new Map();   // owner tip_id -> { answer, resets_at_ms, at }
+  const snapshotRefused = new Map();   // "owner|domain" -> { answer, until_ms }
 
   async function _post(path, body) {
     const ac = new AbortController();
@@ -101,7 +102,42 @@ function createWebsitePagesClient(opts = {}) {
     }
   }
 
-  return { enabled, reserve, sitesLimit };
+  function _knownRefusal(k) {
+    const r = snapshotRefused.get(k);
+    if (!r) return null;
+    if (now() >= r.until_ms) { snapshotRefused.delete(k); return null; }
+    return r.answer;
+  }
+
+  /**
+   * Whether the owner's plan allows a snapshot of this site now: the billing
+   * service's { allowed, reason, next_allowed_at (epoch s), upgrade_url }, or
+   * null when disabled or unreachable (let it through). A refusal is kept until
+   * next_allowed_at (at most LAST_KNOWN_TTL_MS), so an outage cannot skip it.
+   */
+  async function snapshotAllowed({ owner_tip_id, signer_tip_id, domain, page_count }) {
+    if (!enabled) return null;
+    const k = `${owner_tip_id}|${domain}`;
+    try {
+      const answer = await _post("/api/websites/snapshot", { owner_tip_id, signer_tip_id, domain, page_count });
+      if (typeof answer.allowed !== "boolean") throw new Error("malformed answer");
+      if (answer.allowed) {
+        snapshotRefused.delete(k);
+      } else {
+        if (snapshotRefused.size >= MEDIA_QUOTA_CLIENT.LAST_KNOWN_MAX) snapshotRefused.delete(snapshotRefused.keys().next().value);
+        const cap = now() + MEDIA_QUOTA_CLIENT.LAST_KNOWN_TTL_MS;
+        const next = typeof answer.next_allowed_at === "number" ? answer.next_allowed_at * 1000 : cap;
+        snapshotRefused.set(k, { answer, until_ms: Math.min(next, cap) });
+      }
+      return answer;
+    } catch (err) {
+      const known = _knownRefusal(k);
+      log.warn?.(`website-pages snapshot check unavailable for ${owner_tip_id} ${domain}: ${err.message}${known ? " (refused, last known)" : " (allowing)"}`);
+      return known ? { ...known, stale: true } : null;
+    }
+  }
+
+  return { enabled, reserve, sitesLimit, snapshotAllowed };
 }
 
 module.exports = { createWebsitePagesClient };

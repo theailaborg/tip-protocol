@@ -67,6 +67,7 @@ const SCHEMA_FOR_TX_TYPE = {
   [TX_TYPES.ORG_MEMBER_ADDED]: orgMemberAddedSchema,
   [TX_TYPES.ORG_MEMBER_REMOVED]: orgMemberRemovedSchema,
   [TX_TYPES.ORG_MEMBER_INVITE_CANCELLED]: require(path.join(SRC, "schemas", "org-member-invite-cancelled")),
+  [TX_TYPES.SITE_SNAPSHOT]: require(path.join(SRC, "schemas", "site-snapshot")),
 };
 
 // Tx types intentionally not yet on the unified contract — accounted for
