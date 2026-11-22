@@ -452,6 +452,22 @@ Get VP details.
 
 ---
 
+### Domain bindings
+
+A site owner proves control of a domain with a DNS TXT record `_tip-protocol.<domain>` = `tip-id=<TIP-ID>` or the file `https://<domain>/.well-known/tip-protocol.json`, and signs a claim `{ claimed_at, domain, method, tip_id }`.
+
+- `POST /v1/domain/register` `{ domain, tip_id, method, claimed_at, signature }`: records the signed claim on this node.
+- `POST /v1/domain/verify` `{ domain, tip_id }`: this node checks the proof and submits `BIND_DOMAIN`; the answer is `{ tip_id, domain, verified, method, verified_at, tx_id, evidence, confirmation: "proposed" }`.
+- `POST /v1/domain/renew` `{ domain }`: in a binding's last 10 days, checks the proof again and re-submits the owner's original claim (anyone may ask; at most once per 10 minutes per domain).
+- `POST /v1/domain/release` `{ domain, tip_id, released_at, signature }`: the owner gives the site up.
+- `GET /v1/domain/:domain`: the binding, the same answer on every node. A binding expires 30 days after its `verified_at`.
+
+**Committee quorum** (from `DOMAIN_QUORUM.ACTIVATION_MS`, provisional 2026-12-15 00:00 UTC, with site snapshots; `TIP_DOMAIN_QUORUM_ACTIVATION_MS` overrides it outside production):
+- Each `BIND_DOMAIN` is one node's attestation that it saw the proof. Every other committee node that sees it checks the proof itself and, if it holds, submits its own.
+- A binding, or its renewal, applies once attestations for the same claim (domain, TIP-ID, `claimed_at`) come from ceil(2n/3) of the committee (n = committee size at the commit round; 4 of 5 today) within one hour of the certificate time. Its `verified_at` is the earliest counted check.
+- An attestation is refused when its check is more than 60 s ahead of the certificate time (`attestation_ahead`) or more than an hour old (`attestation_stale`), or when the node already attested the claim in that hour (`attestation_duplicate`). Nodes outside the committee may attest but are not counted.
+- `verify` and `renew` answers add `attestations: { have, need }` (counted before this attestation commits). `GET /v1/domain/:domain` adds `attestations: { tip_id, claimed_at, have, need, nodes }` for the newest claim checked in the last hour, and answers `status: "pending_verification"` while no binding exists yet.
+
 ### Site snapshots
 
 A site snapshot is one record per version of a whole protected website: a Merkle root over the exact text of every page (profile `cf-web-1`, rules in `tip-content-fingerprint`), the hash of the full archive and of its fingerprint pack, signed by the site's owner and chained per domain by `seq`. Accepted from `SITE_SNAPSHOT.ACTIVATION_MS` (provisional 2026-12-15 00:00 UTC). Every hash is SHAKE-256, 64 lowercase hex characters.

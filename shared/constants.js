@@ -1198,6 +1198,18 @@ const SITE_SNAPSHOT = Object.freeze({
 
 // Off-DAG ingest of each committed snapshot's fingerprint pack (node-local,
 // advisory, rebuildable). Packs come from TIP_SITE_ARCHIVE_URLS by pack_hash.
+// A domain binding (or its renewal) applies once ceil(2n/3) of the committee have each
+// checked the proof themselves; one node's BIND_DOMAIN is one attestation.
+const DOMAIN_QUORUM = Object.freeze({
+  ACTIVATION_MS: 1797292800000,          // 2026-12-15 00:00:00 UTC, provisional, with SITE_SNAPSHOT
+  WINDOW_MS: 60 * 60 * 1000,             // attestations for one claim count together within this
+  MAX_AHEAD_MS: 60 * 1000,               // verified_at may be this far ahead of the commit time
+  RETRY_DELAYS_MS: Object.freeze([30 * 1000, 2 * 60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000]),
+  CONCURRENCY: 2,
+  QUEUE_MAX: 1000,
+  RECONCILE_MS: 10 * 60 * 1000,
+});
+
 const SITE_INGEST = Object.freeze({
   PAGE_KEY_PREFIX: "site:",              // perceptual-index key: site:<snapshot tx_id>:<16 hex of SHAKE-256(url)>
   PASSAGE_PROFILE: "cf-web-1",           // document_passage profile for site paragraph keys
@@ -1388,6 +1400,7 @@ module.exports = {
   DOMAIN_RELEASE,
   SITE_SNAPSHOT,
   SITE_INGEST,
+  DOMAIN_QUORUM,
   REGISTERED_AGAIN_ACTIVATION_MS,
   SHARED_HOST_DOMAINS,
   PRESCAN_REVIEW_CAP,

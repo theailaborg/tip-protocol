@@ -11,6 +11,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Domain bindings by committee quorum** (consensus change behind `DOMAIN_QUORUM.ACTIVATION_MS`,
+provisional 2026-12-15 00:00 UTC, with site snapshots; `TIP_DOMAIN_QUORUM_ACTIVATION_MS`
+overrides it outside production)
+- A `BIND_DOMAIN` is one node's attestation that it saw the owner's DNS record or
+  well-known file. A binding or its renewal applies only once ceil(2n/3) of the committee
+  have attested the same claim within an hour of the certificate time (4 of 5 today); the
+  signed bytes are unchanged. Until now one node's check bound a site.
+- Every node checks claims other nodes attested and attests too when the proof holds
+  (`node/src/domain/co-attest.js`, retries within the hour, reconcile at start).
+- Canonical table `domain_attestations` (migration `019_domain_attestations`, keyed by
+  domain and node, in the state root and snapshot install), on every store.
+- `verify` / `renew` answers and `GET /v1/domain/:domain` show the attestations so far.
+
 **Site snapshots: one owner-signed record per version of a whole website** (consensus
 change behind `SITE_SNAPSHOT.ACTIVATION_MS`, provisional 2026-12-15 00:00 UTC; every node
 upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside production)

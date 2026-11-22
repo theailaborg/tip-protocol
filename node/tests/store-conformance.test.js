@@ -737,6 +737,29 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getLatestSiteSnapshot("a.example").tx_id).toBe(ids[1]);
   });
 
+  test("domain attestations: one row per (domain, node), a newer attestation replaces it, per-domain and since listings", async () => {
+    const dag = await makeDag();
+    const att = (domain, node, verifiedAt, over = {}) => ({
+      domain, node_id: node, tip_id: "tip://id/US-aaaaaaaaaaaaaaaa", claimed_at: T0, claimed_method: "dns",
+      verified_at: verifiedAt, tx_id: `${node.slice(-1)}${domain[0]}`.repeat(32), ...over,
+    });
+    dag.saveDomainAttestation(att("a.example", "tip://node/n2", T0 + 20));
+    dag.saveDomainAttestation(att("a.example", "tip://node/n1", T0 + 10));
+    dag.saveDomainAttestation(att("b.example", "tip://node/n1", T0 + 5));
+    dag.saveDomainAttestation(att("a.example", "tip://node/n1", T0 + 30, { claimed_at: T0 + 1, tx_id: "f".repeat(64) }));
+
+    expect(dag.getDomainAttestation("a.example", "tip://node/n1")).toEqual(att("a.example", "tip://node/n1", T0 + 30, { claimed_at: T0 + 1, tx_id: "f".repeat(64) }));
+    expect(dag.getDomainAttestation("a.example", "tip://node/n9")).toBeNull();
+    expect(dag.listDomainAttestations("a.example").map(r => [r.node_id, r.verified_at])).toEqual([["tip://node/n1", T0 + 30], ["tip://node/n2", T0 + 20]]);
+    expect(dag.listDomainAttestations("c.example")).toEqual([]);
+    expect(dag.listDomainAttestationsSince(T0 + 10).map(r => `${r.domain} ${r.node_id}`)).toEqual(["a.example tip://node/n1", "a.example tip://node/n2"]);
+
+    expect([...dag.iterateCanonicalState()].filter(r => r.table === "domain_attestations").map(r => `${r.row.domain} ${r.row.node_id}`))
+      .toEqual(["a.example tip://node/n1", "a.example tip://node/n2", "b.example tip://node/n1"]);
+    expect(dag.deleteCanonicalRow("domain_attestations", { domain: "a.example", node_id: "tip://node/n2" })).toBe(true);
+    expect(dag.listDomainAttestations("a.example").map(r => r.node_id)).toEqual(["tip://node/n1"]);
+  });
+
   test("site pages and ingest state (node-local): first page write wins, ingest upserts, due list skips done and future", async () => {
     const dag = await makeDag();
     const page = (key, tx, url, over = {}) => ({

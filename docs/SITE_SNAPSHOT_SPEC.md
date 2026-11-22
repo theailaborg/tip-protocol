@@ -2,6 +2,8 @@
 
 Status: the record, its rules, state and API, pack ingest, the page lookup and similar search for site pages ("built") are implemented, not yet released, on tip-content-fingerprint 2.8.0 (vendored release tarball). Paragraph keys for ordinary posts ("next") wait for the library's `cf-text-4`. Consensus change, gated by an activation date. Part of the **Website Archive** project.
 
+**Bindings are agreed by the committee** (#392). A snapshot is accepted only from a site's binding owner, and from the same activation a binding (or its renewal) applies only once ceil(2n/3) of the committee have each checked the owner's DNS record or well-known file within an hour, so no single node or operator can bind a site. See `docs/API.md`, "Domain bindings".
+
 **Shared hosts cannot be protected.** `theailab.org` and `findtip.org` are in `SHARED_HOST_DOMAINS` (as are x.com, medium.com and the like), so no binding of them counts and a `SITE_SNAPSHOT` for them is refused (`site_not_protected`). A live test of the whole flow needs a site that can be bound: another domain, or a subdomain such as `archive-test.theailab.org`.
 
 Tracking issue: #389.

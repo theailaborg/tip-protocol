@@ -22,7 +22,7 @@
 "use strict";
 
 const {
-  TX_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHODS,
+  TX_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHODS, DOMAIN_QUORUM,
   DOMAIN_DNS_TXT_PREFIX, DOMAIN_WELL_KNOWN_PATH,
   SIGNED_BY_KIND, DOMAIN_VERIFICATION_METHOD_VALUES,
   DOMAIN_UNBIND_REASONS, DOMAIN_RELEASE,
@@ -36,7 +36,8 @@ const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
 const domainVerifier = require("../domain/verifier");
-const { websiteProtectionOn, domainReleaseOn, RELEASE_MS } = require("../validators/website-gate");
+const { websiteProtectionOn, domainReleaseOn, domainQuorumOn, RELEASE_MS } = require("../validators/website-gate");
+const { buildAttestationTx } = require("../domain/attest");
 const { log } = require("../logger");
 
 /**
@@ -170,75 +171,27 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier,
   // claim) and renew (the owner's original claim, re-proved today).
   // `claim` = { tip_id, claimed_at, method (what the user signed), signature }.
   function _proposeBinding({ claim, domain, result }) {
-    if (!config.nodePrivateKey) {
-      // Node misconfiguration — without a private key we can't attest.
-      throw schemaError(500, "Node missing private key — cannot sign binding attestation", "node_unconfigured");
-    }
-    const nodeId = config.nodeRegisteredId || config.nodeId;
-    if (!nodeId) {
-      throw schemaError(500, "Node id not configured", "node_unconfigured");
-    }
-
-    const verifiedAt = result.verified_at || nowMs();
-    const canonicalBinding = bindDomainSchema.buildSigningPayload({
-      binding_state: DOMAIN_BINDING_STATUS.VERIFIED,
-      claimed_at: claim.claimed_at,
-      claimed_method: claim.method,
-      domain,
-      method: result.method,
-      node_id: nodeId,
-      tip_id: claim.tip_id,
-      verified_at: verifiedAt,
-    });
-    const bindingSignature = bindDomainSchema.sign(canonicalBinding, config.nodePrivateKey);
-
-    const txBody = {
-      tx_type: TX_TYPES.BIND_DOMAIN,
-      timestamp: verifiedAt,
-      data: {
-        // canonical fields mirrored onto tx.data so commit-handler can
-        // replay buildSigningPayload(d) deterministically
-        binding_state: canonicalBinding.binding_state,
-        claimed_at: canonicalBinding.claimed_at,
-        claimed_method: canonicalBinding.claimed_method,
-        domain: canonicalBinding.domain,
-        method: canonicalBinding.method,
-        node_id: canonicalBinding.node_id,
-        tip_id: canonicalBinding.tip_id,
-        verified_at: canonicalBinding.verified_at,
-        // User's claim sig from REGISTER_DOMAIN, carried as a cosignature.
-        // The cosigner (claimant tip_id) signed the register-domain
-        // canonical body — verifyTx rebuilds that body and verifies via
-        // the cosignatures dispatcher.
-        cosignatures: [{
-          signer_kind: SIGNED_BY_KIND.SUBJECT,
-          signer_ref:  claim.tip_id,
-          signature:   claim.signature,
-        }],
-        // tx-level fields
-        evidence: result.evidence,
-      },
-      // Node's ML-DSA-65 attestation over the canonical binding payload.
-      signature: bindingSignature,
-    };
-    const signedTx = withTxId(txBody, dag);
-
-    const validation = validateTransaction(signedTx, dag, { skipState: true });
-    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
-
+    const signedTx = buildAttestationTx({ dag, config, claim, domain, result });
     submitTx(signedTx);
     log.info(`Domain binding proposed: ${domain} → ${claim.tip_id} (method: ${result.method}, tx: ${signedTx.tx_id.slice(0, 16)})`);
 
-    return {
+    const out = {
       tip_id: claim.tip_id,
       domain,
       verified: true,
       method: result.method,
-      verified_at: verifiedAt,
+      verified_at: signedTx.data.verified_at,
       tx_id: signedTx.tx_id,
       evidence: result.evidence,
       confirmation: "proposed",
     };
+    // Quorum rule: this is one attestation; the binding applies once enough of
+    // the committee have checked the proof too (they do so on their own).
+    if (domainQuorumOn(nowMs())) {
+      const q = bindDomainSchema.attestationQuorum(dag, { domain, tip_id: claim.tip_id, claimed_at: claim.claimed_at }, nowMs());
+      out.attestations = { have: q.have, need: q.need };
+    }
+    return out;
   }
 
   // ── GET /v1/domain/:domain ───────────────────────────────────────────
@@ -255,9 +208,29 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier,
   // staleness tighter than the protocol-wide expiry). When the v2 adaptive
   // renewal scheduler lands, the same fields drive automated re-probe;
   // the API surface is forward-compatible.
+  // Quorum rule: the newest claim with attestations in the window (the same
+  // answer on every node: attestations are canonical state).
+  function _openAttestations(domain, now) {
+    if (!domainQuorumOn(now)) return null;
+    const since = now - DOMAIN_QUORUM.WINDOW_MS;
+    const rows = dag.listDomainAttestations(domain).filter(r => r.verified_at >= since);
+    if (!rows.length) return null;
+    const newest = rows.reduce((a, b) => (b.verified_at > a.verified_at ? b : a));
+    const q = bindDomainSchema.attestationQuorum(dag, newest, now);
+    return { tip_id: newest.tip_id, claimed_at: newest.claimed_at, have: q.have, need: q.need, nodes: q.rows.map(r => r.node_id) };
+  }
+
   function get(domain) {
     const normalized = registerDomainSchema.normalizeDomain(domain);
     const binding = dag.getDomainBinding(normalized);
+    const attestations = _openAttestations(normalized, nowMs());
+    if (!binding && attestations) {
+      return {
+        domain: normalized, tip_id: attestations.tip_id, status: DOMAIN_BINDING_STATUS.PENDING, method: null,
+        claimed_at: attestations.claimed_at, verified_at: null, expires_at: null, days_until_expiry: null,
+        consecutive_failures: 0, binding_signature: null, node_id: null, tx_id: null, attestations,
+      };
+    }
     if (!binding) {
       // No committed binding. Is there a pending claim on this node?
       // Note: claims are per-node — peers won't surface a pending row
@@ -309,6 +282,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier,
       binding_signature: binding.binding_signature,
       node_id: binding.node_id,
       tx_id: binding.tx_id,
+      ...(attestations ? { attestations } : {}),
     };
   }
 

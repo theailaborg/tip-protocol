@@ -329,6 +329,18 @@ function _canonSiteSnapshot(r) {
     registered_at: Number(r.registered_at),
   };
 }
+function _canonDomainAttestation(r) {
+  return {
+    domain: r.domain,
+    node_id: r.node_id,
+    tip_id: r.tip_id,
+    claimed_at: Number(r.claimed_at),
+    claimed_method: r.claimed_method,
+    verified_at: Number(r.verified_at),
+    tx_id: r.tx_id,
+  };
+}
+const _attestationKey = (r) => `${r.domain}\x00${r.node_id}`;
 // Off-DAG rows with every column present, so prepared statements and Knex
 // inserts never see an undefined binding.
 function _sitePageRow(r) {
@@ -535,6 +547,7 @@ const SMT_READ = {
   platform_links: (st, pk) => { const r = st._platformLinks.get(pk); return r ? _canonPlatformLink(r) : null; },
   org_members: (st, pk) => { const r = st._orgMembers.get(pk); return r ? _canonOrgMember(r) : null; },
   site_snapshots: (st, pk) => { const r = st._siteSnapshots.get(pk); return r ? _canonSiteSnapshot(r) : null; },
+  domain_attestations: (st, pk) => { const r = st._domainAttestations.get(pk); return r ? _canonDomainAttestation(r) : null; },
   verification_providers: (st, pk) => { const r = st._vps.get(pk); return r ? _canonVP(r) : null; },
   nodes: (st, pk) => { const r = st._nodes.get(pk); return r ? _canonNode(r) : null; },
   entity_keys: (st, pk) => { const r = st._entityKeys.get(pk); return r ? _canonEntityKey(r) : null; },
@@ -566,6 +579,7 @@ const CANONICAL_PK = {
   platform_links: r => r.id,
   org_members: r => r.invite_tx_id,
   site_snapshots: r => r.tx_id,
+  domain_attestations: _attestationKey,
   verification_providers: r => r.vp_id,
   nodes: r => r.node_id,
   entity_keys: r => `${r.entity_type}:${r.entity_id}:${r.valid_from_ts}`,
@@ -654,6 +668,33 @@ class ContentMap extends SmtMap {
 
 // Site snapshots keyed by tx_id, with a per-domain seq index so the chain
 // head is found without walking every snapshot of every site.
+class DomainAttestationMap extends SmtMap {
+  constructor(owner, table) { super(owner, table); this._byDomain = new Map(); }
+  set(k, v) {
+    super.set(k, v);
+    if (!this._byDomain.has(v.domain)) this._byDomain.set(v.domain, new Set());
+    this._byDomain.get(v.domain).add(k);
+    return this;
+  }
+  delete(k) {
+    const prev = super.get(k);
+    const r = super.delete(k);
+    if (r && prev) {
+      const keys = this._byDomain.get(prev.domain);
+      if (keys) { keys.delete(k); if (keys.size === 0) this._byDomain.delete(prev.domain); }
+    }
+    return r;
+  }
+  clear() {
+    super.clear();
+    this._byDomain.clear();
+  }
+  forDomain(domain) {
+    const keys = this._byDomain.get(domain);
+    return keys ? [...keys].sort(cmpBin).map(k => super.get(k)) : [];
+  }
+}
+
 class SiteSnapshotMap extends SmtMap {
   constructor(owner, table) { super(owner, table); this._byDomain = new Map(); }
   set(k, v) {
@@ -756,6 +797,7 @@ class MemoryStore {
     this._platformLinks = new SmtMap(this, "platform_links"); // key: `${tip_id}::${platform}` (== row.id)
     this._orgMembers = new SmtMap(this, "org_members"); // invite_tx_id -> roster row (canonical)
     this._siteSnapshots = new SiteSnapshotMap(this, "site_snapshots"); // tx_id -> snapshot row (canonical)
+    this._domainAttestations = new DomainAttestationMap(this, "domain_attestations"); // domain\0node_id -> latest attestation (canonical)
     this._sitePages = new Map();      // page_key -> site_page row (node-local, off-DAG)
     this._siteIngests = new Map();    // snapshot_tx -> site_ingest row (node-local)
   }
@@ -1137,6 +1179,20 @@ class MemoryStore {
 
   // ── Site snapshots (canonical, in state_merkle_root) ──────────────────────
   // Rows never change once written: first write wins, as INSERT OR IGNORE.
+  saveDomainAttestation(rec) {
+    const row = _canonDomainAttestation(rec);
+    this._domainAttestations.set(_attestationKey(row), row);
+  }
+  getDomainAttestation(domain, nodeId) {
+    return this._domainAttestations.get(_attestationKey({ domain, node_id: nodeId })) || null;
+  }
+  listDomainAttestations(domain) {
+    return this._domainAttestations.forDomain(domain);
+  }
+  listDomainAttestationsSince(atMs) {
+    return [...this._domainAttestations.values()].filter(r => r.verified_at >= atMs)
+      .sort((a, b) => cmpBin(_attestationKey(a), _attestationKey(b)));
+  }
   saveSiteSnapshot(rec) {
     if (this._siteSnapshots.has(rec.tx_id)) return;
     this._siteSnapshots.set(rec.tx_id, _canonSiteSnapshot(rec));
@@ -1380,6 +1436,7 @@ class MemoryStore {
     this._platformLinks.clear();
     this._orgMembers.clear();
     this._siteSnapshots.clear();
+    this._domainAttestations.clear();
     // Every table that iterateCanonicalState yields MUST be cleared here,
     // otherwise leftover rows survive a snapshot install and contribute to
     // state_merkle_root → permanent Merkle divergence vs the snapshot author.
@@ -1403,6 +1460,7 @@ class MemoryStore {
       case "platform_links": return this._platformLinks.delete(pk);
       case "org_members": return this._orgMembers.delete(pk);
       case "site_snapshots": return this._siteSnapshots.delete(pk);
+      case "domain_attestations": return this._domainAttestations.delete(pk);
       case "verification_providers": return this._vps.delete(pk);
       case "nodes": return this._nodes.delete(pk);
       case "entity_keys": return this._entityKeys.delete(pk);
@@ -2014,6 +2072,10 @@ class MemoryStore {
     for (const r of [...this._siteSnapshots.values()]
       .sort((a, b) => cmpBin(a.tx_id, b.tx_id))) {
       yield { table: "site_snapshots", row: _canonSiteSnapshot(r) };
+    }
+    for (const r of [...this._domainAttestations.values()]
+      .sort((a, b) => cmpBin(_attestationKey(a), _attestationKey(b)))) {
+      yield { table: "domain_attestations", row: _canonDomainAttestation(r) };
     }
     for (const [entity_key, tx_id] of [...this._ownerHeads.entries()]
       .sort((a, b) => cmpBin(a[0], b[0]))) {
@@ -3042,6 +3104,13 @@ class SQLiteStore {
                  @wacz_hash, @pack_hash, @ai_signals_hash, @captured_at, @signer_tip_id, @witness_vp_id, @registered_at)`
       ),
       getSiteSnapshot: this.db.prepare("SELECT * FROM site_snapshots WHERE tx_id=?"),
+      saveDomainAttestation: this.db.prepare(
+        `INSERT OR REPLACE INTO domain_attestations
+         (domain, node_id, tip_id, claimed_at, claimed_method, verified_at, tx_id)
+         VALUES (@domain, @node_id, @tip_id, @claimed_at, @claimed_method, @verified_at, @tx_id)`),
+      getDomainAttestation: this.db.prepare("SELECT * FROM domain_attestations WHERE domain=? AND node_id=?"),
+      listDomainAttestations: this.db.prepare("SELECT * FROM domain_attestations WHERE domain=? ORDER BY node_id"),
+      listDomainAttestationsSince: this.db.prepare("SELECT * FROM domain_attestations WHERE verified_at >= ? ORDER BY domain, node_id"),
       getLatestSiteSnapshot: this.db.prepare("SELECT * FROM site_snapshots WHERE domain=? ORDER BY seq DESC LIMIT 1"),
       listSiteSnapshots: this.db.prepare("SELECT * FROM site_snapshots WHERE domain=? AND seq < ? ORDER BY seq DESC LIMIT ?"),
       listSiteSnapshotsAfter: this.db.prepare("SELECT * FROM site_snapshots WHERE tx_id > ? ORDER BY tx_id LIMIT ?"),
@@ -4021,6 +4090,13 @@ class SQLiteStore {
   getOrgMembersByMember(memberTipId) { return this._stmts.getOrgMembersByMember.all(memberTipId); }
 
   // ── Site snapshots (canonical) ───────────────────────────────────────────
+  saveDomainAttestation(rec) { this._stmts.saveDomainAttestation.run(_canonDomainAttestation(rec)); }
+  getDomainAttestation(domain, nodeId) {
+    const r = this._stmts.getDomainAttestation.get(domain, nodeId);
+    return r ? _canonDomainAttestation(r) : null;
+  }
+  listDomainAttestations(domain) { return this._stmts.listDomainAttestations.all(domain).map(_canonDomainAttestation); }
+  listDomainAttestationsSince(atMs) { return this._stmts.listDomainAttestationsSince.all(atMs).map(_canonDomainAttestation); }
   saveSiteSnapshot(rec) { this._stmts.saveSiteSnapshot.run(_canonSiteSnapshot(rec)); }
   getSiteSnapshot(txId) {
     const r = this._stmts.getSiteSnapshot.get(txId);
@@ -4572,6 +4648,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM site_snapshots ORDER BY tx_id").iterate()) {
       yield { table: "site_snapshots", row: _canonSiteSnapshot(r) };
     }
+    for (const r of db.prepare("SELECT * FROM domain_attestations ORDER BY domain, node_id").iterate()) {
+      yield { table: "domain_attestations", row: _canonDomainAttestation(r) };
+    }
     for (const r of db.prepare("SELECT * FROM owner_heads ORDER BY entity_key").iterate()) {
       yield { table: "owner_heads", row: _canonOwnerHead(r) };
     }
@@ -4617,6 +4696,7 @@ class SQLiteStore {
       this.db.prepare("DELETE FROM platform_links").run();
       this.db.prepare("DELETE FROM org_members").run();
       this.db.prepare("DELETE FROM site_snapshots").run();
+      this.db.prepare("DELETE FROM domain_attestations").run();
       // Every table that iterateCanonicalState yields MUST be cleared here,
       // otherwise leftover rows survive a snapshot install and contribute
       // to state_merkle_root → permanent Merkle divergence.
@@ -4639,6 +4719,7 @@ class SQLiteStore {
       case "platform_links": return del("DELETE FROM platform_links WHERE id=?", row.id);
       case "org_members": return del("DELETE FROM org_members WHERE invite_tx_id=?", row.invite_tx_id);
       case "site_snapshots": return del("DELETE FROM site_snapshots WHERE tx_id=?", row.tx_id);
+      case "domain_attestations": return del("DELETE FROM domain_attestations WHERE domain=? AND node_id=?", row.domain, row.node_id);
       case "verification_providers": return del("DELETE FROM verification_providers WHERE vp_id=?", row.vp_id);
       case "nodes": return del("DELETE FROM nodes WHERE node_id=?", row.node_id);
       case "entity_keys": return del(
@@ -5326,6 +5407,10 @@ function _buildDagHandle(store, config) {
     getOrgMembersByMember: (memberTipId) => store.getOrgMembersByMember(memberTipId),
 
     // ── Site snapshots (canonical) ────────────────────────────────────────
+    saveDomainAttestation: (rec) => store.saveDomainAttestation(rec),
+    getDomainAttestation: (domain, nodeId) => store.getDomainAttestation(domain, nodeId),
+    listDomainAttestations: (domain) => store.listDomainAttestations(domain),
+    listDomainAttestationsSince: (atMs) => store.listDomainAttestationsSince(atMs),
     saveSiteSnapshot: (rec) => store.saveSiteSnapshot(rec),
     getSiteSnapshot: (txId) => store.getSiteSnapshot(txId),
     getLatestSiteSnapshot: (domain) => store.getLatestSiteSnapshot(domain),

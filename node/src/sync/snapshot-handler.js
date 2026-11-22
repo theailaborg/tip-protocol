@@ -1666,6 +1666,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       case "site_snapshots":
         dag.saveSiteSnapshot(row);
         break;
+      case "domain_attestations":
+        dag.saveDomainAttestation(row);
+        break;
       case "protocol_params": {
         // The canonical row's `value` is the canonical-JSON string; parse it
         // back to the raw scalar so saveProtocolParam re-encodes to the

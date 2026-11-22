@@ -14,7 +14,7 @@
 
 "use strict";
 
-const { WEBSITE_PROTECTION_ACTIVATION_MS, URL_TAKEOVER_ACTIVATION_MS, DOMAIN_RELEASE_ACTIVATION_MS, SITE_SNAPSHOT, TIP_ID_TYPES } = require("../../../shared/constants");
+const { WEBSITE_PROTECTION_ACTIVATION_MS, URL_TAKEOVER_ACTIVATION_MS, DOMAIN_RELEASE_ACTIVATION_MS, SITE_SNAPSHOT, DOMAIN_QUORUM, TIP_ID_TYPES } = require("../../../shared/constants");
 const { toIso } = require("../../../shared/time");
 
 // The override changes commit rules, so a production node that set it alone
@@ -58,6 +58,18 @@ function siteSnapshotOn(atMs) {
   return Number.isFinite(atMs) && atMs >= SITE_SNAPSHOT_MS;
 }
 
+// Domain bindings by committee quorum (same override rules).
+const _qOverride = process.env.NODE_ENV === "production" ? NaN : parseInt(process.env.TIP_DOMAIN_QUORUM_ACTIVATION_MS, 10);
+const DOMAIN_QUORUM_MS = Number.isFinite(_qOverride) ? _qOverride : DOMAIN_QUORUM.ACTIVATION_MS;
+if (Number.isFinite(_qOverride)) {
+  // eslint-disable-next-line no-console
+  console.warn(`[website-gate] TIP_DOMAIN_QUORUM_ACTIVATION_MS override in effect: ${toIso(DOMAIN_QUORUM_MS)}`);
+}
+
+function domainQuorumOn(atMs) {
+  return Number.isFinite(atMs) && atMs >= DOMAIN_QUORUM_MS;
+}
+
 // Before the gate only organizations bind domains; from it, people can
 // protect their own sites too.
 function mayBindDomain(tipIdType, atMs) {
@@ -66,4 +78,4 @@ function mayBindDomain(tipIdType, atMs) {
   return t === TIP_ID_TYPES.PERSONAL && websiteProtectionOn(atMs);
 }
 
-module.exports = { websiteProtectionOn, takeoverOn, domainReleaseOn, siteSnapshotOn, mayBindDomain, GATE_MS, TAKEOVER_MS, RELEASE_MS, SITE_SNAPSHOT_MS };
+module.exports = { websiteProtectionOn, takeoverOn, domainReleaseOn, siteSnapshotOn, domainQuorumOn, mayBindDomain, GATE_MS, TAKEOVER_MS, RELEASE_MS, SITE_SNAPSHOT_MS, DOMAIN_QUORUM_MS };

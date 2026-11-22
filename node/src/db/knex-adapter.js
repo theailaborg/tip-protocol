@@ -370,6 +370,7 @@ class KnexAdapter {
       platform_links: this.mirror._platformLinks.size,
       org_members: this.mirror._orgMembers.size,
       site_snapshots: this.mirror._siteSnapshots.size,
+      domain_attestations: this.mirror._domainAttestations.size,
     };
   }
 
@@ -648,6 +649,11 @@ class KnexAdapter {
     const ssRows = await this.knex("site_snapshots").select("*");
     for (const row of ssRows) {
       this.mirror.saveSiteSnapshot(row);
+    }
+
+    // Domain attestations (canonical); the mirror keeps the per-domain index
+    for (const row of await this.knex("domain_attestations").select("*")) {
+      this.mirror.saveDomainAttestation(row);
     }
 
     // Pending domain claims (per-node local)
@@ -1484,7 +1490,7 @@ class KnexAdapter {
       "identities", "content", "scores", "dedup_registry", "revocations",
       "verification_providers", "nodes",
       "entity_keys", // GH #60 — entity_keys is canonical state too.
-      "platform_links", "org_members", "site_snapshots", "domain_bindings", "prescan_reviews", "interests_registry",
+      "platform_links", "org_members", "site_snapshots", "domain_attestations", "domain_bindings", "prescan_reviews", "interests_registry",
       "protocol_params", // #39 — canonical state, cleared + rebuilt on install
       "owner_heads",
     ];
@@ -1506,6 +1512,7 @@ class KnexAdapter {
       case "platform_links": return { id: row.id };
       case "org_members": return { invite_tx_id: row.invite_tx_id };
       case "site_snapshots": return { tx_id: row.tx_id };
+      case "domain_attestations": return { domain: row.domain, node_id: row.node_id };
       case "verification_providers": return { vp_id: row.vp_id };
       case "nodes": return { node_id: row.node_id };
       case "entity_keys": return {
@@ -1639,6 +1646,13 @@ class KnexAdapter {
 
   // ── Site snapshots (canonical, in state_merkle_root) ──────────────────────
   // Rows never change once written, so a repeat insert is ignored.
+  saveDomainAttestation(rec) {
+    this.mirror.saveDomainAttestation(rec);
+    this._ff(() => this._dbInsert("domain_attestations", ["domain", "node_id"], this.mirror.getDomainAttestation(rec.domain, rec.node_id), "merge"));
+  }
+  getDomainAttestation(domain, nodeId) { return this.mirror.getDomainAttestation(domain, nodeId); }
+  listDomainAttestations(domain) { return this.mirror.listDomainAttestations(domain); }
+  listDomainAttestationsSince(atMs) { return this.mirror.listDomainAttestationsSince(atMs); }
   saveSiteSnapshot(rec) {
     this.mirror.saveSiteSnapshot(rec);
     this._ff(() => this._dbInsert("site_snapshots", "tx_id", this.mirror.getSiteSnapshot(rec.tx_id), "ignore"));
