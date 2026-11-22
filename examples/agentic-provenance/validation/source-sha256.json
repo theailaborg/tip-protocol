@@ -1,0 +1,18 @@
+{
+  "assurance.py": "f56056aff01404e7fd5f441b4e98df53f1a5ac3378c1bb6ad9d81ddf1d09dc28",
+  "benchmark.py": "416f2a04164b1b6b3d460be330710c80130759b56b3a8f32c667e63b95fb0f9b",
+  "demo.py": "ba2159bbdeafc712ef90d099a0c15feed4dd7f57a7fdd765726afd36be7873fb",
+  "simulation.py": "61e93f4e63a835edaba8ec38e9eebed0e667dc846181e20d9c75305bfe0a1c46",
+  "simulation_presets.json": "d761e6282157091c85c8153d425a2868fd24176d4a60190558a714e4d335921c",
+  "simulation_server.py": "4e935e045f29c3c821cc32c8746d649142cf46627f4362d2440e7124010f2979",
+  "simulation_ui.html": "f28f12c4e9dff36b426b0fcc1f9cb59d4972c5407d271a36f783247c9c78674f",
+  "test_assurance.py": "dbd0c05f0c1fa647e3a9231d910ce9545240623c82573002ecc1b4726ebac7bb",
+  "test_conformance.py": "b5c6c785bfb1b6d4e54317ed8fd24775bf5486e7224fa74c72dbbe0b3d12a006",
+  "test_node_simulation.py": "c8d1ae9907418fd3ed11a9b3da0f8a6200846c5836348205907d8ba420d6d54d",
+  "test_simulation.py": "2e15d0c6d0a19db393bbf032c64bea1bd8d70d5698c8b24ecdbdb2aeee63f883",
+  "test_simulation_server.py": "13363f2b170ddac4c9afdbafaf6a76e72a1b166778899cb2a6ed2abcaa37fe9e",
+  "test_tip_agentic.py": "b6d7152131f3958e2ff566bd79748fb7c2b38a69df2b6d3f5db758a63e07032e",
+  "tip_agentic.py": "1ef96047a2b4d095ed3401bb769540277799577d92c2ee289524b32af8cb15d2",
+  "verify_simulation.js": "fb2f5c53ff3782b8133a99afb5ca3ac170182f3822d097837df77f7d0b3b9a50",
+  "verify_with_tip.js": "98def6bd5cff11f864cfd66bdcc78fd8ce6a66e22e50e53c143610b104eb71b7"
+}

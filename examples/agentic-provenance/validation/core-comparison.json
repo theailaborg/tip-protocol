@@ -1,0 +1,53 @@
+{
+  "original": {
+    "numPassedTests": 452,
+    "numFailedTests": 4,
+    "numPendingTests": 3,
+    "numPassedTestSuites": 23,
+    "numFailedTestSuites": 2,
+    "failures": [
+      {
+        "file": "tests/integration/domain-binding.test.js",
+        "test": "personal TIP-IDs cannot bind domains register rejects with 403 tip_id_not_authorised"
+      },
+      {
+        "file": "tests/schemas/register-domain.test.js",
+        "test": "resolveClaimant personal \u2192 403 tip_id_not_authorised"
+      },
+      {
+        "file": "tests/schemas/register-domain.test.js",
+        "test": "resolveClaimant identity row without tip_id_type defaults to personal \u2192 rejected"
+      },
+      {
+        "file": "tests/schemas/register-domain.test.js",
+        "test": "validateRequest personal tip_id is rejected by the org gate inside resolveClaimant"
+      }
+    ]
+  },
+  "revised": {
+    "numPassedTests": 452,
+    "numFailedTests": 4,
+    "numPendingTests": 3,
+    "numPassedTestSuites": 23,
+    "numFailedTestSuites": 2,
+    "failures": [
+      {
+        "file": "tests/integration/domain-binding.test.js",
+        "test": "personal TIP-IDs cannot bind domains register rejects with 403 tip_id_not_authorised"
+      },
+      {
+        "file": "tests/schemas/register-domain.test.js",
+        "test": "resolveClaimant personal \u2192 403 tip_id_not_authorised"
+      },
+      {
+        "file": "tests/schemas/register-domain.test.js",
+        "test": "resolveClaimant identity row without tip_id_type defaults to personal \u2192 rejected"
+      },
+      {
+        "file": "tests/schemas/register-domain.test.js",
+        "test": "validateRequest personal tip_id is rejected by the org gate inside resolveClaimant"
+      }
+    ]
+  },
+  "scope": "Same 25 previously failing suites, after native SQLite dependency repair. Full node attempt aborted with heap exhaustion. Python core blocked at collection by missing oqs."
+}

@@ -1,5 +1,27 @@
 # Agentic provenance on TIP primitives
 
+## Interactive simulation and saved evidence
+
+The [reviewer guide](SIMULATION.md) adds 15 editable cases across healthcare,
+finance, government, education and privacy, seeded workloads, local SQLite
+history, signed evidence and deterministic policy replay. Start the local UI:
+
+```bash
+python -m pip install -r examples/agentic-provenance/requirements.txt
+cd examples/agentic-provenance
+python simulation_server.py
+```
+
+Open `http://127.0.0.1:8766/`. Each run is a separate synthetic experiment.
+The public [research explorer](https://tip-research-explorer.vercel.app/) is a
+separate explanatory application; this PR does not deploy this local database
+or reviewer to Vercel. The [conformance checklist](CONFORMANCE.md) maps the
+underlying reference gateway to runnable checks and records its limits.
+
+The gateway work below and the policy simulator are complementary layers.
+The simulator reuses TIP signing and Merkle primitives; it does not turn its
+scenario labels into registered organisations or execute real-world effects.
+
 A small, runnable reference for one question TIP's content provenance does not
 answer on its own: when an AI agent acts on someone else's system, **which agent
 acted, on whose authority, and what exactly did it do?**

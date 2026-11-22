@@ -27,9 +27,12 @@ License: TIPCL-1.0 (see LICENSE.txt at the repository root).
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import secrets
+import threading
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 from typing import Any, Callable, Iterable
 
 try:
@@ -213,15 +216,51 @@ class IdentityDirectory:
 
     def __init__(self) -> None:
         self._keys: dict[str, str] = {}
+        self._agent_records: dict[str, list[dict]] = {}
 
     def register(self, tip_identity: str, public_key_hex: str) -> None:
         self._keys[tip_identity] = public_key_hex
+
+    def register_agent(self, record: dict) -> str:
+        """Accept a principal-signed Agent Record into the local trusted registry.
+
+        This is an in-memory stand-in for enrolment, not remote attestation or
+        a new TIP transaction. Keep history so later registration does not
+        rewrite verification of earlier actions.
+        """
+        body = record.get("body", {})
+        if (body.get("schema") != SCHEMA or body.get("type") != "agent_record"
+                or self.key_for(body.get("principal")) != body.get("principal_key")
+                or not _verify_record(record, "principal_key")
+                or not isinstance(body.get("agent_key"), str)
+                or body.get("agent") != agent_id(body["agent_key"])
+                or not _valid_runtime_hashes({k: body.get(k) for k in RUNTIME_HASH_FIELDS})
+                or not _amount(body.get("registered_at"))):
+            raise ValueError("invalid or unauthorised Agent Record")
+        history = self._agent_records.get(body["agent_key"], [])
+        rid = record_id(record)
+        if history:
+            previous = history[-1]["body"]
+            if previous["principal"] != body["principal"]:
+                raise ValueError("Agent Record principal cannot be replaced")
+            if rid == record_id(history[-1]):
+                return rid
+            if body["registered_at"] <= previous["registered_at"]:
+                raise ValueError("Agent Record registration must move forward in time")
+        self._agent_records.setdefault(body["agent_key"], []).append(copy.deepcopy(record))
+        return rid
+
+    def agent_record_at(self, key: str, at_ms: int) -> dict | None:
+        for record in reversed(self._agent_records.get(key, [])):
+            if record["body"]["registered_at"] <= at_ms:
+                return copy.deepcopy(record)
+        return None
 
     def key_for(self, tip_identity: str) -> str | None:
         return self._keys.get(tip_identity)
 
 
-# --- Scopes -----------------------------------------------------------------
+# --- Mandate scopes -----------------------------------------------------------------
 
 def _resource_matches(resource: str, prefix: str) -> bool:
     # Exact match, or a prefix ending in "/" so ".../docs/" never matches ".../docs-evil".
@@ -253,6 +292,46 @@ def make_scope(actions: Iterable[str], resources: Iterable[str]) -> dict:
 
 # --- Record builders -------------------------------------------------------
 
+RUNTIME_HASH_FIELDS = ("code_hash", "model_hash", "prompt_hash")
+
+
+def _valid_runtime_hashes(hashes) -> bool:
+    return (isinstance(hashes, dict) and set(hashes) == set(RUNTIME_HASH_FIELDS)
+            and all(isinstance(value, str) and len(value) == 64
+                    and all(c in "0123456789abcdef" for c in value) for value in hashes.values()))
+
+
+def issue_agent_record(principal: Signer, principal_identity: str, agent_key: str,
+                       code_hash: str, model_hash: str, prompt_hash: str, registered_at: int) -> dict:
+    """Principal-signed registration of declared code/model/prompt commitments."""
+    hashes = dict(zip(RUNTIME_HASH_FIELDS, (code_hash, model_hash, prompt_hash)))
+    if not _valid_runtime_hashes(hashes):
+        raise ValueError("Agent Record requires three full SHAKE-256 digests")
+    return principal.sign_body({"schema": SCHEMA, "type": "agent_record",
+        "principal": principal_identity, "principal_key": principal.public_key_hex,
+        "agent": agent_id(agent_key), "agent_key": agent_key,
+        **hashes, "registered_at": registered_at})
+
+
+def check_agent_record(body: dict, directory: IdentityDirectory, principal: str, at_ms: int) -> Authority:
+    enrolled = directory.agent_record_at(body["agent_key"], at_ms)
+    if enrolled is None:
+        if "agent_record" in body or "runtime_hashes" in body:
+            return Authority(INDETERMINATE, "Agent Record is not registered")
+        return Authority(VALID)  # backwards-compatible, unenrolled example agents
+    registration = enrolled["body"]
+    if (registration["principal"] != principal
+            or registration["principal_key"] != directory.key_for(principal)
+            or not _verify_record(enrolled, "principal_key")):
+        return Authority(INVALID, "Agent Record principal does not match the root Mandate")
+    if body.get("agent_record") != record_id(enrolled):
+        return Authority(INVALID, "Action Request does not reference the current Agent Record")
+    hashes = body.get("runtime_hashes")
+    if not _valid_runtime_hashes(hashes) or any(hashes[k] != registration[k] for k in RUNTIME_HASH_FIELDS):
+        return Authority(INVALID, "runtime hashes differ from the registered Agent Record")
+    return Authority(VALID)
+
+
 def issue_delegation(
     issuer: Signer,
     issuer_identity: str,
@@ -262,8 +341,9 @@ def issue_delegation(
     expires_at: int,
     parent: str | None = None,
     issued_at: int | None = None,
+    budget: dict | None = None,
 ) -> dict:
-    """A principal (or an agent, for a sub-delegation) authorises an agent key."""
+    """Sign a Mandate authorising an agent key (wire type remains delegation)."""
     return issuer.sign_body({
         "schema": SCHEMA,
         "type": "delegation",
@@ -277,6 +357,7 @@ def issue_delegation(
         "parent": parent,
         "issued_at": not_before if issued_at is None else issued_at,
         "nonce": secrets.token_hex(16),
+        **({"budget": copy.deepcopy(budget)} if budget is not None else {}),
     })
 
 
@@ -300,8 +381,12 @@ def make_request(
     content: bytes | None = None,
     base: bytes | None = None,
     nonce: str | None = None,
+    spend: dict | None = None,
+    inputs: list[dict] | None = None,
+    agent_record: dict | None = None,
+    runtime_hashes: dict | None = None,
 ) -> dict:
-    """The agent signs exactly what it intends to do, before doing it."""
+    """Sign an Action Request committing to the exact intended action."""
     return agent.sign_body({
         "schema": SCHEMA,
         "type": "action",
@@ -314,6 +399,12 @@ def make_request(
         "base_hash": None if base is None else content_hash(base),
         "nonce": nonce or secrets.token_hex(16),
         "issued_at": issued_at,
+        **({"spend": copy.deepcopy(spend)} if spend is not None else {}),
+        **({"inputs": copy.deepcopy(inputs)} if inputs is not None else {}),
+        **({"agent_record": record_id(agent_record),
+            "runtime_hashes": copy.deepcopy(runtime_hashes) if runtime_hashes is not None else
+                {k: agent_record["body"][k] for k in RUNTIME_HASH_FIELDS}} if agent_record is not None else
+           ({"runtime_hashes": copy.deepcopy(runtime_hashes)} if runtime_hashes is not None else {})),
     })
 
 
@@ -338,6 +429,20 @@ class Authority:
     principal: str | None = None
     issuers: list[str] = field(default_factory=list)
     scope: dict | None = None
+    budget: dict | None = None
+    root_budget: dict | None = None
+
+
+def _amount(value) -> bool:
+    return type(value) is int and 0 <= value <= 2**53 - 1
+
+
+def _valid_budget(budget) -> bool:
+    return (isinstance(budget, dict)
+            and set(budget) == {"id", "unit", "total", "per_action"}
+            and all(isinstance(budget[k], str) and budget[k] for k in ("id", "unit"))
+            and _amount(budget["total"]) and _amount(budget["per_action"])
+            and budget["per_action"] <= budget["total"])
 
 
 def check_authority(
@@ -356,6 +461,7 @@ def check_authority(
         return Authority(INVALID, "delegation chain repeats a link (cycle)")
 
     bodies: list[dict] = []
+    visited_keys: set[str] = set()
     for i, did in enumerate(chain):
         rec = delegations.get(did)
         if rec is None:
@@ -394,7 +500,29 @@ def check_authority(
                 return Authority(INVALID, f"sub-delegation {did[:12]} outlives its parent")
         if not (d["not_before"] <= at_ms < d["expires_at"]):
             return Authority(INVALID, f"delegation {did[:12]} not valid at {at_ms}")
+        if i == 0:
+            visited_keys.add(d["issuer_key"])
+        if d["subject_key"] in visited_keys:
+            return Authority(INVALID, "Mandate chain revisits an identity key (cycle)")
+        visited_keys.add(d["subject_key"])
         bodies.append(d)
+
+    # A principal budget is signed into the root Mandate. Omission in a
+    # sub-Mandate inherits it; an explicit child budget can only narrow it.
+    root_budget = bodies[0].get("budget")
+    budget = root_budget
+    if "budget" in bodies[0] and not _valid_budget(budget):
+        return Authority(INVALID, "malformed root Mandate budget")
+    for child in bodies[1:]:
+        if "budget" not in child:
+            continue
+        narrowed = child["budget"]
+        if (budget is None or not _valid_budget(narrowed)
+                or narrowed["id"] != budget["id"] or narrowed["unit"] != budget["unit"]
+                or narrowed["total"] > budget["total"]
+                or narrowed["per_action"] > budget["per_action"]):
+            return Authority(INVALID, "sub-Mandate budget changes identity or widens its parent")
+        budget = narrowed
 
     leaf = bodies[-1]
     if leaf["subject"] != request_body.get("agent") or leaf["subject_key"] != request_body.get("agent_key"):
@@ -428,6 +556,8 @@ def check_authority(
         principal=bodies[0]["issuer"],
         issuers=[b["issuer"] for b in bodies],
         scope=leaf["scope"],
+        budget=copy.deepcopy(budget),
+        root_budget=copy.deepcopy(root_budget),
     )
 
 
@@ -439,6 +569,110 @@ def _leaf_hash(data: str) -> str:
 
 def _node_hash(left: str, right: str) -> str:
     return shake256("N" + left + right)
+
+
+@dataclass(frozen=True, slots=True)
+class _MerkleNode:
+    size: int
+    digest: str
+    left: _MerkleNode | None = None
+    right: _MerkleNode | None = None
+    item: str | None = None
+
+
+def _join(left: _MerkleNode, right: _MerkleNode) -> _MerkleNode:
+    return _MerkleNode(left.size + right.size, _node_hash(left.digest, right.digest), left, right)
+
+
+def _append_tree(root: _MerkleNode | None, leaf: _MerkleNode) -> _MerkleNode:
+    if root is None:
+        return leaf
+    if root.size & (root.size - 1) == 0:
+        return _join(root, leaf)
+    return _join(root.left, _append_tree(root.right, leaf))
+
+
+def _tree_proof(root: _MerkleNode | None, index: int) -> list[dict] | None:
+    if root is None or not 0 <= index < root.size:
+        return None
+    proof = []
+    while root.left is not None:
+        if index < root.left.size:
+            proof.append({"hash": root.right.digest, "position": "right"})
+            root = root.left
+        else:
+            proof.append({"hash": root.left.digest, "position": "left"})
+            index -= root.left.size
+            root = root.right
+    return proof[::-1]
+
+
+class IncrementalMerkleLog(Sequence):
+    """Cached TIP Merkle tree: O(log n) append/proof, O(1) current root.
+
+    Immutable nodes share unchanged subtrees, so preparing a Receipt/Seal can
+    fail without publishing a partial log. Odd subtrees promote unchanged,
+    exactly as in shared/merkle.js. The live tree occupies O(n) memory.
+    Bulk restoration is O(n); iteration/serialisation is deliberately O(n).
+    """
+
+    def __init__(self, items=()):
+        items = list(items)
+        def build(start, size):
+            if size == 0:
+                return None
+            if size == 1:
+                return _MerkleNode(1, _leaf_hash(items[start]), item=items[start])
+            split = 1 << ((size - 1).bit_length() - 1)
+            return _join(build(start, split), build(start + split, size - split))
+        self._root = build(0, len(items))
+
+    @property
+    def root(self):
+        return self._root.digest if self._root else shake256("tip-merkle-empty-tree")
+
+    def prepare_append(self, item):
+        return _append_tree(self._root, _MerkleNode(1, _leaf_hash(item), item=item))
+
+    def append(self, item):
+        root = self.prepare_append(item)
+        self._root = root
+
+    def proof(self, index):
+        return _tree_proof(self._root, index)
+
+    def __len__(self):
+        return self._root.size if self._root else 0
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return list(self)[index]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        node = self._root
+        while node.left is not None:
+            if index < node.left.size:
+                node = node.left
+            else:
+                index -= node.left.size
+                node = node.right
+        return node.item
+
+    def __iter__(self):
+        stack = [self._root] if self._root else []
+        while stack:
+            node = stack.pop()
+            if node.left is None:
+                yield node.item
+            else:
+                stack.extend((node.right, node.left))
+
+    def __eq__(self, other):
+        if isinstance(other, IncrementalMerkleLog):
+            return list(self) == list(other)
+        return list(self) == other
 
 
 def _levels(leaves: list[str]) -> list[list[str]]:
@@ -456,12 +690,16 @@ def _levels(leaves: list[str]) -> list[list[str]]:
 
 
 def merkle_root(items: list[str]) -> str:
+    if isinstance(items, IncrementalMerkleLog):
+        return items.root
     if not items:
         return shake256("tip-merkle-empty-tree")
     return _levels([_leaf_hash(x) for x in items])[-1][0]
 
 
 def merkle_proof(items: list[str], index: int) -> list[dict] | None:
+    if isinstance(items, IncrementalMerkleLog):
+        return items.proof(index)
     levels = _levels([_leaf_hash(x) for x in items])
     if not levels or not (0 <= index < len(levels[0])):
         return None
@@ -490,8 +728,8 @@ def verify_merkle_proof(item: str, proof: Any, root: str) -> bool:
 # --- The receiving side: a website or API that agents act on ---------------
 
 class SiteGateway:
-    """Checks every agent request before it touches the resource, and signs
-    a receipt for every decision (commit or refusal) into an append-only log."""
+    """Checks each Action Request against its Mandates before acting, then
+    signs a Receipt for each decision and a log Seal (wire type checkpoint)."""
 
     def __init__(
         self,
@@ -500,22 +738,53 @@ class SiteGateway:
         directory: IdentityDirectory,
         clock: Callable[[], int],
         max_skew_ms: int = 300_000,
+        evidence_sink: Callable[[dict], bool] | None = None,
     ) -> None:
         self.signer = signer
         self.site_identity = site_identity
         self.directory = directory
         self.clock = clock
         self.max_skew_ms = max_skew_ms
+        # Optional synchronous evidence service. It must acknowledge the exact
+        # outcome before this single-process demo changes content or its log.
+        # This is not a distributed transaction or a durable crash-recovery log.
+        self.evidence_sink = evidence_sink
         self.store: dict[str, bytes] = {}
-        self.log: list[str] = []
+        self.log = []
         self._seen: set[tuple[str, str]] = set()
+        self._budget_spend: dict[tuple[str, str], int] = {}
+        self._budget_limits: dict[tuple[str, str], tuple[str, int]] = {}
+        self._lock = threading.RLock()
+        self._submitting = False
 
-    def submit(
+    @property
+    def log(self) -> IncrementalMerkleLog:
+        return self._log
+
+    @log.setter
+    def log(self, items):
+        # Compatibility for existing fixture/benchmark bulk log restoration.
+        self._log = IncrementalMerkleLog(items)
+
+    def submit(self, request, delegations, revocations=(), content=None, upstream_evidence=None):
+        # All agents sharing this gateway check and consume budgets under one
+        # lock. A trusted evidence callback must not reenter the gateway.
+        with self._lock:
+            if self._submitting:
+                raise RuntimeError("evidence callback must not reenter the gateway")
+            self._submitting = True
+            try:
+                return self._submit(request, delegations, revocations, content, upstream_evidence)
+            finally:
+                self._submitting = False
+
+    def _submit(
         self,
         request: dict,
         delegations: Iterable[dict],
         revocations: Iterable[dict] = (),
         content: bytes | None = None,
+        upstream_evidence: dict | None = None,
     ) -> dict:
         now = self.clock()
         body = request.get("body", {}) if isinstance(request, dict) else {}
@@ -523,9 +792,16 @@ class SiteGateway:
         before = self.store.get(resource) if isinstance(resource, str) else None
         before_hash = None if before is None else content_hash(before)
         after_hash = before_hash
+        reserved_replay_key = None
+        budget_state = None
 
         def decide(decision: str, reason: str) -> dict:
-            return self._record(request, body, decision, reason, before_hash, after_hash, now)
+            try:
+                return self._record(request, body, decision, reason, before_hash, after_hash, now, budget_state)
+            except Exception:
+                if reserved_replay_key is not None:
+                    self._seen.discard(reserved_replay_key)
+                raise
 
         if not _verify_record(request, "agent_key") or body.get("type") != "action":
             return decide("rejected", "request signature invalid")
@@ -542,12 +818,20 @@ class SiteGateway:
         if replay_key in self._seen:
             return decide("rejected", "replayed request")
         self._seen.add(replay_key)
+        reserved_replay_key = replay_key
 
         auth = check_authority(
             body, {record_id(d): d for d in delegations}, list(revocations), self.directory, now
         )
         if auth.status != VALID:
             return decide("rejected", auth.reason)
+
+        registration = check_agent_record(body, self.directory, auth.principal, now)
+        if registration.status != VALID:
+            return decide("rejected", registration.reason)
+        lineage = _LineageVerifier(self.directory, upstream_evidence).inputs(body, auth.principal, 0)
+        if lineage.status != VALID:
+            return decide("rejected", "input provenance: " + "; ".join(lineage.reasons))
 
         action, resource = body["action"], body["resource"]
         if action in WRITE_ACTIONS:
@@ -564,15 +848,50 @@ class SiteGateway:
         elif action in ("edit", "delete") and body.get("base_hash") != before_hash:
             return decide("rejected", "resource changed since the agent read it")
 
+        account = None
+        spend = body.get("spend")
+        if auth.budget is not None:
+            budget = auth.budget
+            if (not isinstance(spend, dict) or set(spend) != {"amount", "unit"}
+                    or not _amount(spend.get("amount")) or spend["amount"] == 0
+                    or spend.get("unit") != budget["unit"]):
+                return decide("rejected", "budgeted action requires a positive integer spend in its Mandate unit")
+            # This example budgets synthetic payment CREATE records, not an
+            # agent's unchecked cost estimate. Amount/unit must be the exact
+            # canonical payload the gateway will store.
+            if action != "create" or content != canonical_json(spend).encode("utf-8"):
+                return decide("rejected", "spend must match the canonical synthetic payment content")
+            account = (auth.principal, budget["id"])
+            definition = (auth.root_budget["unit"], auth.root_budget["total"])
+            if account in self._budget_limits and self._budget_limits[account] != definition:
+                return decide("rejected", "root Mandate conflicts with the established principal budget")
+            spent = self._budget_spend.get(account, 0)
+            budget_state = {"principal": auth.principal, "id": budget["id"], "unit": budget["unit"],
+                            "total": budget["total"], "amount": spend["amount"],
+                            "spent_before": spent, "spent_after": spent}
+            if spend["amount"] > budget["per_action"]:
+                return decide("rejected", "spend exceeds the Mandate per-action limit")
+            if spent + spend["amount"] > budget["total"]:
+                return decide("rejected", "combined spend exceeds the principal budget")
+            budget_state["spent_after"] += spend["amount"]
+        elif "spend" in body:
+            return decide("rejected", "spend has no root Mandate budget")
+
         if action in WRITE_ACTIONS:
-            self.store[resource] = content
             after_hash = content_hash(content)
         elif action == "delete":
-            del self.store[resource]
             after_hash = None
-        return decide("committed", "")
+        outcome = decide("committed", "")
+        if action in WRITE_ACTIONS:
+            self.store[resource] = content
+        elif action == "delete":
+            del self.store[resource]
+        if account is not None:
+            self._budget_limits[account] = definition
+            self._budget_spend[account] = budget_state["spent_after"]
+        return outcome
 
-    def _record(self, request, body, decision, reason, before_hash, after_hash, now) -> dict:
+    def _record(self, request, body, decision, reason, before_hash, after_hash, now, budget_state=None) -> dict:
         receipt = self.signer.sign_body({
             "schema": SCHEMA,
             "type": "receipt",
@@ -589,22 +908,31 @@ class SiteGateway:
             "after_hash": after_hash,
             "decided_at": now,
             "log_index": len(self.log),
+            **({"budget": budget_state} if budget_state is not None else {}),
         })
-        self.log.append(record_id(receipt))
+        rid = record_id(receipt)
+        proposed_root = self.log.prepare_append(rid)
         checkpoint = self.signer.sign_body({
             "schema": SCHEMA,
             "type": "checkpoint",
             "site": self.site_identity,
             "site_key": self.signer.public_key_hex,
-            "size": len(self.log),
-            "root": merkle_root(self.log),
+            "size": len(self.log) + 1,
+            "root": proposed_root.digest,
             "at": now,
         })
-        return {
+        outcome = {
             "receipt": receipt,
-            "proof": merkle_proof(self.log, len(self.log) - 1),
+            "proof": _tree_proof(proposed_root, len(self.log)),
             "checkpoint": checkpoint,
         }
+        if self.evidence_sink is not None:
+            if self.evidence_sink(copy.deepcopy(outcome)) is not True:
+                raise ConnectionError("evidence service did not acknowledge the outcome")
+        # Publishing the prepared immutable root avoids both a full log copy
+        # and a second append calculation. Only this serial gateway owns it.
+        self.log._root = proposed_root
+        return outcome
 
 
 # --- Independent verification ----------------------------------------------
@@ -616,7 +944,8 @@ class Verdict:
     answers: dict = field(default_factory=dict)
 
 
-def evidence_bundle(request: dict, outcome: dict, delegations: Iterable[dict], revocations: Iterable[dict] = ()) -> dict:
+def evidence_bundle(request: dict, outcome: dict, delegations: Iterable[dict], revocations: Iterable[dict] = (),
+                    upstream_evidence: dict | None = None) -> dict:
     """Everything a third party needs, apart from the public identity directory."""
     return {
         "schema": SCHEMA,
@@ -626,10 +955,11 @@ def evidence_bundle(request: dict, outcome: dict, delegations: Iterable[dict], r
         "checkpoint": outcome["checkpoint"],
         "delegations": list(delegations),
         "revocations": list(revocations),
+        **({"upstream_evidence": copy.deepcopy(upstream_evidence)} if upstream_evidence is not None else {}),
     }
 
 
-def verify_evidence(bundle: dict, directory: IdentityDirectory, content: bytes | None = None) -> Verdict:
+def _verify_single_evidence(bundle: dict, directory: IdentityDirectory, content: bytes | None = None) -> Verdict:
     """Check a bundle using only public keys. Never trusts the receiver's word:
     authority is re-derived from the signed chain."""
     receipt, request, checkpoint = bundle.get("receipt"), bundle.get("request"), bundle.get("checkpoint")
@@ -698,8 +1028,117 @@ def verify_evidence(bundle: dict, directory: IdentityDirectory, content: bytes |
             return Verdict(INDETERMINATE, [auth.reason], answers)
         if auth.status != VALID:
             return Verdict(INVALID, [f"site committed an action the evidence does not authorise: {auth.reason}"], answers)
+        registration = check_agent_record(qb, directory, auth.principal, rb["decided_at"])
+        if registration.status != VALID:
+            return Verdict(registration.status, [registration.reason], answers)
+        if auth.budget is not None:
+            budget, spend, state = auth.budget, qb.get("spend"), rb.get("budget")
+            if (not isinstance(spend, dict) or not _amount(spend.get("amount"))
+                    or not 0 < spend["amount"] <= budget["per_action"]
+                    or spend.get("unit") != budget["unit"]
+                    or set(spend) != {"amount", "unit"} or qb["action"] != "create"
+                    or qb.get("content_hash") != content_hash(canonical_json(spend).encode("utf-8"))
+                    or not isinstance(state, dict)
+                    or any(state.get(k) != v for k, v in {
+                        "principal": auth.principal, "id": budget["id"], "unit": budget["unit"],
+                        "total": budget["total"], "amount": spend["amount"]}.items())
+                    or not _amount(state.get("spent_before")) or not _amount(state.get("spent_after"))
+                    or state["spent_after"] != state["spent_before"] + spend["amount"]
+                    or state["spent_after"] > budget["total"]):
+                return Verdict(INVALID, ["committed Receipt violates its Mandate budget"], answers)
+        elif "spend" in qb or "budget" in rb:
+            return Verdict(INVALID, ["committed spend has no root Mandate budget"], answers)
         if qb["action"] in WRITE_ACTIONS and rb["after_hash"] != qb["content_hash"]:
             return Verdict(INVALID, ["committed content differs from what the agent signed"], answers)
         if content is not None and content_hash(content) != rb["after_hash"]:
             return Verdict(INVALID, ["content shown differs from the committed content"], answers)
     return Verdict(VALID, [], answers)
+
+
+# --- Output handoff: signed input Receipt references -----------------------
+
+MAX_LINEAGE_DEPTH = 16
+MAX_LINEAGE_RECEIPTS = 128
+
+
+class _LineageVerifier:
+    def __init__(self, directory, evidence):
+        self.directory = directory
+        self.pool = {} if evidence is None else evidence
+        self.active = set()
+        self.visits = 0
+
+    def inputs(self, body, principal, depth):
+        refs = body.get("inputs", [])
+        if (not isinstance(self.pool, dict) or len(self.pool) > MAX_LINEAGE_RECEIPTS
+                or not isinstance(refs, list) or len(refs) > MAX_LINEAGE_RECEIPTS):
+            return Verdict(INVALID, ["malformed or oversized input evidence"])
+        lineage, seen = [], set()
+        for ref in refs:
+            if (not isinstance(ref, dict) or set(ref) != {"receipt", "content_hash"}
+                    or not all(isinstance(ref[k], str) for k in ref)):
+                return Verdict(INVALID, ["malformed input Receipt reference"])
+            rid = ref["receipt"]
+            if rid in seen:
+                return Verdict(INVALID, ["duplicate input Receipt reference"])
+            seen.add(rid)
+            parent = self.pool.get(rid)
+            if parent is None:
+                return Verdict(INDETERMINATE, ["upstream Receipt evidence missing"])
+            try:
+                if record_id(parent["receipt"]) != rid:
+                    return Verdict(INVALID, ["upstream Receipt does not match its reference"])
+            except (KeyError, TypeError, ValueError, AttributeError):
+                return Verdict(INVALID, ["malformed upstream Receipt"])
+            verdict = self.verify(parent, depth=depth + 1)
+            if verdict.status != VALID:
+                return verdict
+            rb = parent["receipt"]["body"]
+            owner = verdict.answers["on_whose_authority"]["principal"]
+            if rb["decision"] != "committed" or rb["action"] not in WRITE_ACTIONS or rb["after_hash"] is None:
+                return Verdict(INVALID, ["upstream Receipt did not commit an output"])
+            if owner != principal:
+                return Verdict(INVALID, ["upstream Receipt belongs to a different principal"])
+            if ref["content_hash"] != rb["after_hash"]:
+                return Verdict(INVALID, ["input hash differs from upstream output"])
+            lineage.append({"receipt": rid, "agent": rb["agent"], "principal": owner,
+                            "ancestors": verdict.answers.get("lineage", [])})
+        return Verdict(VALID, answers={"lineage": lineage})
+
+    def verify(self, bundle, content=None, depth=0):
+        if depth > MAX_LINEAGE_DEPTH or self.visits >= MAX_LINEAGE_RECEIPTS:
+            return Verdict(INDETERMINATE, ["input lineage verification limit reached"])
+        self.visits += 1
+        try:
+            rid = record_id(bundle["receipt"])
+            if rid in self.active:
+                return Verdict(INVALID, ["input Receipt lineage cycle"])
+            self.active.add(rid)
+            try:
+                own = _verify_single_evidence(bundle, self.directory, content)
+                if own.status != VALID or bundle["receipt"]["body"]["decision"] != "committed":
+                    return own
+                lineage = self.inputs(bundle["request"]["body"],
+                    own.answers["on_whose_authority"]["principal"], depth)
+                if lineage.status != VALID:
+                    return Verdict(lineage.status, lineage.reasons, own.answers)
+                own.answers.update(lineage.answers)
+                return own
+            finally:
+                self.active.remove(rid)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return Verdict(INVALID, ["malformed Receipt lineage evidence"])
+
+
+def verify_evidence(bundle: dict, directory: IdentityDirectory, content: bytes | None = None) -> Verdict:
+    """Verify signatures, authority, Seal inclusion and all declared ancestors.
+
+    Ancestors are a bounded flat map keyed by Receipt body hash. Each input
+    commits to the producer's exact output hash and must reach the same principal.
+    Signatures attest declared dependencies; they do not attest actual computation.
+    """
+    if not isinstance(bundle, dict):
+        return Verdict(INVALID, ["malformed evidence bundle"])
+    if not isinstance(bundle.get("receipt"), dict) or "body" not in bundle["receipt"]:
+        return Verdict(INDETERMINATE, ["no receipt"])
+    return _LineageVerifier(directory, bundle.get("upstream_evidence")).verify(bundle, content)
