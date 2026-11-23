@@ -182,10 +182,10 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     return !!st && (st.queue_depth > SITE_INGEST.MAX_QUEUED_WRITES || st.oldest_pending_ms > SITE_INGEST.MAX_OLDEST_WRITE_MS);
   }
 
-  // Pages arrive in batches from the pack worker. Index rows are written once
-  // per slice (SLICE_MS of work, then the event loop is released), one call per
-  // table, and each page first waits for room in the write queue, so a large
-  // pack never piles up unwritten rows in memory.
+  // Pages arrive in batches from the pack worker. Index rows are written once per
+  // slice (SLICE_MS of work or MAX_SLICE_ROWS rows), one call per table; the ingest
+  // then waits for those writes to land and rests as long as they took, so commits
+  // never queue behind more than one small slice and a pack never piles up rows.
   async function indexSnapshot(record, batches) {
     const createdAt = now();
     const binding = liveBindingFor(dag, record.domain, Number(record.registered_at));
@@ -195,13 +195,19 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
       for (const r of await dag.listSitePages(record.prev_snapshot_tx)) prevByUrl.set(r.url, r);
     }
     const pending = { fingerprints: [], bands: [], codes: [], passages: [], pages: [] };
-    const writeSlice = () => {
+    const pendingRows = () => pending.fingerprints.length + pending.bands.length + pending.codes.length + pending.passages.length + pending.pages.length;
+    const writeSlice = async () => {
+      if (!pendingRows()) return;
+      const started = performance.now();
       if (pending.fingerprints.length) dag.savePerceptualFingerprints(pending.fingerprints);
       if (pending.bands.length) dag.saveMinhashBands(pending.bands);
       if (pending.codes.length) dag.savePhashCodes(pending.codes);
       if (pending.passages.length) dag.saveDocumentPassages(pending.passages);
       if (pending.pages.length) dag.saveSitePages(pending.pages);
       for (const k of Object.keys(pending)) pending[k] = [];
+      await dag.flush();
+      const took = performance.now() - started;
+      if (took >= 1) await new Promise((resolve) => setTimeout(resolve, took));
     };
     const addFingerprint = (fp, key, componentIdx) => {
       const r = buildIngestRows(fp, { ctid: key, componentIdx, createdAt });
@@ -247,14 +253,16 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
             pending.passages.push({ profile: SITE_INGEST.PASSAGE_PROFILE, passage_key: k, owner, ctid: key, component_idx: 0, unit: null });
           }
         }
-        if (performance.now() - sliceStart >= SITE_INGEST.SLICE_MS) {
-          writeSlice();
+        if (pendingRows() >= SITE_INGEST.MAX_SLICE_ROWS) {
+          await writeSlice();
+          sliceStart = performance.now();
+        } else if (performance.now() - sliceStart >= SITE_INGEST.SLICE_MS) {
           await _yield();
           sliceStart = performance.now();
         }
       }
     }
-    writeSlice();
+    await writeSlice();
     await dag.flush();
     if (offsite) log.warn?.(`site ingest: ${record.domain} seq ${record.seq}: ${offsite} off-site page(s) kept out of the index`);
     return { pages, offsite };
