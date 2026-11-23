@@ -177,7 +177,9 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
   }
 
   function _writesBehind() {
-    return dag.isPersistenceOverloaded?.() || (dag.persistenceStats?.().queue_depth ?? 0) > SITE_INGEST.MAX_QUEUED_WRITES;
+    if (dag.isPersistenceOverloaded?.()) return true;
+    const st = dag.persistenceStats?.();
+    return !!st && (st.queue_depth > SITE_INGEST.MAX_QUEUED_WRITES || st.oldest_pending_ms > SITE_INGEST.MAX_OLDEST_WRITE_MS);
   }
 
   // Pages arrive in batches from the pack worker. Index rows are written once

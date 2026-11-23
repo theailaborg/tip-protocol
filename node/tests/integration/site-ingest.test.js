@@ -360,19 +360,21 @@ describe("off the consensus thread", () => {
     expect(packRoot).not.toHaveBeenCalled();
   });
 
-  test("indexing writes nothing while the node's write queue is long, and finishes once it drains", async () => {
+  test("indexing writes nothing while the node's write queue is long or stale, and finishes once it drains", async () => {
     const fx = setup({ routes: { [route(real)]: real.bytes } });
-    let depth = SITE_INGEST.MAX_QUEUED_WRITES + 1;
-    fx.dag.persistenceStats = () => ({ queue_depth: depth, oldest_pending_ms: 0, last_settled_age_ms: 0 });
+    let stats = { queue_depth: SITE_INGEST.MAX_QUEUED_WRITES + 1, oldest_pending_ms: 0, last_settled_age_ms: 0 };
+    fx.dag.persistenceStats = () => stats;
     const fingerprints = jest.spyOn(fx.dag, "savePerceptualFingerprints");
     const pages = jest.spyOn(fx.dag, "saveSitePages");
     const tx = await commitSnapshot(fx, real, { wait: false });
     await new Promise((r) => setTimeout(r, 1000));
+    stats = { queue_depth: 1, oldest_pending_ms: SITE_INGEST.MAX_OLDEST_WRITE_MS + 1, last_settled_age_ms: 0 };
+    await new Promise((r) => setTimeout(r, 300));
     expect(fingerprints).not.toHaveBeenCalled();
     expect(pages).not.toHaveBeenCalled();
     expect(await fx.dag.getSiteIngest(tx.tx_id)).toBeNull();
 
-    depth = 0;
+    stats = { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0 };
     await fx.siteIngest.idle();
     expect(await fx.dag.getSiteIngest(tx.tx_id)).toEqual(expect.objectContaining({ state: "done", pages: 30 }));
   });
