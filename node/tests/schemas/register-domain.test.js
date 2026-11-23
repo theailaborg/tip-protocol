@@ -6,7 +6,8 @@
  *   - domain normalisation (lowercase, trailing-dot strip, invalid hostname reject)
  *   - method enum gate
  *   - sign/verify round-trip with our own keypair
- *   - resolveClaimant: org-only gate + DAG presence + revocation
+ *   - resolveClaimant: claimant gate (personal TIP-IDs from website
+ *     protection) + DAG presence + revocation
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -21,6 +22,9 @@ const SRC = path.resolve(__dirname, "../../src");
 const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
 const { TIP_ID_TYPES, DOMAIN_VERIFICATION_METHODS } = require(path.join(SHARED, "constants"));
 const schema = require(path.join(SRC, "schemas", "register-domain"));
+const { GATE_MS } = require(path.join(SRC, "validators", "website-gate"));
+
+const BEFORE_GATE = GATE_MS - 1;
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -223,7 +227,7 @@ describe("sign / verify round-trip", () => {
   });
 });
 
-// ─── resolveClaimant — org-only gate + DAG presence ─────────────────────────
+// ─── resolveClaimant — claimant gate + DAG presence ─────────────────────────
 
 describe("resolveClaimant", () => {
   test("missing on DAG → 412 signer_not_registered", () => {
@@ -241,12 +245,19 @@ describe("resolveClaimant", () => {
       .toThrow(expect.objectContaining({ status: 403, code: "signer_revoked" }));
   });
 
-  test("personal → 403 tip_id_not_authorised", () => {
+  test("personal → 403 tip_id_not_authorised before website protection", () => {
     const dag = makeFakeDag({
       [PERSONAL_TIP]: { public_key: "ff", tip_id_type: TIP_ID_TYPES.PERSONAL },
     });
-    expect(() => schema.resolveClaimant(PERSONAL_TIP, dag))
+    expect(() => schema.resolveClaimant(PERSONAL_TIP, dag, BEFORE_GATE))
       .toThrow(expect.objectContaining({ status: 403, code: "tip_id_not_authorised" }));
+  });
+
+  test("personal → returns identity from website protection", () => {
+    const dag = makeFakeDag({
+      [PERSONAL_TIP]: { public_key: "ff", tip_id_type: TIP_ID_TYPES.PERSONAL },
+    });
+    expect(schema.resolveClaimant(PERSONAL_TIP, dag, GATE_MS).public_key).toBe("ff");
   });
 
   test("organization → returns identity", () => {
@@ -257,12 +268,13 @@ describe("resolveClaimant", () => {
     expect(identity.public_key).toBe("ff");
   });
 
-  test("identity row without tip_id_type defaults to personal → rejected", () => {
+  test("identity row without tip_id_type is treated as personal", () => {
     const dag = makeFakeDag({
       [ORG_TIP]: { public_key: "ff" }, // missing tip_id_type
     });
-    expect(() => schema.resolveClaimant(ORG_TIP, dag))
+    expect(() => schema.resolveClaimant(ORG_TIP, dag, BEFORE_GATE))
       .toThrow(expect.objectContaining({ status: 403, code: "tip_id_not_authorised" }));
+    expect(schema.resolveClaimant(ORG_TIP, dag, GATE_MS).public_key).toBe("ff");
   });
 });
 
@@ -300,11 +312,20 @@ describe("validateRequest", () => {
       .toThrow(expect.objectContaining({ status: 400, code: "signature_required" }));
   });
 
-  test("personal tip_id is rejected by the org gate inside resolveClaimant", () => {
+  test("personal tip_id passes the claimant gate only from website protection", () => {
     const dag = makeFakeDag({
       [PERSONAL_TIP]: { public_key: "ff", tip_id_type: TIP_ID_TYPES.PERSONAL },
     });
-    expect(() => schema.validateRequest({ ...goodBody(), tip_id: PERSONAL_TIP }, { dag }))
-      .toThrow(expect.objectContaining({ status: 403, code: "tip_id_not_authorised" }));
+    const body = { ...goodBody(), tip_id: PERSONAL_TIP };
+    const clock = jest.spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(BEFORE_GATE);
+      expect(() => schema.validateRequest(body, { dag }))
+        .toThrow(expect.objectContaining({ status: 403, code: "tip_id_not_authorised" }));
+      clock.mockReturnValue(GATE_MS);
+      expect(schema.validateRequest(body, { dag }).identity.public_key).toBe("ff");
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
