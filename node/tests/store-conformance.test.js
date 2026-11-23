@@ -737,6 +737,21 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getLatestSiteSnapshot("a.example").tx_id).toBe(ids[1]);
   });
 
+  test("perceptual fingerprints: a batch save keeps rows already present and adds the rest", async () => {
+    const dag = await makeDag();
+    const fp = (ctid, idx, q) => ({
+      ctid, component_idx: idx, modality: "image", profile: "cf-image-1", pipeline: "{}", quality: q,
+      fingerprint: JSON.stringify({ q }), created_at: T0,
+    });
+    const a = uniq("site:a");
+    dag.savePerceptualFingerprint(fp(a, 0, 10));
+    dag.savePerceptualFingerprints([fp(a, 0, 99), fp(a, 1, 20), fp(a, 2, 30)]);
+    dag.savePerceptualFingerprints([]);
+    if (typeof dag.flush === "function") await dag.flush();
+    const q = async (i) => Number((await dag.getPerceptualFingerprint(a, i)).quality);
+    expect([await q(0), await q(1), await q(2)]).toEqual([10, 20, 30]);
+  });
+
   test("site snapshots: visibility is kept on a private row and absent from a public one", async () => {
     const dag = await makeDag();
     const hex = (c) => c.repeat(64);

@@ -1085,6 +1085,12 @@ class KnexAdapter {
     const { ctid, ...rest } = rec;
     this._ff(() => this._dbInsert("perceptual_fingerprint", ["tip_ctid", "component_idx"], { tip_ctid: ctid, ...rest }, "merge"));
   }
+  // Batch insert: a row already present for (ctid, component_idx) is kept.
+  savePerceptualFingerprints(rows) {
+    if (!rows || !rows.length) return;
+    const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
+    this._ff(() => this._chunkedInsertIgnore("perceptual_fingerprint", mapped, ["tip_ctid", "component_idx"]));
+  }
   // One statement per chunk: a full perceptual set as a single insert exceeds
   // per-statement limits (Postgres 65535 bind params; SQLite 500 UNION ALL
   // terms), failing the whole write and fail-stopping the node.

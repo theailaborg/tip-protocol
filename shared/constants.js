@@ -1227,6 +1227,10 @@ const SITE_INGEST = Object.freeze({
   SLICE_MS: 10,
   CHECK_TIMEOUT_MS: 5 * 60 * 1000,
   WORKER_HEAP_MB: 1024,                  // a pack past this fails on its own; the node is unaffected
+  // Ingest writes share the node's one ordered persistence queue with consensus:
+  // indexing waits while that queue is longer than this, so memory stays bounded.
+  MAX_QUEUED_WRITES: 10,
+  WRITE_WAIT_MS: 25,
   // failed: retried with backoff. mismatch: the pack named by pack_hash does not
   // match its record (header, pages, root), never retried; shown as not verified.
   // private: a private snapshot, never fetched.

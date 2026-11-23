@@ -2310,6 +2310,13 @@ class MemoryStore {
   savePerceptualFingerprint(rec) {
     this._perceptualFingerprints.set(`${rec.ctid}|${rec.component_idx}`, { ...rec });
   }
+  // Batch insert: a row already present for (ctid, component_idx) is kept.
+  savePerceptualFingerprints(rows) {
+    for (const r of rows || []) {
+      const key = `${r.ctid}|${r.component_idx}`;
+      if (!this._perceptualFingerprints.has(key)) this._perceptualFingerprints.set(key, { ...r });
+    }
+  }
   saveMinhashBands(rows) {
     // Mirrors the SQLite/Knex INSERT OR IGNORE on (profile, band_idx, band_hash, ctid).
     for (const r of rows) {
@@ -3640,6 +3647,11 @@ class SQLiteStore {
       // Perceptual index (off-DAG, advisory).
       savePerceptualFingerprint: this.db.prepare(
         `INSERT OR REPLACE INTO perceptual_fingerprint
+           (tip_ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ),
+      insertPerceptualFingerprintIgnore: this.db.prepare(
+        `INSERT OR IGNORE INTO perceptual_fingerprint
            (tip_ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ),
@@ -4976,6 +4988,15 @@ class SQLiteStore {
   }
 
   // ── Perceptual index writes (off-DAG, advisory) ───────────────────────────
+  savePerceptualFingerprints(rows) {
+    if (!rows || !rows.length) return;
+    const tx = this.db.transaction((list) => {
+      for (const r of list) {
+        this._stmts.insertPerceptualFingerprintIgnore.run(r.ctid, r.component_idx, r.modality, r.profile, r.pipeline, r.quality, r.fingerprint, r.created_at);
+      }
+    });
+    tx(rows);
+  }
   savePerceptualFingerprint(rec) {
     this._stmts.savePerceptualFingerprint.run(
       rec.ctid, rec.component_idx, rec.modality, rec.profile,
@@ -5592,6 +5613,7 @@ function _buildDagHandle(store, config) {
     // ── Prescan jobs (node-local async classifier queue) ────────────────
     enqueuePrescanJob: (rec) => store.enqueuePrescanJob(rec),
     savePerceptualFingerprint: (rec) => store.savePerceptualFingerprint(rec),
+    savePerceptualFingerprints: (rows) => store.savePerceptualFingerprints(rows),
     saveMinhashBands: (rows) => store.saveMinhashBands(rows),
     savePhashCodes: (rows) => store.savePhashCodes(rows),
     getPerceptualFingerprint: (ctid, idx) => store.getPerceptualFingerprint(ctid, idx),

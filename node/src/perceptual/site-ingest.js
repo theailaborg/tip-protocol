@@ -14,7 +14,7 @@ const { shake256, shake256Incremental } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { SITE_INGEST, SITE_SNAPSHOT } = require("../../../shared/constants");
 const { siteKey, liveBindingFor } = require("../validators/business-rules");
-const { ingestFingerprint } = require("./ingest");
+const { buildIngestRows } = require("./ingest");
 const { checkPack, packError: _fail } = require("./site-pack");
 
 const { PENDING, DONE, FAILED, MISMATCH, PRIVATE } = SITE_INGEST.STATES;
@@ -73,6 +73,8 @@ async function* _packBatches(record, bytes, onWorker) {
       }
       if (!m) throw _fail(`pack worker stopped (exit ${exit})`, "pack_check_failed");
       if (m.type === "error") throw _fail(m.message, m.code, m.permanent);
+      // The timeout bounds the check; indexing then paces itself on the write queue.
+      if (m.type === "ready") clearTimeout(timer);
       if (m.type === "done") return;
       if (m.type === "batch") yield m.pages;
       worker.postMessage("next");
@@ -174,8 +176,14 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     throw _fail(`no source served the pack (${errors.join("; ") || "none tried"})`, "pack_unavailable");
   }
 
-  // Pages arrive in batches from the pack worker; rows are written and the
-  // event loop released every SLICE_MS of work.
+  function _writesBehind() {
+    return dag.isPersistenceOverloaded?.() || (dag.persistenceStats?.().queue_depth ?? 0) > SITE_INGEST.MAX_QUEUED_WRITES;
+  }
+
+  // Pages arrive in batches from the pack worker. Index rows are written once
+  // per slice (SLICE_MS of work, then the event loop is released), one call per
+  // table, and each page first waits for room in the write queue, so a large
+  // pack never piles up unwritten rows in memory.
   async function indexSnapshot(record, batches) {
     const createdAt = now();
     const binding = liveBindingFor(dag, record.domain, Number(record.registered_at));
@@ -184,12 +192,31 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     if (record.prev_snapshot_tx) {
       for (const r of await dag.listSitePages(record.prev_snapshot_tx)) prevByUrl.set(r.url, r);
     }
-    let rows = [];
+    const pending = { fingerprints: [], bands: [], codes: [], passages: [], pages: [] };
+    const writeSlice = () => {
+      if (pending.fingerprints.length) dag.savePerceptualFingerprints(pending.fingerprints);
+      if (pending.bands.length) dag.saveMinhashBands(pending.bands);
+      if (pending.codes.length) dag.savePhashCodes(pending.codes);
+      if (pending.passages.length) dag.saveDocumentPassages(pending.passages);
+      if (pending.pages.length) dag.saveSitePages(pending.pages);
+      for (const k of Object.keys(pending)) pending[k] = [];
+    };
+    const addFingerprint = (fp, key, componentIdx) => {
+      const r = buildIngestRows(fp, { ctid: key, componentIdx, createdAt });
+      if (!r) return;
+      pending.fingerprints.push(r.fingerprint);
+      for (const b of r.bands) pending.bands.push(b);
+      for (const c of r.codes) pending.codes.push(c);
+    };
     let pages = 0;
     let offsite = 0;
     let sliceStart = performance.now();
     for await (const batch of batches) {
       for (const p of batch) {
+        while (!stopped && _writesBehind()) {
+          await new Promise((resolve) => setTimeout(resolve, SITE_INGEST.WRITE_WAIT_MS));
+          sliceStart = performance.now();
+        }
         if (stopped) throw _fail("ingest stopped", "ingest_stopped");
         const key = pageKeyFor(record.tx_id, p.url);
         const keys = Array.isArray(p.paragraph_keys) ? [...new Set(p.paragraph_keys.filter((k) => typeof k === "string" && k.length <= 16))] : [];
@@ -197,7 +224,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
         const prev = prevByUrl.get(p.url);
         const prevKeys = _keysOf(prev);
         const have = new Set(keys);
-        rows.push({
+        pending.pages.push({
           page_key: key, snapshot_tx: record.tx_id, domain: record.domain, seq: record.seq, url: p.url,
           text_hash: p.text_hash, page_hash: p.page_hash, offsite: away,
           changed: prev ? prev.page_hash !== p.page_hash : null,
@@ -208,30 +235,24 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
         if (away) {
           offsite++;
         } else {
-          if (p.text && p.text.kind === "text") {
-            await ingestFingerprint(dag, p.text, { ctid: key, componentIdx: 0, createdAt });
-          }
+          if (p.text && p.text.kind === "text") addFingerprint(p.text, key, 0);
           let component = 1;
           for (const img of Array.isArray(p.images) ? p.images : []) {
             if (typeof img.pdq !== "string") continue;
-            await ingestFingerprint(dag, { kind: "image", profile: IMAGE_PROFILE, pdq: img.pdq, quality: img.quality ?? null, media_id: img.media_id ?? null },
-              { ctid: key, componentIdx: component++, createdAt });
+            addFingerprint({ kind: "image", profile: IMAGE_PROFILE, pdq: img.pdq, quality: img.quality ?? null, media_id: img.media_id ?? null }, key, component++);
           }
-          if (keys.length) {
-            dag.saveDocumentPassages(keys.map((k) => ({
-              profile: SITE_INGEST.PASSAGE_PROFILE, passage_key: k, owner, ctid: key, component_idx: 0, unit: null,
-            })));
+          for (const k of keys) {
+            pending.passages.push({ profile: SITE_INGEST.PASSAGE_PROFILE, passage_key: k, owner, ctid: key, component_idx: 0, unit: null });
           }
         }
         if (performance.now() - sliceStart >= SITE_INGEST.SLICE_MS) {
-          dag.saveSitePages(rows);
-          rows = [];
+          writeSlice();
           await _yield();
           sliceStart = performance.now();
         }
       }
     }
-    dag.saveSitePages(rows);
+    writeSlice();
     await dag.flush();
     if (offsite) log.warn?.(`site ingest: ${record.domain} seq ${record.seq}: ${offsite} off-site page(s) kept out of the index`);
     return { pages, offsite };

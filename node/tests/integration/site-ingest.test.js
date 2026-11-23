@@ -129,7 +129,7 @@ function setup({ routes = {}, sources = [SOURCE], clock = null } = {}) {
 
 let round = 10;
 // Commits a snapshot of `pack` (bytes + root + page_count) and waits for its ingest.
-async function commitSnapshot(fx, pack, { seq = 1, prev = null, ts = nowMs(), cert = ts, capturedAt = ts - MIN, root = pack.root, visibility = null } = {}) {
+async function commitSnapshot(fx, pack, { seq = 1, prev = null, ts = nowMs(), cert = ts, capturedAt = ts - MIN, root = pack.root, visibility = null, wait = true } = {}) {
   const p = snapshotSchema.buildSigningPayload({
     domain: SITE, seq, prev_snapshot_tx: prev, root, page_count: pack.page_count,
     template_hash: TEST1.template_hash, profile: "cf-web-1", wacz_hash: hex("c"),
@@ -138,7 +138,7 @@ async function commitSnapshot(fx, pack, { seq = 1, prev = null, ts = nowMs(), ce
   const tx = withTxId({ tx_type: TX_TYPES.SITE_SNAPSHOT, timestamp: ts, data: snapshotSchema.buildTxData(p, null), signature: snapshotSchema.sign(p, fx.keys.owner.privateKey) }, fx.dag);
   const res = fx.handler.commitOrderedTxs([tx], round++, { certTimestamp: cert });
   if (res.committed !== 1) throw new Error(`snapshot not committed: ${JSON.stringify(fx.dag.getTxRejection(tx.tx_id))}`);
-  await fx.siteIngest.idle();
+  if (wait) await fx.siteIngest.idle();
   return tx;
 }
 
@@ -358,6 +358,23 @@ describe("off the consensus thread", () => {
     expect(await fx.dag.getSiteIngest(tx.tx_id)).toEqual(expect.objectContaining({ state: "done", pages: 30 }));
     expect(readPack).not.toHaveBeenCalled();
     expect(packRoot).not.toHaveBeenCalled();
+  });
+
+  test("indexing writes nothing while the node's write queue is long, and finishes once it drains", async () => {
+    const fx = setup({ routes: { [route(real)]: real.bytes } });
+    let depth = SITE_INGEST.MAX_QUEUED_WRITES + 1;
+    fx.dag.persistenceStats = () => ({ queue_depth: depth, oldest_pending_ms: 0, last_settled_age_ms: 0 });
+    const fingerprints = jest.spyOn(fx.dag, "savePerceptualFingerprints");
+    const pages = jest.spyOn(fx.dag, "saveSitePages");
+    const tx = await commitSnapshot(fx, real, { wait: false });
+    await new Promise((r) => setTimeout(r, 1000));
+    expect(fingerprints).not.toHaveBeenCalled();
+    expect(pages).not.toHaveBeenCalled();
+    expect(await fx.dag.getSiteIngest(tx.tx_id)).toBeNull();
+
+    depth = 0;
+    await fx.siteIngest.idle();
+    expect(await fx.dag.getSiteIngest(tx.tx_id)).toEqual(expect.objectContaining({ state: "done", pages: 30 }));
   });
 
   test("each page keeps the same proof the library builds, so a read never rebuilds the tree", async () => {

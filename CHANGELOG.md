@@ -60,7 +60,10 @@ upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside produ
   rows hash as before.
 - Pack ingest never blocks consensus: the pack is hashed while it downloads, then
   unpacked, checked and given per-page Merkle proofs on a worker thread (capped heap,
-  timeout); pages are indexed in short slices. A page read checks the proof stored at
+  timeout on the check); pages are indexed in short slices, written one batch per table
+  per slice (new store primitive `savePerceptualFingerprints`), and indexing waits while
+  the node's write queue is long, so memory stays bounded and commits never queue
+  behind a pack. A page read checks the proof stored at
   ingest (`site_page.proof`, migration `021_site_page_proof`, which clears pages indexed
   without one so they are rebuilt) instead of rebuilding the tree. A snapshot holds at
   most 20,000 pages.
