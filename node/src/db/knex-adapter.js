@@ -1680,6 +1680,10 @@ class KnexAdapter {
   async listSitePages(snapshotTx) {
     return this.knex("site_page").where({ snapshot_tx: snapshotTx }).orderBy("page_key").select("*");
   }
+  async getSitePageLastSeq(indexKey) {
+    const r = await this.knex("site_page").where({ index_key: indexKey }).max({ seq: "seq" }).first();
+    return r && r.seq != null ? Number(r.seq) : null;
+  }
   saveSiteIngest(row) {
     this._ff(() => this._dbInsert("site_ingest", "snapshot_tx", _siteIngestRow(row), "merge"));
   }

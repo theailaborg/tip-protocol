@@ -1236,6 +1236,7 @@ const SITE_INGEST = Object.freeze({
   // A slice is written once it holds this many rows (all tables), and after its
   // writes land the ingest rests as long as they took: at most half the disk.
   MAX_SLICE_ROWS: 1000,
+  REUSE_LOOKBACK: 10,                    // earlier snapshots searched for one whose index rows can be reused
   // failed: retried with backoff. mismatch: the pack named by pack_hash does not
   // match its record (header, pages, root), never retried; shown as not verified.
   // private: a private snapshot, never fetched.

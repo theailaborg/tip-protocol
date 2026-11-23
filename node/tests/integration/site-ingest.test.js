@@ -129,13 +129,14 @@ function setup({ routes = {}, sources = [SOURCE], clock = null } = {}) {
 
 let round = 10;
 // Commits a snapshot of `pack` (bytes + root + page_count) and waits for its ingest.
-async function commitSnapshot(fx, pack, { seq = 1, prev = null, ts = nowMs(), cert = ts, capturedAt = ts - MIN, root = pack.root, visibility = null, wait = true } = {}) {
+async function commitSnapshot(fx, pack, { seq = 1, prev = null, ts = nowMs(), cert = ts, capturedAt = ts - MIN, root = pack.root, visibility = null, wait = true, signer = OWNER } = {}) {
   const p = snapshotSchema.buildSigningPayload({
     domain: SITE, seq, prev_snapshot_tx: prev, root, page_count: pack.page_count,
     template_hash: TEST1.template_hash, profile: "cf-web-1", wacz_hash: hex("c"),
-    pack_hash: shake256(pack.bytes), ai_signals_hash: hex("e"), captured_at: capturedAt, signer_tip_id: OWNER, visibility,
+    pack_hash: shake256(pack.bytes), ai_signals_hash: hex("e"), captured_at: capturedAt, signer_tip_id: signer, visibility,
   });
-  const tx = withTxId({ tx_type: TX_TYPES.SITE_SNAPSHOT, timestamp: ts, data: snapshotSchema.buildTxData(p, null), signature: snapshotSchema.sign(p, fx.keys.owner.privateKey) }, fx.dag);
+  const kp = signer === POSTER ? fx.keys.poster : fx.keys.owner;
+  const tx = withTxId({ tx_type: TX_TYPES.SITE_SNAPSHOT, timestamp: ts, data: snapshotSchema.buildTxData(p, null), signature: snapshotSchema.sign(p, kp.privateKey) }, fx.dag);
   const res = fx.handler.commitOrderedTxs([tx], round++, { certTimestamp: cert });
   if (res.committed !== 1) throw new Error(`snapshot not committed: ${JSON.stringify(fx.dag.getTxRejection(tx.tx_id))}`);
   if (wait) await fx.siteIngest.idle();
@@ -320,30 +321,96 @@ describe("similar", () => {
     const fx = setup({ routes: { [route(real)]: real.bytes } });
     const tx = await commitSnapshot(fx, real);
     const line = LINES.find((l) => l.text && l.text.tier === "char");
-    const scoring = initScoring(fx.dag, {});
-    const contentService = createContentService({
-      dag: fx.dag, scoring,
-      config: { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: fx.keys.node.privateKey, mediaLimits: { max_text_bytes: 1_000_000, max_image_bytes: 0, max_video_bytes: 0, max_audio_bytes: 0 } },
-      submitTx: (t) => { fx.dag.addTx(t); fx.dag.saveMempoolTx(t); },
-    });
-    const items = [{ kind: "text", role: "caption", perceptual: line.text }];
-    const fingerprints = { profile: "cf-fingerprints-1", count: 1, encoding: "gzip+base64", data: zlib.gzipSync(Buffer.from(JSON.stringify(items))).toString("base64") };
-    const content = "A post that reposts a theailab.org page.";
-    const fields = {
-      origin_code: "OH", registered_urls: ["https://blog.example.net/copy/"], extras: {},
-      authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: POSTER, tip_id_type: "personal" }],
-      signer_tip_id: POSTER, attribution_mode: "self", fingerprint_commit: contentSchema.fingerprintsCommit(fingerprints),
-    };
-    const payload = contentSchema.buildSigningPayload(fields, shake256(tipNormalize(content)));
-    const out = await contentService.register({
-      ...fields, cna_version: contentSchema.CURRENT_CNA_VERSION, content, content_type: "text",
-      signature: contentSchema.sign(payload, fx.keys.poster.privateKey), fingerprints,
-    });
+    const out = await registerPost(fx, line);
     expect(out.near_duplicates).toEqual([]);
     expect(out.near_duplicate_sites).toEqual([expect.objectContaining({
-      domain: SITE, url: line.url, seq: 1, snapshot_tx: tx.tx_id, signer_tip_id: OWNER,
+      domain: SITE, url: line.url, seq: 1, last_seen_seq: 1, snapshot_tx: tx.tx_id, signer_tip_id: OWNER,
       similarity: expect.objectContaining({ modality: "text", score: 1 }),
     })]);
+  });
+});
+
+// A post by POSTER whose text fingerprint is `line`'s.
+async function registerPost(fx, line) {
+  const scoring = initScoring(fx.dag, {});
+  const contentService = createContentService({
+    dag: fx.dag, scoring,
+    config: { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: fx.keys.node.privateKey, mediaLimits: { max_text_bytes: 1_000_000, max_image_bytes: 0, max_video_bytes: 0, max_audio_bytes: 0 } },
+    submitTx: (t) => { fx.dag.addTx(t); fx.dag.saveMempoolTx(t); },
+  });
+  const items = [{ kind: "text", role: "caption", perceptual: line.text }];
+  const fingerprints = { profile: "cf-fingerprints-1", count: 1, encoding: "gzip+base64", data: zlib.gzipSync(Buffer.from(JSON.stringify(items))).toString("base64") };
+  const content = "A post that reposts a theailab.org page.";
+  const fields = {
+    origin_code: "OH", registered_urls: ["https://blog.example.net/copy/"], extras: {},
+    authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: POSTER, tip_id_type: "personal" }],
+    signer_tip_id: POSTER, attribution_mode: "self", fingerprint_commit: contentSchema.fingerprintsCommit(fingerprints),
+  };
+  const payload = contentSchema.buildSigningPayload(fields, shake256(tipNormalize(content)));
+  return contentService.register({
+    ...fields, cna_version: contentSchema.CURRENT_CNA_VERSION, content, content_type: "text",
+    signature: contentSchema.sign(payload, fx.keys.poster.privateKey), fingerprints,
+  });
+}
+
+describe("unchanged pages across snapshots", () => {
+  test("an unchanged page reuses the earlier version's index rows; a changed page is indexed again", async () => {
+    const t0 = nowMs() - 40 * MIN;
+    const changedUrl = LINES[2].url;
+    const v2 = repack({ seq: 2, mutate: (lines) => { lines[2].paragraph_keys = lines[2].paragraph_keys.slice(0, 5); lines[2].text_hash = hex("2"); return lines; } });
+    const fx = setup({ routes: { [route(real)]: real.bytes, [route(v2)]: v2.bytes } });
+    const tx1 = await commitSnapshot(fx, real, { ts: t0, capturedAt: t0 - MIN });
+    const tx2 = await commitSnapshot(fx, v2, { seq: 2, prev: tx1.tx_id, ts: t0 + 20 * MIN, capturedAt: t0 + 15 * MIN });
+
+    const rows = await fx.dag.listSitePages(tx2.tx_id);
+    const byUrl = new Map(rows.map((r) => [r.url, r]));
+    expect(byUrl.get(firstUrl).index_key).toBe(pageKeyFor(tx1.tx_id, firstUrl));
+    expect(byUrl.get(changedUrl).index_key).toBe(pageKeyFor(tx2.tx_id, changedUrl));
+    expect(rows.filter((r) => r.index_key === r.page_key).map((r) => r.url)).toEqual([changedUrl]);
+    expect(await fx.dag.getPerceptualFingerprint(pageKeyFor(tx2.tx_id, firstUrl), 0)).toBeNull();
+    expect(await fx.dag.getPerceptualFingerprint(pageKeyFor(tx2.tx_id, changedUrl), 0)).not.toBeNull();
+    expect(await fx.dag.getSitePageLastSeq(pageKeyFor(tx1.tx_id, firstUrl))).toBe(2);
+    expect(await fx.dag.getSitePageLastSeq(pageKeyFor(tx1.tx_id, changedUrl))).toBe(1);
+
+    const page = await fx.siteService.getPage(SITE, { url: firstUrl });
+    expect(page.seq).toBe(2);
+    expect(web.verifyPage(firstUrl, page.text_hash, page.proof, v2.root)).toBe(true);
+  });
+
+  test("after a change of site owner every page is indexed again", async () => {
+    const t0 = nowMs() - 40 * MIN;
+    const v2 = repack({ seq: 2 });
+    const fx = setup({ routes: { [route(real)]: real.bytes, [route(v2)]: v2.bytes } });
+    const tx1 = await commitSnapshot(fx, real, { ts: t0, capturedAt: t0 - MIN });
+    fx.dag.saveDomainBinding({ ...fx.dag.getDomainBinding(SITE), tip_id: POSTER, tx_id: `tx-${SITE}-2` });
+    const tx2 = await commitSnapshot(fx, v2, { seq: 2, prev: tx1.tx_id, ts: t0 + 20 * MIN, capturedAt: t0 + 15 * MIN, signer: POSTER });
+    const rows = await fx.dag.listSitePages(tx2.tx_id);
+    expect(rows).toHaveLength(30);
+    expect(rows.every((r) => r.index_key === r.page_key)).toBe(true);
+  });
+
+  test("a private snapshot in between does not force a full re-index: rows come from the last indexed one", async () => {
+    const t0 = nowMs() - 70 * MIN;
+    const v3 = repack({ seq: 3 });
+    const fx = setup({ routes: { [route(real)]: real.bytes, [route(v3)]: v3.bytes } });
+    const tx1 = await commitSnapshot(fx, real, { ts: t0, capturedAt: t0 - MIN });
+    const tx2 = await commitSnapshot(fx, real, { seq: 2, prev: tx1.tx_id, ts: t0 + 20 * MIN, capturedAt: t0 + 15 * MIN, visibility: "private" });
+    const tx3 = await commitSnapshot(fx, v3, { seq: 3, prev: tx2.tx_id, ts: t0 + 40 * MIN, capturedAt: t0 + 35 * MIN });
+    const rows = await fx.dag.listSitePages(tx3.tx_id);
+    expect(rows).toHaveLength(30);
+    expect(rows.every((r) => r.index_key === pageKeyFor(tx1.tx_id, r.url))).toBe(true);
+    expect(rows.every((r) => r.changed === null && r.kept === null)).toBe(true);
+  });
+
+  test("a post matching an unchanged page names the snapshot that first archived it and the last one holding it", async () => {
+    const t0 = nowMs() - 40 * MIN;
+    const v2 = repack({ seq: 2 });
+    const fx = setup({ routes: { [route(real)]: real.bytes, [route(v2)]: v2.bytes } });
+    const tx1 = await commitSnapshot(fx, real, { ts: t0, capturedAt: t0 - MIN });
+    await commitSnapshot(fx, v2, { seq: 2, prev: tx1.tx_id, ts: t0 + 20 * MIN, capturedAt: t0 + 15 * MIN });
+    const line = LINES.find((l) => l.text && l.text.tier === "char");
+    const out = await registerPost(fx, line);
+    expect(out.near_duplicate_sites).toEqual([expect.objectContaining({ url: line.url, seq: 1, last_seen_seq: 2, snapshot_tx: tx1.tx_id })]);
   });
 });
 

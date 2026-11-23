@@ -4,7 +4,7 @@
 // synchronous: the node runs it on the pack worker thread, tests call it directly.
 
 const web = require("tip-content-fingerprint/src/web");
-const { shake256 } = require("../../../shared/crypto");
+const { shake256, canonicalJson } = require("../../../shared/crypto");
 
 function packError(message, code, permanent = false) {
   const e = new Error(message);
@@ -86,9 +86,16 @@ function pageProofs(record, leaves) {
   return out;
 }
 
+// Everything a page contributes to the similar index. Equal hashes on the same URL
+// in consecutive snapshots let the node reuse the earlier index rows.
+function pageContentHash(p) {
+  const images = (Array.isArray(p.images) ? p.images : []).map((i) => ({ media_id: i.media_id ?? null, pdq: i.pdq ?? null, quality: i.quality ?? null }));
+  return shake256(canonicalJson({ images, paragraph_keys: Array.isArray(p.paragraph_keys) ? p.paragraph_keys : [], text: p.text ?? null }));
+}
+
 function checkPack(record, bytes) {
   if (shake256(bytes) !== record.pack_hash) throw packError("pack bytes do not match pack_hash", "pack_hash_mismatch");
   return checkPackBody(record, bytes);
 }
 
-module.exports = { checkPack, checkPackBody, pageProofs, encodeProof, decodeProof, packError };
+module.exports = { checkPack, checkPackBody, pageProofs, pageContentHash, encodeProof, decodeProof, packError };

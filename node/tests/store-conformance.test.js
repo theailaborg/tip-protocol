@@ -752,6 +752,25 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect([await q(0), await q(1), await q(2)]).toEqual([10, 20, 30]);
   });
 
+  test("site pages: index_key and index_hash round-trip; the last seq per index entry", async () => {
+    const dag = await makeDag();
+    const hex = (c) => c.repeat(64);
+    const tx1 = hex("a"), tx2 = hex("b");
+    const page = (tx, seq, indexKey) => ({
+      page_key: `site:${tx}:0123456789abcdef`, snapshot_tx: tx, domain: "p.example", seq, url: "https://p.example/",
+      text_hash: hex("1"), page_hash: hex("2"), offsite: false, changed: null, kept: null, paragraph_keys: "",
+      proof: null, index_key: indexKey, index_hash: hex("3"), created_at: T0,
+    });
+    const first = `site:${tx1}:0123456789abcdef`;
+    dag.saveSitePages([page(tx1, 1, first)]);
+    dag.saveSitePages([page(tx2, 2, first)]);
+    if (typeof dag.flush === "function") await dag.flush();
+    const got = await dag.getSitePage(`site:${tx2}:0123456789abcdef`);
+    expect([got.index_key, got.index_hash]).toEqual([first, hex("3")]);
+    expect(await dag.getSitePageLastSeq(first)).toBe(2);
+    expect(await dag.getSitePageLastSeq(`site:${hex("c")}:0000000000000000`)).toBeNull();
+  });
+
   test("site snapshots: visibility is kept on a private row and absent from a public one", async () => {
     const dag = await makeDag();
     const hex = (c) => c.repeat(64);

@@ -49,8 +49,7 @@ test("from 019: 020 keeps old snapshots public, 021 adds proofs and clears pages
   const k = open("upgrade.db");
   try {
     await k.migrate.latest();
-    await k.migrate.down();   // 021
-    await k.migrate.down();   // 020
+    for (let i = 0; i < 10 && await k.schema.hasColumn("site_snapshots", "visibility"); i++) await k.migrate.down();   // back to 019
     expect(await k.schema.hasColumn("site_snapshots", "visibility")).toBe(false);
     expect(await k.schema.hasColumn("site_page", "proof")).toBe(false);
     await k("site_snapshots").insert(snapshot);

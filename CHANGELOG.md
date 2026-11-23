@@ -58,6 +58,11 @@ upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside produ
   answer `404 site_snapshot_private`. Column `site_snapshots.visibility` (migration
   `020_site_snapshot_visibility`), omitted from the canonical row when null, so public
   rows hash as before.
+- Unchanged pages are not indexed again: a page whose indexed content and owner equal
+  the previous snapshot's points at that version's index rows (`site_page.index_key`,
+  `index_hash`, migration `022_site_page_index_reuse`), so only new and changed pages
+  cost index storage. Site cards name the snapshot that first archived the matching
+  version and add `last_seen_seq`.
 - Pack ingest never blocks consensus: the pack is hashed while it downloads, then
   unpacked, checked and given per-page Merkle proofs on a worker thread (capped heap,
   timeout on the check); pages are indexed in short slices, written one batch per table

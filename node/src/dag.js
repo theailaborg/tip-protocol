@@ -350,7 +350,8 @@ function _sitePageRow(r) {
     page_key: r.page_key, snapshot_tx: r.snapshot_tx, domain: r.domain, seq: r.seq, url: r.url,
     text_hash: r.text_hash, page_hash: r.page_hash, offsite: r.offsite ? 1 : 0,
     changed: r.changed == null ? null : (r.changed ? 1 : 0), kept: r.kept ?? null,
-    paragraph_keys: r.paragraph_keys, proof: r.proof ?? null, created_at: r.created_at,
+    paragraph_keys: r.paragraph_keys, proof: r.proof ?? null,
+    index_key: r.index_key ?? null, index_hash: r.index_hash ?? null, created_at: r.created_at,
   };
 }
 function _siteIngestRow(r) {
@@ -1226,6 +1227,12 @@ class MemoryStore {
   listSitePages(snapshotTx) {
     return [...this._sitePages.values()].filter(r => r.snapshot_tx === snapshotTx)
       .sort((a, b) => cmpBin(a.page_key, b.page_key)).map(r => ({ ...r }));
+  }
+  // The newest snapshot seq whose page still points at this index entry.
+  getSitePageLastSeq(indexKey) {
+    let last = null;
+    for (const r of this._sitePages.values()) if (r.index_key === indexKey && (last === null || r.seq > last)) last = Number(r.seq);
+    return last;
   }
   saveSiteIngest(row) {
     this._siteIngests.set(row.snapshot_tx, { ...row });
@@ -3130,9 +3137,10 @@ class SQLiteStore {
 
       saveSitePage: this.db.prepare(
         `INSERT OR IGNORE INTO site_page
-         (page_key, snapshot_tx, domain, seq, url, text_hash, page_hash, offsite, changed, kept, paragraph_keys, proof, created_at)
-         VALUES (@page_key, @snapshot_tx, @domain, @seq, @url, @text_hash, @page_hash, @offsite, @changed, @kept, @paragraph_keys, @proof, @created_at)`
+         (page_key, snapshot_tx, domain, seq, url, text_hash, page_hash, offsite, changed, kept, paragraph_keys, proof, index_key, index_hash, created_at)
+         VALUES (@page_key, @snapshot_tx, @domain, @seq, @url, @text_hash, @page_hash, @offsite, @changed, @kept, @paragraph_keys, @proof, @index_key, @index_hash, @created_at)`
       ),
+      getSitePageLastSeq: this.db.prepare("SELECT MAX(seq) AS seq FROM site_page WHERE index_key=?"),
       getSitePage: this.db.prepare("SELECT * FROM site_page WHERE page_key=?"),
       listSitePages: this.db.prepare("SELECT * FROM site_page WHERE snapshot_tx=? ORDER BY page_key"),
       saveSiteIngest: this.db.prepare(
@@ -4141,6 +4149,10 @@ class SQLiteStore {
   }
   getSitePage(pageKey) { return this._stmts.getSitePage.get(pageKey) || null; }
   listSitePages(snapshotTx) { return this._stmts.listSitePages.all(snapshotTx); }
+  getSitePageLastSeq(indexKey) {
+    const r = this._stmts.getSitePageLastSeq.get(indexKey);
+    return r && r.seq != null ? Number(r.seq) : null;
+  }
   saveSiteIngest(row) { this._stmts.saveSiteIngest.run(_siteIngestRow(row)); }
   getSiteIngest(snapshotTx) { return this._stmts.getSiteIngest.get(snapshotTx) || null; }
   listSiteIngestsDue(atMs) { return this._stmts.listSiteIngestsDue.all(atMs); }
@@ -5446,6 +5458,7 @@ function _buildDagHandle(store, config) {
     saveSitePages: (rows) => store.saveSitePages(rows),
     getSitePage: (pageKey) => store.getSitePage(pageKey),
     listSitePages: (snapshotTx) => store.listSitePages(snapshotTx),
+    getSitePageLastSeq: (indexKey) => store.getSitePageLastSeq(indexKey),
     saveSiteIngest: (row) => store.saveSiteIngest(row),
     getSiteIngest: (snapshotTx) => store.getSiteIngest(snapshotTx),
     listSiteIngestsDue: (atMs) => store.listSiteIngestsDue(atMs),

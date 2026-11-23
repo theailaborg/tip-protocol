@@ -40,7 +40,7 @@ test("up creates site_page and site_ingest with their indexes; down drops both; 
   const k = open("fresh.db");
   try {
     await k.migrate.latest();
-    expect(await indexes(k, "site_page")).toEqual(["idx_site_page_snapshot"]);
+    expect(await indexes(k, "site_page")).toEqual(["idx_site_page_index_key", "idx_site_page_snapshot"]);   // the first from 022
     expect(await indexes(k, "site_ingest")).toEqual(["idx_site_ingest_state"]);
     await k.migrate.down({ name: NAME });
     expect(await k.schema.hasTable("site_page")).toBe(false);

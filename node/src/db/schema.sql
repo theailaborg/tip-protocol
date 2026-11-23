@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS `scores` (`tip_id` varchar(512), `score` integer not 
 
 CREATE TABLE IF NOT EXISTS `site_ingest` (`snapshot_tx` varchar(64), `domain` varchar(253) not null, `seq` bigint not null, `state` varchar(16) not null, `attempts` integer not null default '0', `next_attempt_at` bigint not null default '0', `last_error` text null, `pages` integer null, `offsite` integer null, `source` text null, `updated_at` bigint not null, primary key (`snapshot_tx`));
 
-CREATE TABLE IF NOT EXISTS `site_page` (`page_key` varchar(96), `snapshot_tx` varchar(64) not null, `domain` varchar(253) not null, `seq` bigint not null, `url` text not null, `text_hash` varchar(64) not null, `page_hash` varchar(64) not null, `offsite` integer not null default '0', `changed` integer null, `kept` float null, `paragraph_keys` text not null, `created_at` bigint not null, `proof` text null, primary key (`page_key`));
+CREATE TABLE IF NOT EXISTS `site_page` (`page_key` varchar(96), `snapshot_tx` varchar(64) not null, `domain` varchar(253) not null, `seq` bigint not null, `url` text not null, `text_hash` varchar(64) not null, `page_hash` varchar(64) not null, `offsite` integer not null default '0', `changed` integer null, `kept` float null, `paragraph_keys` text not null, `created_at` bigint not null, `proof` text null, `index_key` varchar(96) null, `index_hash` varchar(64) null, primary key (`page_key`));
 
 CREATE TABLE IF NOT EXISTS `site_snapshots` (`tx_id` varchar(64), `domain` varchar(253) not null, `seq` bigint not null, `prev_snapshot_tx` varchar(64) null, `root` varchar(64) not null, `page_count` integer not null, `template_hash` varchar(64) not null, `profile` varchar(32) not null, `wacz_hash` varchar(64) not null, `pack_hash` varchar(64) not null, `ai_signals_hash` varchar(64) not null, `captured_at` bigint not null, `signer_tip_id` varchar(512) not null, `witness_vp_id` varchar(512) null, `registered_at` bigint not null, `visibility` varchar(16) null, primary key (`tx_id`));
 
@@ -186,6 +186,8 @@ CREATE INDEX IF NOT EXISTS `idx_prescan_reviews_state` on `prescan_reviews` (`st
 CREATE INDEX IF NOT EXISTS `idx_rotation_participation_rotation` on `rotation_participation` (`rotation_number`);
 
 CREATE INDEX IF NOT EXISTS `idx_site_ingest_state` on `site_ingest` (`state`, `next_attempt_at`);
+
+CREATE INDEX IF NOT EXISTS `idx_site_page_index_key` on `site_page` (`index_key`);
 
 CREATE INDEX IF NOT EXISTS `idx_site_page_snapshot` on `site_page` (`snapshot_tx`);
 

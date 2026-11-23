@@ -16,7 +16,7 @@ const { matchDocument } = require("./document-index");
 const { isSitePageKey } = require("./site-ingest");
 const { SITE_INGEST, DOCUMENT_MATCH } = require("../../../shared/constants");
 
-const SITE_RANK_FACTOR = 4;   // several snapshots of one page can match; the caller keeps one per page
+const SITE_RANK_FACTOR = 4;   // several versions of one page can match; the caller keeps one per page
 
 // Same grouping as document-index: exact owner counts to 16, then powers of two.
 function _ownerBucket(n) {

@@ -176,6 +176,23 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     throw _fail(`no source served the pack (${errors.join("; ") || "none tried"})`, "pack_unavailable");
   }
 
+  // Index rows are reused from the newest earlier snapshot this node fully indexed:
+  // the previous one, unless it was private, failed or mismatched.
+  async function _reuseSource(record, prevByUrl) {
+    if (!record.prev_snapshot_tx) return prevByUrl;
+    const prevState = await dag.getSiteIngest(record.prev_snapshot_tx);
+    if (prevState && prevState.state === DONE) return prevByUrl;
+    const earlier = dag.listSiteSnapshots(record.domain, { before: Number(record.seq), limit: SITE_INGEST.REUSE_LOOKBACK });
+    for (const snap of earlier) {
+      const st = await dag.getSiteIngest(snap.tx_id);
+      if (!st || st.state !== DONE) continue;
+      const out = new Map();
+      for (const r of await dag.listSitePages(snap.tx_id)) out.set(r.url, r);
+      return out;
+    }
+    return new Map();
+  }
+
   function _writesBehind() {
     if (dag.isPersistenceOverloaded?.()) return true;
     const st = dag.persistenceStats?.();
@@ -194,6 +211,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     if (record.prev_snapshot_tx) {
       for (const r of await dag.listSitePages(record.prev_snapshot_tx)) prevByUrl.set(r.url, r);
     }
+    const reuseByUrl = await _reuseSource(record, prevByUrl);
     const pending = { fingerprints: [], bands: [], codes: [], passages: [], pages: [] };
     const pendingRows = () => pending.fingerprints.length + pending.bands.length + pending.codes.length + pending.passages.length + pending.pages.length;
     const writeSlice = async () => {
@@ -232,17 +250,24 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
         const prev = prevByUrl.get(p.url);
         const prevKeys = _keysOf(prev);
         const have = new Set(keys);
+        // A page whose indexed content and owner match the previous snapshot reuses
+        // that version's index rows instead of writing them again.
+        const indexHash = !away && typeof p.content_hash === "string" ? shake256(`${p.content_hash}\n${owner}`) : null;
+        const earlier = reuseByUrl.get(p.url);
+        const reuse = indexHash !== null && !!earlier && earlier.index_hash === indexHash;
+        const indexKey = away ? null : (reuse ? (earlier.index_key || earlier.page_key) : key);
         pending.pages.push({
           page_key: key, snapshot_tx: record.tx_id, domain: record.domain, seq: record.seq, url: p.url,
           text_hash: p.text_hash, page_hash: p.page_hash, offsite: away,
           changed: prev ? prev.page_hash !== p.page_hash : null,
           kept: prev && prevKeys.length ? prevKeys.filter((k) => have.has(k)).length / prevKeys.length : null,
-          paragraph_keys: keys.join(" "), proof: typeof p.proof === "string" ? p.proof : null, created_at: createdAt,
+          paragraph_keys: keys.join(" "), proof: typeof p.proof === "string" ? p.proof : null,
+          index_key: indexKey, index_hash: indexHash, created_at: createdAt,
         });
         pages++;
         if (away) {
           offsite++;
-        } else {
+        } else if (!reuse) {
           if (p.text && p.text.kind === "text") addFingerprint(p.text, key, 0);
           let component = 1;
           for (const img of Array.isArray(p.images) ? p.images : []) {

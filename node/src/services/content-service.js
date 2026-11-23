@@ -290,8 +290,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   // Advisory two-layer near-dup lookup: step 0 exact content_hash (committed +
   // mempool-pending), step 1 perceptual via the request's fingerprint envelope.
   // Never blocks: every failure degrades to "no warning".
-  // One card per archived site page: the latest snapshot that matched, so several
-  // snapshots of one page do not crowd out other sites. Off-site pages never show.
+  // One card per archived site page: its newest matching version, named by the
+  // snapshot that first archived that version (`seq`) and the last snapshot still
+  // holding it (`last_seen_seq`). Off-site pages never show.
   async function _siteCards(hits, limit) {
     const byPage = new Map();
     for (const h of hits) {
@@ -302,9 +303,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       const k = `${page.domain} ${page.url}`;
       const prev = byPage.get(k);
       if (prev && prev.seq >= snap.seq) continue;
+      const last = typeof dag.getSitePageLastSeq === "function" ? await dag.getSitePageLastSeq(h.ctid) : null;
       byPage.set(k, {
-        domain: page.domain, url: page.url, seq: snap.seq, snapshot_tx: snap.tx_id,
-        captured_at: snap.captured_at, signer_tip_id: snap.signer_tip_id,
+        domain: page.domain, url: page.url, seq: snap.seq, last_seen_seq: Math.max(snap.seq, Number(last) || 0),
+        snapshot_tx: snap.tx_id, captured_at: snap.captured_at, signer_tip_id: snap.signer_tip_id,
         similarity: { ...h.metric, score: Math.round(h.score * 1000) / 1000, modality: h.modality },
       });
     }
