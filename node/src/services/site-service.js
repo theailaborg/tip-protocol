@@ -28,11 +28,13 @@ function _summary(row) {
   };
 }
 
-function _ingestView(row) {
+// While indexing, `pages` is the count indexed so far and `total` the snapshot's page count.
+function _ingestView(row, total) {
   if (!row) return { state: SITE_INGEST.STATES.PENDING, pages: null, offsite: null, attempts: 0, last_error: null };
   return {
     state: row.state, pages: row.pages == null ? null : Number(row.pages), offsite: row.offsite == null ? null : Number(row.offsite),
     attempts: Number(row.attempts), last_error: row.last_error || null,
+    ...(row.state === SITE_INGEST.STATES.INDEXING ? { total: Number(total) } : {}),
   };
 }
 
@@ -97,7 +99,7 @@ function createSiteService({ dag, submitTx, websitePages }) {
       visibility: row.visibility || "public",
       signature: tx ? tx.signature : null,
       witness: row.witness_vp_id ? { vp_id: row.witness_vp_id, signature: cosig ? cosig.signature : null } : null,
-      ingest: _ingestView(await dag.getSiteIngest(txId)),
+      ingest: _ingestView(await dag.getSiteIngest(txId), row.page_count),
     };
   }
 
@@ -136,10 +138,10 @@ function createSiteService({ dag, submitTx, websitePages }) {
     }
     const ingest = await dag.getSiteIngest(snap.tx_id);
     if (ingest && ingest.state === SITE_INGEST.STATES.MISMATCH) {
-      throw schemaError(422, `The pack of snapshot ${snap.seq} of ${domain} does not match its signed record`, "site_snapshot_pack_mismatch", { ingest: _ingestView(ingest) });
+      throw schemaError(422, `The pack of snapshot ${snap.seq} of ${domain} does not match its signed record`, "site_snapshot_pack_mismatch", { ingest: _ingestView(ingest, snap.page_count) });
     }
     if (!ingest || ingest.state !== SITE_INGEST.STATES.DONE) {
-      throw schemaError(409, `Snapshot ${snap.seq} of ${domain} is not indexed on this node yet`, "site_page_not_ready", { ingest: _ingestView(ingest) });
+      throw schemaError(409, `Snapshot ${snap.seq} of ${domain} is not indexed on this node yet`, "site_page_not_ready", { ingest: _ingestView(ingest, snap.page_count) });
     }
     const page = await dag.getSitePage(pageKeyFor(snap.tx_id, url));
     if (!page || Number(page.offsite)) throw schemaError(404, `${url} is not in snapshot ${snap.seq} of ${domain}`, "site_page_not_found");

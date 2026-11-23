@@ -507,7 +507,7 @@ Newest first. `limit` 1 to 100 (default 20); `before` is an exclusive `seq`.
 
 #### `GET /v1/site/snapshot/:tx`
 
-The full record, with the owner's `signature`, `witness: { vp_id, signature } | null` (so a viewer can verify both), and `ingest: { state, pages, offsite, attempts, last_error }`, this node's index of the snapshot's fingerprint pack: `pending`, `done`, `failed` (no source served it yet; retried with backoff), `mismatch` (the pack named by `pack_hash` does not match the record's domain, seq, page count or root, or names one URL twice; never retried, show the snapshot as not verified) or `private` (a private snapshot: never fetched). The record also carries `visibility`. **404** `site_snapshot_not_found`.
+The full record, with the owner's `signature`, `witness: { vp_id, signature } | null` (so a viewer can verify both), and `ingest: { state, pages, offsite, attempts, last_error }`, this node's index of the snapshot's fingerprint pack: `pending`, `indexing` (the pack passed its checks and pages are being indexed: `pages` is the count indexed so far, refreshed about every 2 s, and `total` the snapshot's page count), `done`, `failed` (no source served it yet; retried with backoff), `mismatch` (the pack named by `pack_hash` does not match the record's domain, seq, page count or root, or names one URL twice; never retried, show the snapshot as not verified) or `private` (a private snapshot: never fetched). The record also carries `visibility`. **404** `site_snapshot_not_found`.
 
 #### `GET /v1/site/:domain/page?url=&at=`
 

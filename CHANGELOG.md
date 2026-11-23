@@ -58,6 +58,9 @@ upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside produ
   answer `404 site_snapshot_private`. Column `site_snapshots.visibility` (migration
   `020_site_snapshot_visibility`), omitted from the canonical row when null, so public
   rows hash as before.
+- Indexing progress: while a node indexes a pack, `GET /v1/site/snapshot/:tx` answers
+  `ingest: { state: "indexing", pages, total }` (pages indexed so far, refreshed about every
+  2 s); a node that stops part-way resumes at its next start.
 - Unchanged pages are not indexed again: a page whose indexed content and owner equal
   the previous snapshot's points at that version's index rows (`site_page.index_key`,
   `index_hash`, migration `022_site_page_index_reuse`), so only new and changed pages

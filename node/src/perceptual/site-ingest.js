@@ -17,7 +17,7 @@ const { siteKey, liveBindingFor } = require("../validators/business-rules");
 const { buildIngestRows } = require("./ingest");
 const { checkPack, packError: _fail } = require("./site-pack");
 
-const { PENDING, DONE, FAILED, MISMATCH, PRIVATE } = SITE_INGEST.STATES;
+const { PENDING, INDEXING, DONE, FAILED, MISMATCH, PRIVATE } = SITE_INGEST.STATES;
 const WORKER_FILE = path.join(__dirname, "site-pack-worker.js");
 
 function pageKeyFor(snapshotTx, url) {
@@ -100,9 +100,10 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
   let timers = [];
   let warnedNoSource = false;
   let worker = null;
+  let current = null;        // the snapshot being processed: never queued twice
 
   function enqueue(snapshotTx) {
-    if (stopped || queued.has(snapshotTx)) return;
+    if (stopped || queued.has(snapshotTx) || snapshotTx === current) return;
     queued.add(snapshotTx);
     known.add(snapshotTx);
     queue.push(snapshotTx);
@@ -114,10 +115,13 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
       while (queue.length && !stopped) {
         const tx = queue.shift();
         queued.delete(tx);
+        current = tx;
         try {
           await processSnapshot(tx);
         } catch (err) {
           log.warn?.(`site ingest: ${tx.slice(0, 16)} crashed: ${err.message}`);
+        } finally {
+          current = null;
         }
       }
     } finally {
@@ -203,7 +207,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
   // slice (SLICE_MS of work or MAX_SLICE_ROWS rows), one call per table; the ingest
   // then waits for those writes to land and rests as long as they took, so commits
   // never queue behind more than one small slice and a pack never piles up rows.
-  async function indexSnapshot(record, batches) {
+  async function indexSnapshot(record, batches, onProgress = () => {}) {
     const createdAt = now();
     const binding = liveBindingFor(dag, record.domain, Number(record.registered_at));
     const owner = binding ? binding.tip_id : record.signer_tip_id;
@@ -224,6 +228,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
       if (pending.pages.length) dag.saveSitePages(pending.pages);
       for (const k of Object.keys(pending)) pending[k] = [];
       await dag.flush();
+      onProgress(pages);
       const took = performance.now() - started;
       if (took >= 1) await new Promise((resolve) => setTimeout(resolve, took));
     };
@@ -317,7 +322,15 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     }
     try {
       const { bytes, source } = await fetchPack(record);
-      const out = await indexSnapshot(record, _packBatches(record, bytes, (w) => { worker = w; }));
+      const indexing = (pages) => dag.saveSiteIngest({ ...base, state: INDEXING, pages, next_attempt_at: 0, last_error: null, source });
+      indexing(0);
+      let saved = now();
+      const progress = (pages) => {
+        if (now() - saved < SITE_INGEST.PROGRESS_MS) return;
+        saved = now();
+        indexing(pages);
+      };
+      const out = await indexSnapshot(record, _packBatches(record, bytes, (w) => { worker = w; }), progress);
       const row = { ...base, state: DONE, next_attempt_at: 0, last_error: null, pages: out.pages, offsite: out.offsite, source };
       dag.saveSiteIngest(row);
       log.info?.(`site ingest: ${record.domain} seq ${record.seq} indexed, ${out.pages} pages (${out.offsite} off-site) from ${source}`);

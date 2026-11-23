@@ -1237,10 +1237,12 @@ const SITE_INGEST = Object.freeze({
   // writes land the ingest rests as long as they took: at most half the disk.
   MAX_SLICE_ROWS: 1000,
   REUSE_LOOKBACK: 10,                    // earlier snapshots searched for one whose index rows can be reused
+  PROGRESS_MS: 2000,                     // an indexing snapshot's page count is saved at most this often
   // failed: retried with backoff. mismatch: the pack named by pack_hash does not
   // match its record (header, pages, root), never retried; shown as not verified.
-  // private: a private snapshot, never fetched.
-  STATES: Object.freeze({ PENDING: "pending", DONE: "done", FAILED: "failed", MISMATCH: "mismatch", PRIVATE: "private" }),
+  // private: a private snapshot, never fetched. indexing: pack checked, pages being
+  // indexed (pages = indexed so far); a restart resumes it.
+  STATES: Object.freeze({ PENDING: "pending", INDEXING: "indexing", DONE: "done", FAILED: "failed", MISMATCH: "mismatch", PRIVATE: "private" }),
 });
 
 // Registered again. Copies of someone's content (same normalized

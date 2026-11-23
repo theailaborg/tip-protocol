@@ -439,7 +439,7 @@ describe("off the consensus thread", () => {
     await new Promise((r) => setTimeout(r, 300));
     expect(fingerprints).not.toHaveBeenCalled();
     expect(pages).not.toHaveBeenCalled();
-    expect(await fx.dag.getSiteIngest(tx.tx_id)).toBeNull();
+    expect(await fx.dag.getSiteIngest(tx.tx_id)).toEqual(expect.objectContaining({ state: "indexing", pages: 0 }));
 
     stats = { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0 };
     await fx.siteIngest.idle();
@@ -465,6 +465,33 @@ describe("off the consensus thread", () => {
     expect(decodeProof(null)).toBeNull();
     expect(decodeProof("x".repeat(65))).toBeNull();
     expect(decodeProof("l" + hex("a") + "r")).toBeNull();
+  });
+});
+
+describe("indexing progress", () => {
+  test("a node reports indexing with its page count, then done", async () => {
+    const fx = setup({ routes: { [route(real)]: real.bytes } });
+    const saved = jest.spyOn(fx.dag, "saveSiteIngest");
+    await commitSnapshot(fx, real);
+    const states = saved.mock.calls.map(([r]) => [r.state, r.pages]);
+    expect(states[0]).toEqual(["indexing", 0]);
+    expect(states.at(-1)).toEqual(["done", 30]);
+  });
+
+  test("an indexing snapshot shows pages and total, and a restart resumes it", async () => {
+    const fx = setup({ routes: { [route(real)]: real.bytes } });
+    const tx = await commitSnapshot(fx, real);
+    // The row a node leaves when it stops part-way through.
+    fx.dag.saveSiteIngest({ ...(await fx.dag.getSiteIngest(tx.tx_id)), state: "indexing", pages: 12, next_attempt_at: 0 });
+    expect((await fx.siteService.getSnapshot(tx.tx_id)).ingest).toEqual(expect.objectContaining({ state: "indexing", pages: 12, total: 30 }));
+    await expect(fx.siteService.getPage(SITE, { url: firstUrl }))
+      .rejects.toEqual(expect.objectContaining({ status: 409, code: "site_page_not_ready", details: expect.objectContaining({ ingest: expect.objectContaining({ state: "indexing", total: 30 }) }) }));
+
+    const restarted = createSiteIngest({ dag: fx.dag, sources: [SOURCE], fetchImpl: fx.fetchImpl, log: fx.log });
+    await restarted.reconcile();
+    await restarted.idle();
+    expect(await fx.dag.getSiteIngest(tx.tx_id)).toEqual(expect.objectContaining({ state: "done", pages: 30 }));
+    expect((await fx.siteService.getSnapshot(tx.tx_id)).ingest).not.toHaveProperty("total");
   });
 });
 
