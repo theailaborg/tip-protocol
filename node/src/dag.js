@@ -309,7 +309,8 @@ function _canonOrgMember(r) {
   };
 }
 // Site snapshots: every column participates in state_merkle_root. The owner's
-// and witness signatures stay on the tx, reachable through tx_id.
+// and witness signatures stay on the tx, reachable through tx_id. visibility is
+// present only on private snapshots, so public rows keep their original hash.
 function _canonSiteSnapshot(r) {
   return {
     tx_id: r.tx_id,
@@ -327,6 +328,7 @@ function _canonSiteSnapshot(r) {
     signer_tip_id: r.signer_tip_id,
     witness_vp_id: r.witness_vp_id ?? null,
     registered_at: Number(r.registered_at),
+    ...(r.visibility ? { visibility: r.visibility } : {}),
   };
 }
 function _canonDomainAttestation(r) {
@@ -348,7 +350,7 @@ function _sitePageRow(r) {
     page_key: r.page_key, snapshot_tx: r.snapshot_tx, domain: r.domain, seq: r.seq, url: r.url,
     text_hash: r.text_hash, page_hash: r.page_hash, offsite: r.offsite ? 1 : 0,
     changed: r.changed == null ? null : (r.changed ? 1 : 0), kept: r.kept ?? null,
-    paragraph_keys: r.paragraph_keys, created_at: r.created_at,
+    paragraph_keys: r.paragraph_keys, proof: r.proof ?? null, created_at: r.created_at,
   };
 }
 function _siteIngestRow(r) {
@@ -787,12 +789,14 @@ class MemoryStore {
     this._minhashBands = [];                    // text LSH index rows
     this._minhashBandKeys = new Set();
     this._phashCodes = [];                      // image/video MIH index rows
+    this._phashCodeKeys = new Set();
     this._audioClips = new Map();               // `${ctid}|${component_idx}` -> { clip_id, ctid, component_idx, landmark_count }
     this._audioClipById = new Map();            // clip_id -> the same clip row (matcher resolves clip_id -> ctid)
     this._audioClipSeq = 0;                     // surrogate clip_id allocator (§8.1)
     this._audioLandmarks = [];                  // audio inverted-index rows { profile, hash, clip_id, t }
     this._documentTexts = new Map();            // `${ctid}|${component_idx}` -> document_text row
     this._documentPassages = new Map();         // `${profile}|${passage_key}` -> document_passage rows
+    this._documentPassageKeys = new Set();
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new SmtMap(this, "platform_links"); // key: `${tip_id}::${platform}` (== row.id)
     this._orgMembers = new SmtMap(this, "org_members"); // invite_tx_id -> roster row (canonical)
@@ -2319,11 +2323,10 @@ class MemoryStore {
     if (!rows || !rows.length) return;
     // Skip rows already present by (ctid, component_idx, frame): mirrors the
     // SQLite/Knex INSERT OR IGNORE so a re-ingest cannot duplicate frames.
-    const have = new Set(this._phashCodes.map((c) => `${c.ctid}|${c.component_idx}|${c.frame}`));
     for (const r of rows) {
       const key = `${r.ctid}|${r.component_idx}|${r.frame}`;
-      if (have.has(key)) continue;
-      have.add(key);
+      if (this._phashCodeKeys.has(key)) continue;
+      this._phashCodeKeys.add(key);
       this._phashCodes.push({ ...r });
     }
   }
@@ -2376,9 +2379,12 @@ class MemoryStore {
   saveDocumentPassages(rows) {
     for (const r of rows) {
       const key = `${r.profile}|${r.passage_key}`;
+      const rowKey = `${key}|${r.owner}|${r.ctid}|${r.component_idx}`;
+      if (this._documentPassageKeys.has(rowKey)) continue;
+      this._documentPassageKeys.add(rowKey);
       let list = this._documentPassages.get(key);
       if (!list) this._documentPassages.set(key, (list = []));
-      if (!list.some((x) => x.owner === r.owner && x.ctid === r.ctid && x.component_idx === r.component_idx)) list.push({ ...r });
+      list.push({ ...r });
     }
   }
   findDocumentsByTextHash(profile, textHash) {
@@ -3099,9 +3105,9 @@ class SQLiteStore {
       saveSiteSnapshot: this.db.prepare(
         `INSERT OR IGNORE INTO site_snapshots
          (tx_id, domain, seq, prev_snapshot_tx, root, page_count, template_hash, profile,
-          wacz_hash, pack_hash, ai_signals_hash, captured_at, signer_tip_id, witness_vp_id, registered_at)
+          wacz_hash, pack_hash, ai_signals_hash, captured_at, signer_tip_id, witness_vp_id, registered_at, visibility)
          VALUES (@tx_id, @domain, @seq, @prev_snapshot_tx, @root, @page_count, @template_hash, @profile,
-                 @wacz_hash, @pack_hash, @ai_signals_hash, @captured_at, @signer_tip_id, @witness_vp_id, @registered_at)`
+                 @wacz_hash, @pack_hash, @ai_signals_hash, @captured_at, @signer_tip_id, @witness_vp_id, @registered_at, @visibility)`
       ),
       getSiteSnapshot: this.db.prepare("SELECT * FROM site_snapshots WHERE tx_id=?"),
       saveDomainAttestation: this.db.prepare(
@@ -3117,8 +3123,8 @@ class SQLiteStore {
 
       saveSitePage: this.db.prepare(
         `INSERT OR IGNORE INTO site_page
-         (page_key, snapshot_tx, domain, seq, url, text_hash, page_hash, offsite, changed, kept, paragraph_keys, created_at)
-         VALUES (@page_key, @snapshot_tx, @domain, @seq, @url, @text_hash, @page_hash, @offsite, @changed, @kept, @paragraph_keys, @created_at)`
+         (page_key, snapshot_tx, domain, seq, url, text_hash, page_hash, offsite, changed, kept, paragraph_keys, proof, created_at)
+         VALUES (@page_key, @snapshot_tx, @domain, @seq, @url, @text_hash, @page_hash, @offsite, @changed, @kept, @paragraph_keys, @proof, @created_at)`
       ),
       getSitePage: this.db.prepare("SELECT * FROM site_page WHERE page_key=?"),
       listSitePages: this.db.prepare("SELECT * FROM site_page WHERE snapshot_tx=? ORDER BY page_key"),
@@ -4097,7 +4103,7 @@ class SQLiteStore {
   }
   listDomainAttestations(domain) { return this._stmts.listDomainAttestations.all(domain).map(_canonDomainAttestation); }
   listDomainAttestationsSince(atMs) { return this._stmts.listDomainAttestationsSince.all(atMs).map(_canonDomainAttestation); }
-  saveSiteSnapshot(rec) { this._stmts.saveSiteSnapshot.run(_canonSiteSnapshot(rec)); }
+  saveSiteSnapshot(rec) { this._stmts.saveSiteSnapshot.run({ visibility: null, ..._canonSiteSnapshot(rec) }); }
   getSiteSnapshot(txId) {
     const r = this._stmts.getSiteSnapshot.get(txId);
     return r ? _canonSiteSnapshot(r) : null;

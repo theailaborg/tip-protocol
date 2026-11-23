@@ -309,5 +309,24 @@
       "signer_tip_id": "tip://id/US-owner"
     },
     "canonical": "{\"ai_signals_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"captured_at\":1767225600000,\"domain\":\"example.com\",\"pack_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"page_count\":30,\"prev_snapshot_tx\":null,\"profile\":\"cf-web-1\",\"root\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seq\":1,\"signer_tip_id\":\"tip://id/US-owner\",\"template_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"wacz_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}"
+  },
+  "SITE_SNAPSHOT:private": {
+    "tx_type": "SITE_SNAPSHOT",
+    "data": {
+      "domain": "example.com",
+      "seq": 2,
+      "prev_snapshot_tx": "1111111111111111111111111111111111111111111111111111111111111111",
+      "root": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "page_count": 30,
+      "template_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "profile": "cf-web-1",
+      "wacz_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "pack_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "ai_signals_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "captured_at": 1767225600000,
+      "signer_tip_id": "tip://id/US-owner",
+      "visibility": "private"
+    },
+    "canonical": "{\"ai_signals_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"captured_at\":1767225600000,\"domain\":\"example.com\",\"pack_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"page_count\":30,\"prev_snapshot_tx\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"profile\":\"cf-web-1\",\"root\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seq\":2,\"signer_tip_id\":\"tip://id/US-owner\",\"template_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"visibility\":\"private\",\"wacz_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}"
   }
 }

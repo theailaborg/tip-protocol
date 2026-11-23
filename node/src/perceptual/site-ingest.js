@@ -6,15 +6,19 @@
 // similar search and page reads can name "page P of site D, snapshot S".
 // Node-local, advisory and rebuildable: nothing here touches consensus state.
 
-const web = require("tip-content-fingerprint/src/web");
+const path = require("path");
+const { Worker } = require("worker_threads");
+const { performance } = require("perf_hooks");
 const { PROFILE: IMAGE_PROFILE } = require("tip-content-fingerprint/src/image");
-const { shake256 } = require("../../../shared/crypto");
+const { shake256, shake256Incremental } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
-const { SITE_INGEST } = require("../../../shared/constants");
+const { SITE_INGEST, SITE_SNAPSHOT } = require("../../../shared/constants");
 const { siteKey, liveBindingFor } = require("../validators/business-rules");
 const { ingestFingerprint } = require("./ingest");
+const { checkPack, packError: _fail } = require("./site-pack");
 
-const { PENDING, DONE, FAILED, MISMATCH } = SITE_INGEST.STATES;
+const { PENDING, DONE, FAILED, MISMATCH, PRIVATE } = SITE_INGEST.STATES;
+const WORKER_FILE = path.join(__dirname, "site-pack-worker.js");
 
 function pageKeyFor(snapshotTx, url) {
   return `${SITE_INGEST.PAGE_KEY_PREFIX}${snapshotTx}:${shake256(url).slice(0, 16)}`;
@@ -32,46 +36,52 @@ function onSite(url, domain) {
   return siteKey(host) === domain;
 }
 
-function _fail(message, code, permanent = false) {
-  const e = new Error(message);
-  e.code = code;
-  e.permanent = permanent;
-  return e;
-}
-
 const _yield = () => new Promise((resolve) => setImmediate(resolve));
 
-/**
- * Check a pack's bytes against its signed record. Returns the leaf pages.
- * A pack with the right hash but the wrong content can never be fixed by a
- * retry, so those failures are permanent.
- */
-function checkPack(record, bytes) {
-  if (shake256(bytes) !== record.pack_hash) throw _fail("pack bytes do not match pack_hash", "pack_hash_mismatch");
-  let pack;
+// Checks the pack on a worker thread and yields its leaf pages a batch at a
+// time; the bytes move to the worker without a copy.
+async function* _packBatches(record, bytes, onWorker) {
+  const worker = new Worker(WORKER_FILE, {
+    workerData: {
+      record: { domain: record.domain, seq: Number(record.seq), page_count: Number(record.page_count), root: record.root },
+      bytes,
+      batchPages: SITE_INGEST.PACK_BATCH_PAGES,
+    },
+    transferList: [bytes.buffer],
+    resourceLimits: { maxOldGenerationSizeMb: SITE_INGEST.WORKER_HEAP_MB },
+  });
+  onWorker(worker);
+  const inbox = [];
+  let waiter = null;
+  const deliver = (item) => {
+    if (waiter) { const w = waiter; waiter = null; w(item); } else inbox.push(item);
+  };
+  worker.on("message", (m) => deliver({ m }));
+  worker.on("error", (err) => deliver({ err }));
+  worker.on("exit", (code) => deliver({ exit: code }));
+  const timer = setTimeout(() => {
+    deliver({ err: Object.assign(new Error("pack check timed out"), { code: "pack_check_timeout" }) });
+    worker.terminate();
+  }, SITE_INGEST.CHECK_TIMEOUT_MS);
+  const next = () => (inbox.length ? Promise.resolve(inbox.shift()) : new Promise((resolve) => { waiter = resolve; }));
   try {
-    pack = web.readPack(bytes);
-  } catch (err) {
-    throw _fail(`unreadable pack: ${err.message}`, "pack_unreadable", true);
+    while (true) {
+      const { m, err, exit } = await next();
+      if (err) {
+        const code = err.code === "ERR_WORKER_OUT_OF_MEMORY" ? "pack_too_large" : (err.code === "pack_check_timeout" ? err.code : "pack_check_failed");
+        throw _fail(`pack check failed: ${err.message}`, code);
+      }
+      if (!m) throw _fail(`pack worker stopped (exit ${exit})`, "pack_check_failed");
+      if (m.type === "error") throw _fail(m.message, m.code, m.permanent);
+      if (m.type === "done") return;
+      if (m.type === "batch") yield m.pages;
+      worker.postMessage("next");
+    }
+  } finally {
+    clearTimeout(timer);
+    onWorker(null);
+    await worker.terminate();
   }
-  const { header, pages } = pack;
-  if (header.domain !== record.domain || header.seq !== record.seq) {
-    throw _fail(`pack is for ${header.domain} seq ${header.seq}, not ${record.domain} seq ${record.seq}`, "pack_header_mismatch", true);
-  }
-  const leaves = pages.filter((p) => !p.skipped);
-  if (leaves.length !== record.page_count) {
-    throw _fail(`pack has ${leaves.length} pages, the record ${record.page_count}`, "pack_root_mismatch", true);
-  }
-  // Over every leaf line, off-site ones included: the owner signed all of them.
-  // packRoot also refuses a URL that appears twice.
-  let root;
-  try {
-    root = web.packRoot(pages);
-  } catch (err) {
-    throw _fail(`pack pages do not form a tree: ${err.message}`, "pack_root_mismatch", true);
-  }
-  if (root !== record.root) throw _fail("pack pages do not give the record's root", "pack_root_mismatch", true);
-  return leaves;
 }
 
 function _keysOf(row) {
@@ -87,6 +97,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
   let stopped = false;
   let timers = [];
   let warnedNoSource = false;
+  let worker = null;
 
   function enqueue(snapshotTx) {
     if (stopped || queued.has(snapshotTx)) return;
@@ -117,17 +128,24 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     while (draining) await draining;
   }
 
-  async function _readCapped(res) {
+  // Hashed as it arrives, so the pack is never hashed in one pass.
+  async function _download(res) {
     const declared = Number(res.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > SITE_INGEST.MAX_PACK_BYTES) throw _fail(`pack is ${declared} bytes`, "pack_too_large");
+    const hash = shake256Incremental();
     const chunks = [];
     let size = 0;
     for await (const chunk of res.body) {
       size += chunk.length;
       if (size > SITE_INGEST.MAX_PACK_BYTES) throw _fail("pack exceeds the size cap", "pack_too_large");
+      hash.update(chunk);
       chunks.push(chunk);
     }
-    return new Uint8Array(Buffer.concat(chunks.map((c) => Buffer.from(c))));
+    // A buffer of its own (never a pooled slice), so it can be transferred to the worker.
+    const bytes = new Uint8Array(size);
+    let at = 0;
+    for (const c of chunks) { bytes.set(c, at); at += c.length; }
+    return { bytes, hash: hash.digest("hex") };
   }
 
   // Any byte-identical copy will do: each source is tried until one serves
@@ -144,8 +162,8 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
           redirect: "follow",
         });
         if (!res.ok) throw _fail(`HTTP ${res.status}`, "pack_http_error");
-        const bytes = await _readCapped(res);
-        if (shake256(bytes) !== record.pack_hash) throw _fail("served bytes do not match pack_hash", "pack_hash_mismatch");
+        const { bytes, hash } = await _download(res);
+        if (hash !== record.pack_hash) throw _fail("served bytes do not match pack_hash", "pack_hash_mismatch");
         return { bytes, source: base };
       } catch (err) {
         errors.push(`${base}: ${err.message}`);
@@ -156,7 +174,9 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     throw _fail(`no source served the pack (${errors.join("; ") || "none tried"})`, "pack_unavailable");
   }
 
-  async function indexSnapshot(record, leaves) {
+  // Pages arrive in batches from the pack worker; rows are written and the
+  // event loop released every SLICE_MS of work.
+  async function indexSnapshot(record, batches) {
     const createdAt = now();
     const binding = liveBindingFor(dag, record.domain, Number(record.registered_at));
     const owner = binding ? binding.tip_id : record.signer_tip_id;
@@ -164,56 +184,74 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     if (record.prev_snapshot_tx) {
       for (const r of await dag.listSitePages(record.prev_snapshot_tx)) prevByUrl.set(r.url, r);
     }
-    const rows = [];
+    let rows = [];
+    let pages = 0;
     let offsite = 0;
-    for (let i = 0; i < leaves.length; i++) {
-      const p = leaves[i];
-      const key = pageKeyFor(record.tx_id, p.url);
-      const keys = Array.isArray(p.paragraph_keys) ? [...new Set(p.paragraph_keys.filter((k) => typeof k === "string" && k.length <= 16))] : [];
-      const away = !onSite(p.url, record.domain);
-      const prev = prevByUrl.get(p.url);
-      const prevKeys = _keysOf(prev);
-      const have = new Set(keys);
-      rows.push({
-        page_key: key, snapshot_tx: record.tx_id, domain: record.domain, seq: record.seq, url: p.url,
-        text_hash: p.text_hash, page_hash: p.page_hash, offsite: away,
-        changed: prev ? prev.page_hash !== p.page_hash : null,
-        kept: prev && prevKeys.length ? prevKeys.filter((k) => have.has(k)).length / prevKeys.length : null,
-        paragraph_keys: keys.join(" "), created_at: createdAt,
-      });
-      if (away) { offsite++; continue; }
-      if (p.text && p.text.kind === "text") {
-        await ingestFingerprint(dag, p.text, { ctid: key, componentIdx: 0, createdAt });
+    let sliceStart = performance.now();
+    for await (const batch of batches) {
+      for (const p of batch) {
+        if (stopped) throw _fail("ingest stopped", "ingest_stopped");
+        const key = pageKeyFor(record.tx_id, p.url);
+        const keys = Array.isArray(p.paragraph_keys) ? [...new Set(p.paragraph_keys.filter((k) => typeof k === "string" && k.length <= 16))] : [];
+        const away = !onSite(p.url, record.domain);
+        const prev = prevByUrl.get(p.url);
+        const prevKeys = _keysOf(prev);
+        const have = new Set(keys);
+        rows.push({
+          page_key: key, snapshot_tx: record.tx_id, domain: record.domain, seq: record.seq, url: p.url,
+          text_hash: p.text_hash, page_hash: p.page_hash, offsite: away,
+          changed: prev ? prev.page_hash !== p.page_hash : null,
+          kept: prev && prevKeys.length ? prevKeys.filter((k) => have.has(k)).length / prevKeys.length : null,
+          paragraph_keys: keys.join(" "), proof: typeof p.proof === "string" ? p.proof : null, created_at: createdAt,
+        });
+        pages++;
+        if (away) {
+          offsite++;
+        } else {
+          if (p.text && p.text.kind === "text") {
+            await ingestFingerprint(dag, p.text, { ctid: key, componentIdx: 0, createdAt });
+          }
+          let component = 1;
+          for (const img of Array.isArray(p.images) ? p.images : []) {
+            if (typeof img.pdq !== "string") continue;
+            await ingestFingerprint(dag, { kind: "image", profile: IMAGE_PROFILE, pdq: img.pdq, quality: img.quality ?? null, media_id: img.media_id ?? null },
+              { ctid: key, componentIdx: component++, createdAt });
+          }
+          if (keys.length) {
+            dag.saveDocumentPassages(keys.map((k) => ({
+              profile: SITE_INGEST.PASSAGE_PROFILE, passage_key: k, owner, ctid: key, component_idx: 0, unit: null,
+            })));
+          }
+        }
+        if (performance.now() - sliceStart >= SITE_INGEST.SLICE_MS) {
+          dag.saveSitePages(rows);
+          rows = [];
+          await _yield();
+          sliceStart = performance.now();
+        }
       }
-      let component = 1;
-      for (const img of Array.isArray(p.images) ? p.images : []) {
-        if (typeof img.pdq !== "string") continue;
-        await ingestFingerprint(dag, { kind: "image", profile: IMAGE_PROFILE, pdq: img.pdq, quality: img.quality ?? null, media_id: img.media_id ?? null },
-          { ctid: key, componentIdx: component++, createdAt });
-      }
-      if (keys.length) {
-        dag.saveDocumentPassages(keys.map((k) => ({
-          profile: SITE_INGEST.PASSAGE_PROFILE, passage_key: k, owner, ctid: key, component_idx: 0, unit: null,
-        })));
-      }
-      if ((i + 1) % SITE_INGEST.YIELD_EVERY_PAGES === 0) await _yield();
     }
     dag.saveSitePages(rows);
     await dag.flush();
     if (offsite) log.warn?.(`site ingest: ${record.domain} seq ${record.seq}: ${offsite} off-site page(s) kept out of the index`);
-    return { pages: rows.length, offsite };
+    return { pages, offsite };
   }
 
   async function processSnapshot(snapshotTx) {
     const record = dag.getSiteSnapshot(snapshotTx);
     if (!record) return null;
     const prior = await dag.getSiteIngest(snapshotTx);
-    if (prior && (prior.state === DONE || prior.state === MISMATCH)) return prior;
+    if (prior && (prior.state === DONE || prior.state === MISMATCH || prior.state === PRIVATE)) return prior;
     if (prior && Number(prior.next_attempt_at) > now()) return prior;
     const base = {
       snapshot_tx: snapshotTx, domain: record.domain, seq: record.seq,
       attempts: (prior ? Number(prior.attempts) : 0) + 1, updated_at: now(),
     };
+    if (record.visibility === SITE_SNAPSHOT.VISIBILITY.PRIVATE) {
+      const row = { ...base, attempts: 0, state: PRIVATE, next_attempt_at: Number.MAX_SAFE_INTEGER, last_error: null };
+      dag.saveSiteIngest(row);
+      return row;
+    }
     if (!urls.length) {
       if (!warnedNoSource) log.warn?.("site ingest: TIP_SITE_ARCHIVE_URLS is empty, snapshots are recorded but not indexed");
       warnedNoSource = true;
@@ -223,13 +261,13 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     }
     try {
       const { bytes, source } = await fetchPack(record);
-      const leaves = checkPack(record, bytes);
-      const out = await indexSnapshot(record, leaves);
+      const out = await indexSnapshot(record, _packBatches(record, bytes, (w) => { worker = w; }));
       const row = { ...base, state: DONE, next_attempt_at: 0, last_error: null, pages: out.pages, offsite: out.offsite, source };
       dag.saveSiteIngest(row);
       log.info?.(`site ingest: ${record.domain} seq ${record.seq} indexed, ${out.pages} pages (${out.offsite} off-site) from ${source}`);
       return row;
     } catch (err) {
+      if (err.code === "ingest_stopped" || stopped) return null;
       const delay = Math.min(SITE_INGEST.RETRY_BASE_MS * 2 ** (base.attempts - 1), SITE_INGEST.RETRY_MAX_MS);
       const row = {
         ...base, state: err.permanent ? MISMATCH : FAILED, last_error: `${err.code || "error"}: ${err.message}`.slice(0, 2000),
@@ -251,7 +289,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
       for (const r of batch) {
         if (known.has(r.tx_id)) continue;
         const st = await dag.getSiteIngest(r.tx_id);
-        if (st && (st.state === DONE || st.state === MISMATCH)) { known.add(r.tx_id); continue; }
+        if (st && (st.state === DONE || st.state === MISMATCH || st.state === PRIVATE)) { known.add(r.tx_id); continue; }
         if (!st || Number(st.next_attempt_at) <= now()) enqueue(r.tx_id);
       }
       after = batch[batch.length - 1].tx_id;
@@ -278,6 +316,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     stopped = true;
     for (const t of timers) clearInterval(t);
     timers = [];
+    if (worker) worker.terminate();
   }
 
   return { enqueue, idle, processSnapshot, reconcile, retryDue, start, stop };

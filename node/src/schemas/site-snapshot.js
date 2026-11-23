@@ -11,6 +11,8 @@
  * Signed canonical payload (12 fields): ai_signals_hash, captured_at, domain,
  * page_count, pack_hash, prev_snapshot_tx (null for seq 1), profile, root,
  * seq, signer_tip_id, template_hash, wacz_hash. Every hash is SHAKE-256 hex.
+ * Optional 13th, signed only when present: visibility ("private"), for a
+ * snapshot whose pack stays with the owner and is never indexed by nodes.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -82,6 +84,11 @@ function buildSigningPayload(input) {
     throw schemaError(400, "captured_at must be a valid epoch ms timestamp", "captured_at_invalid");
   }
   assertBounded(input.signer_tip_id, { ...TIP_ID_SPEC, required: true });
+  // Strip rule: null or absent means a public snapshot, with the 12-field bytes.
+  const visibility = input.visibility ?? null;
+  if (visibility !== null && visibility !== SITE_SNAPSHOT.VISIBILITY.PRIVATE) {
+    throw schemaError(400, `visibility must be "${SITE_SNAPSHOT.VISIBILITY.PRIVATE}" or absent`, "visibility_invalid");
+  }
   return {
     ai_signals_hash: input.ai_signals_hash,
     captured_at: input.captured_at,
@@ -94,6 +101,7 @@ function buildSigningPayload(input) {
     seq: input.seq,
     signer_tip_id: input.signer_tip_id,
     template_hash: input.template_hash,
+    ...(visibility ? { visibility } : {}),
     wacz_hash: input.wacz_hash,
   };
 }
@@ -187,7 +195,8 @@ function buildTxData(payload, witness) {
 /**
  * Request validator for POST /v1/site/snapshot.
  *
- * Body: the 12 signed fields, `signature` (the signer's, over the payload),
+ * Body: the 12 signed fields (plus `visibility` for a private snapshot),
+ * `signature` (the signer's, over the payload),
  * and optionally `witness: { vp_id, signature }` (the capturing VP's, over the
  * same payload). deps: { dag, now? }. Returns { payload, witness }.
  */

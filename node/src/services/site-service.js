@@ -10,6 +10,7 @@ const { validateTransaction } = require("../validators/tx-validator");
 const { siteKey, liveBindingFor } = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
 const { pageKeyFor, onSite } = require("../perceptual/site-ingest");
+const { decodeProof } = require("../perceptual/site-pack");
 const { log } = require("../logger");
 
 function _summary(row) {
@@ -23,6 +24,7 @@ function _summary(row) {
     wacz_hash: row.wacz_hash,
     pack_hash: row.pack_hash,
     witness_vp_id: row.witness_vp_id,
+    visibility: row.visibility || "public",
   };
 }
 
@@ -92,6 +94,7 @@ function createSiteService({ dag, submitTx, websitePages }) {
       : null;
     return {
       ...row,
+      visibility: row.visibility || "public",
       signature: tx ? tx.signature : null,
       witness: row.witness_vp_id ? { vp_id: row.witness_vp_id, signature: cosig ? cosig.signature : null } : null,
       ingest: _ingestView(await dag.getSiteIngest(txId)),
@@ -128,6 +131,9 @@ function createSiteService({ dag, submitTx, websitePages }) {
 
     const snap = _snapshotAt(domain, at);
     if (!snap) throw schemaError(404, `No snapshot of ${domain} at that time`, "site_snapshot_not_found");
+    if (snap.visibility === SITE_SNAPSHOT.VISIBILITY.PRIVATE) {
+      throw schemaError(404, `Snapshot ${snap.seq} of ${domain} is private: its pages are not shared with TIP nodes, so they cannot be shown or matched here. The site owner can share a page proof.`, "site_snapshot_private", { seq: snap.seq, tx_id: snap.tx_id });
+    }
     const ingest = await dag.getSiteIngest(snap.tx_id);
     if (ingest && ingest.state === SITE_INGEST.STATES.MISMATCH) {
       throw schemaError(422, `The pack of snapshot ${snap.seq} of ${domain} does not match its signed record`, "site_snapshot_pack_mismatch", { ingest: _ingestView(ingest) });
@@ -138,9 +144,8 @@ function createSiteService({ dag, submitTx, websitePages }) {
     const page = await dag.getSitePage(pageKeyFor(snap.tx_id, url));
     if (!page || Number(page.offsite)) throw schemaError(404, `${url} is not in snapshot ${snap.seq} of ${domain}`, "site_page_not_found");
 
-    const leaves = (await dag.listSitePages(snap.tx_id)).map(r => ({ url: r.url, leaf: web.leafHash(r.url, r.text_hash) }));
-    const proof = web.merkleProof(leaves, url);
-    if (!web.verifyPage(url, page.text_hash, proof, snap.root)) {
+    const proof = decodeProof(page.proof);
+    if (!proof || !web.verifyPage(url, page.text_hash, proof, snap.root)) {
       log.error(`site page proof failed: ${domain} seq ${snap.seq} ${url}`);
       throw schemaError(500, "The indexed page does not match the snapshot root", "site_page_proof_failed");
     }

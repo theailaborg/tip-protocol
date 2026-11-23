@@ -190,8 +190,22 @@ describe("signed payload", () => {
     ["unknown profile", { profile: "cf-web-0" }, "profile_invalid"],
     ["captured_at in seconds", { captured_at: 1794672650 }, "captured_at_invalid"],
     ["signer not a TIP-ID", { signer_tip_id: "alice" }, "signer_tip_id_invalid"],
+    ["visibility other than private", { visibility: "public" }, "visibility_invalid"],
   ])("refuses %s", (_name, over, code) => {
     expectRefused(() => schema.buildSigningPayload({ ...FIXED, ...over }), 400, code);
+  });
+
+  test("visibility is signed only when private: absent or null keeps the 12-field bytes", () => {
+    const base = schema.buildSigningPayload(FIXED);
+    expect(schema.buildSigningPayload({ ...FIXED, visibility: null })).toEqual(base);
+    expect(payloadHashHex(schema.buildSigningPayload({ ...FIXED, visibility: undefined }))).toBe(payloadHashHex(base));
+    const priv = schema.buildSigningPayload({ ...FIXED, visibility: "private" });
+    expect(priv).toEqual({ ...base, visibility: "private" });
+
+    const kp = generateMLDSAKeypair();
+    const sig = schema.sign(priv, kp.privateKey);
+    expect(schema.verifySignature(priv, sig, kp.publicKey)).toBe(true);
+    expect(schema.verifySignature(base, sig, kp.publicKey)).toBe(false);
   });
 
   test("refuses a payload without prev_snapshot_tx", () => {
@@ -232,6 +246,24 @@ describe("API and commit", () => {
       snapshots: [expect.objectContaining({ seq: 1, tx_id: tx.tx_id, root: hex("a"), wacz_hash: hex("c") })],
     });
     expect(verifyStateRootConsistency(fx.dag).consistent).toBe(true);
+  });
+
+  test("a private snapshot commits with visibility on its row; relayed without it, the owner's signature fails", async () => {
+    const fx = setup();
+    const p = payload({ visibility: "private" });
+    await fx.siteService.submitSnapshot(bodyFor(fx.keys.owner, p));
+    const tx = fx.submitted[0];
+    expect(tx.data.visibility).toBe("private");
+    expect(commit(fx, [tx]).committed).toBe(1);
+    expect(fx.dag.getSiteSnapshot(tx.tx_id)).toEqual({ ...p, tx_id: tx.tx_id, witness_vp_id: null, registered_at: tx.timestamp });
+    expect((await fx.siteService.getSnapshot(tx.tx_id)).visibility).toBe("private");
+    expect(verifyStateRootConsistency(fx.dag).consistent).toBe(true);
+
+    const other = setup();
+    const { visibility, ...publicData } = schema.buildTxData(p, null);   // eslint-disable-line no-unused-vars
+    const stripped = snapshotTx(other, p, other.keys.owner, { data: publicData });
+    expect(commit(other, [stripped]).committed).toBe(0);
+    expect(other.dag.getSiteSnapshot(stripped.tx_id)).toBeNull();
   });
 
   test("the next snapshot links to the previous one; a wrong prev or seq is stale", async () => {
@@ -418,12 +450,12 @@ describe("HTTP routes", () => {
 });
 
 describe("determinism", () => {
-  test("memory and SQLite stores commit the same txs to the same site_snapshots state", () => {
+  test("memory and SQLite stores commit the same txs (one public, one private) to the same site_snapshots state", () => {
     const keys = makeKeys();
     const fxs = STORES.map(([, makeDag]) => setup(makeDag, keys));
     const t0 = nowMs() - 60 * MIN;
     const tx1 = snapshotTx(fxs[0], payload({ captured_at: t0 - MIN }), keys.owner, { ts: t0 });
-    const p2 = payload({ seq: 2, prev_snapshot_tx: tx1.tx_id, captured_at: t0 + 15 * MIN, root: hex("f") });
+    const p2 = payload({ seq: 2, prev_snapshot_tx: tx1.tx_id, captured_at: t0 + 15 * MIN, root: hex("f"), visibility: "private" });
     const tx2 = snapshotTx(fxs[0], p2, keys.owner, { ts: t0 + 20 * MIN });
     const tables = fxs.map((fx) => {
       expect(fx.handler.commitOrderedTxs([{ ...tx1 }], 900, { certTimestamp: t0 }).committed).toBe(1);
@@ -433,5 +465,7 @@ describe("determinism", () => {
     });
     expect(tables[0]).toEqual(expect.objectContaining({ count: 2 }));
     expect(tables[1]).toEqual(tables[0]);
+    expect(fxs[1].dag.getSiteSnapshot(tx2.tx_id).visibility).toBe("private");
+    expect(fxs[1].dag.getSiteSnapshot(tx1.tx_id)).not.toHaveProperty("visibility");
   });
 });

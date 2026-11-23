@@ -737,6 +737,23 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(dag.getLatestSiteSnapshot("a.example").tx_id).toBe(ids[1]);
   });
 
+  test("site snapshots: visibility is kept on a private row and absent from a public one", async () => {
+    const dag = await makeDag();
+    const hex = (c) => c.repeat(64);
+    const snap = (txId, over = {}) => ({
+      tx_id: txId, domain: "p.example", seq: 1, prev_snapshot_tx: null, root: hex("a"), page_count: 30,
+      template_hash: hex("b"), profile: "cf-web-1", wacz_hash: hex("c"), pack_hash: hex("d"),
+      ai_signals_hash: hex("e"), captured_at: T0, signer_tip_id: "tip://id/US-aaaaaaaaaaaaaaaa",
+      witness_vp_id: null, registered_at: T0 + 10, ...over,
+    });
+    dag.saveSiteSnapshot(snap(hex("1"), { visibility: "private" }));
+    dag.saveSiteSnapshot(snap(hex("2"), { domain: "q.example", visibility: null }));
+    expect(dag.getSiteSnapshot(hex("1"))).toEqual(snap(hex("1"), { visibility: "private" }));
+    expect(dag.getSiteSnapshot(hex("2"))).not.toHaveProperty("visibility");
+    const rows = [...dag.iterateCanonicalState()].filter(r => r.table === "site_snapshots").map(r => r.row);
+    expect(rows.map(r => r.visibility)).toEqual(["private", undefined]);
+  });
+
   test("domain attestations: one row per (domain, node), a newer attestation replaces it, per-domain and since listings", async () => {
     const dag = await makeDag();
     const att = (domain, node, verifiedAt, over = {}) => ({

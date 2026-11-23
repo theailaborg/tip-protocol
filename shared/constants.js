@@ -1188,7 +1188,10 @@ const SITE_SNAPSHOT = Object.freeze({
   ACTIVATION_MS: 1797292800000,          // 2026-12-15 00:00:00 UTC, provisional mainnet activation
   MIN_INTERVAL_MS: 10 * 60 * 1000,       // per domain, after the previous snapshot's tx time
   CAPTURE_SKEW_MS: 60 * 1000,            // captured_at may be this far ahead of the commit time
-  MAX_PAGES: 1000000,
+  MAX_PAGES: 20000,                      // keeps a pack under SITE_INGEST.MAX_PACK_BYTES (about 3 KB a page)
+  // Optional signed field. A private snapshot's pack stays with the owner:
+  // nodes keep the record but never fetch or index its pages.
+  VISIBILITY: Object.freeze({ PRIVATE: "private" }),
   PROFILES: Object.freeze(["cf-web-1"]),
   HASH_PATTERN: /^[0-9a-f]{64}$/,        // SHAKE-256, 32 bytes, lowercase hex
   TX_ID_PATTERN: /^[0-9a-f]{64}$/,
@@ -1196,8 +1199,6 @@ const SITE_SNAPSHOT = Object.freeze({
   LIST_MAX: 100,
 });
 
-// Off-DAG ingest of each committed snapshot's fingerprint pack (node-local,
-// advisory, rebuildable). Packs come from TIP_SITE_ARCHIVE_URLS by pack_hash.
 // A domain binding (or its renewal) applies once ceil(2n/3) of the committee have each
 // checked the proof themselves; one node's BIND_DOMAIN is one attestation.
 const DOMAIN_QUORUM = Object.freeze({
@@ -1210,6 +1211,8 @@ const DOMAIN_QUORUM = Object.freeze({
   RECONCILE_MS: 10 * 60 * 1000,
 });
 
+// Off-DAG ingest of each committed snapshot's fingerprint pack (node-local,
+// advisory, rebuildable). Packs come from TIP_SITE_ARCHIVE_URLS by pack_hash.
 const SITE_INGEST = Object.freeze({
   PAGE_KEY_PREFIX: "site:",              // perceptual-index key: site:<snapshot tx_id>:<16 hex of SHAKE-256(url)>
   PASSAGE_PROFILE: "cf-web-1",           // document_passage profile for site paragraph keys
@@ -1218,10 +1221,16 @@ const SITE_INGEST = Object.freeze({
   RETRY_BASE_MS: 60 * 1000,              // doubles per failed attempt
   RETRY_MAX_MS: 6 * 60 * 60 * 1000,
   RECONCILE_MS: 10 * 60 * 1000,          // also picks up snapshots installed by state sync
-  YIELD_EVERY_PAGES: 25,
+  // A pack is unzipped, parsed and checked on a worker thread, never on the
+  // consensus thread; pages come back in batches and are indexed in short slices.
+  PACK_BATCH_PAGES: 50,
+  SLICE_MS: 10,
+  CHECK_TIMEOUT_MS: 5 * 60 * 1000,
+  WORKER_HEAP_MB: 1024,                  // a pack past this fails on its own; the node is unaffected
   // failed: retried with backoff. mismatch: the pack named by pack_hash does not
   // match its record (header, pages, root), never retried; shown as not verified.
-  STATES: Object.freeze({ PENDING: "pending", DONE: "done", FAILED: "failed", MISMATCH: "mismatch" }),
+  // private: a private snapshot, never fetched.
+  STATES: Object.freeze({ PENDING: "pending", DONE: "done", FAILED: "failed", MISMATCH: "mismatch", PRIVATE: "private" }),
 });
 
 // Registered again. Copies of someone's content (same normalized

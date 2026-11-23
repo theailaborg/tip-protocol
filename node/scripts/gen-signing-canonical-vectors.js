@@ -79,6 +79,11 @@ const CASES = [
     template_hash: "b".repeat(64), profile: "cf-web-1", wacz_hash: "c".repeat(64), pack_hash: "d".repeat(64),
     ai_signals_hash: "e".repeat(64), captured_at: 1767225600000, signer_tip_id: "tip://id/US-owner",
   }],
+  ["SITE_SNAPSHOT", "private", {
+    domain: "example.com", seq: 2, prev_snapshot_tx: "1".repeat(64), root: "a".repeat(64), page_count: 30,
+    template_hash: "b".repeat(64), profile: "cf-web-1", wacz_hash: "c".repeat(64), pack_hash: "d".repeat(64),
+    ai_signals_hash: "e".repeat(64), captured_at: 1767225600000, signer_tip_id: "tip://id/US-owner", visibility: "private",
+  }],
 ];
 
 function buildCanonical(txType, data) {

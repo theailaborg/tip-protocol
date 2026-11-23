@@ -2003,6 +2003,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           captured_at: d.captured_at,
           signer_tip_id: d.signer_tip_id,
           witness_vp_id: d.witness_vp_id ?? null,
+          visibility: d.visibility ?? null,
           registered_at: tx.timestamp,
         });
         // Off-DAG pack ingest runs later and never touches consensus.

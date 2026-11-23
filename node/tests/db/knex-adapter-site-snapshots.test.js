@@ -92,6 +92,22 @@ describe("site_snapshots on the KnexAdapter", () => {
     expect(a.listSiteSnapshotsAfter("", 10).map(r => r.seq)).toEqual([1, 2]);
   });
 
+  test("a private snapshot keeps visibility in the DB; a page keeps its proof", async () => {
+    a.saveSiteSnapshot(snap("private.example", 1, null, hex("5"), { visibility: "private" }));
+    a.saveSitePages([{
+      page_key: `site:${hex("5")}:0123456789abcdef`, snapshot_tx: hex("5"), domain: "private.example", seq: 1,
+      url: "https://private.example/", text_hash: hex("a"), page_hash: hex("b"), offsite: false,
+      changed: null, kept: null, paragraph_keys: "", proof: "l" + hex("c"), created_at: T0,
+    }]);
+    await a.flush();
+    const row = await a.knex("site_snapshots").where({ tx_id: hex("5") }).first();
+    expect(row.visibility).toBe("private");
+    expect((await a.knex("site_snapshots").where({ tx_id: hex("1") }).first()).visibility).toBeNull();
+    expect(a.getSiteSnapshot(hex("5")).visibility).toBe("private");
+    expect(a.getSiteSnapshot(hex("1"))).not.toHaveProperty("visibility");
+    expect((await a.getSitePage(`site:${hex("5")}:0123456789abcdef`)).proof).toBe("l" + hex("c"));
+  });
+
   test("rows, the per-domain head and the state root survive an adapter restart", async () => {
     await a.flush();
     const rootBefore = computeStateMerkleRoot(a);
@@ -102,6 +118,7 @@ describe("site_snapshots on the KnexAdapter", () => {
     try {
       expect(b.getLatestSiteSnapshot("theailab.org")).toEqual(snap("theailab.org", 2, hex("1"), hex("2"), { witness_vp_id: "tip://vp/US-0e7db4040667073a" }));
       expect(b.listSiteSnapshots("theailab.org", { limit: 5 }).map(r => r.seq)).toEqual([2, 1]);
+      expect(b.getSiteSnapshot(hex("5")).visibility).toBe("private");
       expect(computeStateMerkleRoot(b)).toBe(rootBefore);
     } finally {
       b.close();

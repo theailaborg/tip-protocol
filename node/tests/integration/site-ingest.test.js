@@ -38,6 +38,7 @@ const { withTxId } = require(path.join(SRC, "services", "helpers"));
 const { createSiteService } = require(path.join(SRC, "services", "site-service"));
 const { createContentService } = require(path.join(SRC, "services", "content-service"));
 const { createSiteIngest, pageKeyFor, checkPack } = require(path.join(SRC, "perceptual", "site-ingest"));
+const { pageProofs, decodeProof } = require(path.join(SRC, "perceptual", "site-pack"));
 const { matchSitePassages } = require(path.join(SRC, "perceptual", "similar"));
 const snapshotSchema = require(path.join(SRC, "schemas", "site-snapshot"));
 const contentSchema = require(path.join(SRC, "schemas", "content-register"));
@@ -128,11 +129,11 @@ function setup({ routes = {}, sources = [SOURCE], clock = null } = {}) {
 
 let round = 10;
 // Commits a snapshot of `pack` (bytes + root + page_count) and waits for its ingest.
-async function commitSnapshot(fx, pack, { seq = 1, prev = null, ts = nowMs(), cert = ts, capturedAt = ts - MIN, root = pack.root } = {}) {
+async function commitSnapshot(fx, pack, { seq = 1, prev = null, ts = nowMs(), cert = ts, capturedAt = ts - MIN, root = pack.root, visibility = null } = {}) {
   const p = snapshotSchema.buildSigningPayload({
     domain: SITE, seq, prev_snapshot_tx: prev, root, page_count: pack.page_count,
     template_hash: TEST1.template_hash, profile: "cf-web-1", wacz_hash: hex("c"),
-    pack_hash: shake256(pack.bytes), ai_signals_hash: hex("e"), captured_at: capturedAt, signer_tip_id: OWNER,
+    pack_hash: shake256(pack.bytes), ai_signals_hash: hex("e"), captured_at: capturedAt, signer_tip_id: OWNER, visibility,
   });
   const tx = withTxId({ tx_type: TX_TYPES.SITE_SNAPSHOT, timestamp: ts, data: snapshotSchema.buildTxData(p, null), signature: snapshotSchema.sign(p, fx.keys.owner.privateKey) }, fx.dag);
   const res = fx.handler.commitOrderedTxs([tx], round++, { certTimestamp: cert });
@@ -343,5 +344,77 @@ describe("similar", () => {
       domain: SITE, url: line.url, seq: 1, snapshot_tx: tx.tx_id, signer_tip_id: OWNER,
       similarity: expect.objectContaining({ modality: "text", score: 1 }),
     })]);
+  });
+});
+
+describe("off the consensus thread", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  test("the pack is unzipped, parsed and checked on the worker, never on the main thread", async () => {
+    const fx = setup({ routes: { [route(real)]: real.bytes } });
+    const readPack = jest.spyOn(web, "readPack");
+    const packRoot = jest.spyOn(web, "packRoot");
+    const tx = await commitSnapshot(fx, real);
+    expect(await fx.dag.getSiteIngest(tx.tx_id)).toEqual(expect.objectContaining({ state: "done", pages: 30 }));
+    expect(readPack).not.toHaveBeenCalled();
+    expect(packRoot).not.toHaveBeenCalled();
+  });
+
+  test("each page keeps the same proof the library builds, so a read never rebuilds the tree", async () => {
+    const fx = setup({ routes: { [route(real)]: real.bytes } });
+    const tx = await commitSnapshot(fx, real);
+    const rows = await fx.dag.listSitePages(tx.tx_id);
+    const leaves = LINES.map((l) => ({ url: l.url, leaf: web.leafHash(l.url, l.text_hash) }));
+    for (const r of rows) expect(decodeProof(r.proof)).toEqual(web.merkleProof(leaves, r.url));
+  });
+
+  test("proofs match the library for odd and single-page trees, and a page that does not verify gets none", () => {
+    for (const n of [1, 2, 7, 29]) {
+      const lines = LINES.slice(0, n);
+      const record = { root: web.packRoot(lines) };
+      const leaves = lines.map((l) => ({ url: l.url, leaf: web.leafHash(l.url, l.text_hash) }));
+      pageProofs(record, lines).forEach((p, i) => expect(decodeProof(p)).toEqual(web.merkleProof(leaves, lines[i].url)));
+    }
+    expect(pageProofs({ root: hex("a") }, LINES.slice(0, 3))).toEqual([null, null, null]);
+    expect(decodeProof(null)).toBeNull();
+    expect(decodeProof("x".repeat(65))).toBeNull();
+    expect(decodeProof("l" + hex("a") + "r")).toBeNull();
+  });
+});
+
+describe("private snapshots", () => {
+  test("the record commits but its pack is never fetched, and a page read says why", async () => {
+    const fx = setup({ routes: { [route(real)]: real.bytes } });
+    const tx = await commitSnapshot(fx, real, { visibility: "private" });
+
+    expect(fx.fetchImpl.calls).toHaveLength(0);
+    expect(fx.dag.getSiteSnapshot(tx.tx_id).visibility).toBe("private");
+    expect(await fx.dag.getSiteIngest(tx.tx_id)).toEqual(expect.objectContaining({ state: "private", next_attempt_at: Number.MAX_SAFE_INTEGER }));
+    expect(await fx.dag.listSitePages(tx.tx_id)).toHaveLength(0);
+
+    const snap = await fx.siteService.getSnapshot(tx.tx_id);
+    expect(snap).toEqual(expect.objectContaining({ visibility: "private" }));
+    expect(snap.ingest.state).toBe("private");
+    expect(fx.siteService.listSnapshots(SITE).snapshots[0].visibility).toBe("private");
+    await expect(fx.siteService.getPage(SITE, { url: firstUrl }))
+      .rejects.toEqual(expect.objectContaining({ status: 404, code: "site_snapshot_private" }));
+
+    await fx.siteIngest.reconcile();
+    await fx.siteIngest.idle();
+    expect(fx.fetchImpl.calls).toHaveLength(0);
+  });
+
+  test("a public snapshot after a private one is indexed, with nothing earlier to compare", async () => {
+    const t0 = nowMs() - 40 * MIN;
+    const v2 = repack({ seq: 2 });
+    const fx = setup({ routes: { [route(real)]: real.bytes, [route(v2)]: v2.bytes } });
+    const tx1 = await commitSnapshot(fx, real, { ts: t0, capturedAt: t0 - MIN, visibility: "private" });
+    const tx2 = await commitSnapshot(fx, v2, { seq: 2, prev: tx1.tx_id, ts: t0 + 20 * MIN, capturedAt: t0 + 15 * MIN });
+
+    expect(fx.dag.getSiteSnapshot(tx2.tx_id).visibility).toBeUndefined();
+    expect(fx.fetchImpl.calls).toEqual([route(v2)]);
+    expect(await fx.siteService.getPage(SITE, { url: firstUrl })).toEqual(expect.objectContaining({ seq: 2, changed: null, kept: null }));
+    await expect(fx.siteService.getPage(SITE, { url: firstUrl, at: String(t0) }))
+      .rejects.toEqual(expect.objectContaining({ code: "site_snapshot_private" }));
   });
 });

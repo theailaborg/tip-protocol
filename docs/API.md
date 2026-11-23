@@ -488,6 +488,7 @@ The owner, or an active member of the organization that owns the site, signs the
 ```
 
 - `domain` is the site's name without `www.`; `witness` is optional.
+- **Private snapshot:** add `"visibility": "private"` to the signed payload (a 13th signed field; absent or null is a public snapshot and signs the 12). Nodes keep the record and its root but never fetch or index its pack, so its pages cannot be read or matched on TIP; the owner proves a page from their own copy of the pack. Any other value is `400 visibility_invalid`.
 - **202** `{ domain, seq, tx_id, witness_vp_id, proposed_at, confirmation: "proposed" }`.
 - Errors:
   - `400`: a malformed field (`<field>_invalid`, `domain_not_canonical`, `prev_snapshot_tx_invalid`), `captured_at_not_after_previous`, `captured_at_in_future`;
@@ -502,11 +503,11 @@ Every node checks the same rules again at commit, judged at max(tx time, certifi
 
 Newest first. `limit` 1 to 100 (default 20); `before` is an exclusive `seq`.
 
-**Response 200:** `{ domain, snapshots: [{ seq, tx_id, root, page_count, captured_at, registered_at, wacz_hash, pack_hash, witness_vp_id }], next_before }`.
+**Response 200:** `{ domain, snapshots: [{ seq, tx_id, root, page_count, captured_at, registered_at, wacz_hash, pack_hash, witness_vp_id, visibility }], next_before }`; `visibility` is `"public"` or `"private"`.
 
 #### `GET /v1/site/snapshot/:tx`
 
-The full record, with the owner's `signature`, `witness: { vp_id, signature } | null` (so a viewer can verify both), and `ingest: { state, pages, offsite, attempts, last_error }`, this node's index of the snapshot's fingerprint pack: `pending`, `done`, `failed` (no source served it yet; retried with backoff) or `mismatch` (the pack named by `pack_hash` does not match the record's domain, seq, page count or root, or names one URL twice; never retried, show the snapshot as not verified). **404** `site_snapshot_not_found`.
+The full record, with the owner's `signature`, `witness: { vp_id, signature } | null` (so a viewer can verify both), and `ingest: { state, pages, offsite, attempts, last_error }`, this node's index of the snapshot's fingerprint pack: `pending`, `done`, `failed` (no source served it yet; retried with backoff), `mismatch` (the pack named by `pack_hash` does not match the record's domain, seq, page count or root, or names one URL twice; never retried, show the snapshot as not verified) or `private` (a private snapshot: never fetched). The record also carries `visibility`. **404** `site_snapshot_not_found`.
 
 #### `GET /v1/site/:domain/page?url=&at=`
 
@@ -514,9 +515,9 @@ One page of the snapshot that covered the site at `at` (epoch ms, default now: t
 
 **Response 200:** `{ domain, url, seq, tx_id, captured_at, registered_at, root, text_hash, page_hash, leaf, proof, changed, kept }`. `proof` is the Merkle path from `leaf` to the signed `root`; check it with `tip-content-fingerprint`'s `web.verifyPage(url, text_hash, proof, root)` (the node checks it before answering). `changed` says whether the page's matching hash differs from the previous snapshot (`null` for a page new in this snapshot) and `kept` is the share of the previous version's paragraph keys still present (0 to 1), a degree of change for pages whose side lists or dates change on every capture.
 
-Errors: `400 url_invalid`, `400 at_invalid`, `404 site_page_not_found` (another domain, an off-site page, or not in that snapshot), `404 site_snapshot_not_found`, `409 site_page_not_ready` (the pack is not indexed on this node yet, with `details.ingest`), `422 site_snapshot_pack_mismatch` (the snapshot's pack does not match its record).
+Errors: `400 url_invalid`, `400 at_invalid`, `404 site_page_not_found` (another domain, an off-site page, or not in that snapshot), `404 site_snapshot_not_found`, `404 site_snapshot_private` (the snapshot covering `at` is private: its pages are not on TIP nodes, so they cannot be shown or matched; `details: { seq, tx_id }`), `409 site_page_not_ready` (the pack is not indexed on this node yet, with `details.ingest`), `422 site_snapshot_pack_mismatch` (the snapshot's pack does not match its record).
 
-The node fetches each committed snapshot's pack by `pack_hash` from `TIP_SITE_ARCHIVE_URLS` (`<source>/api/archive/pack/<pack_hash>`, tried in order) and indexes it only if its SHAKE-256, header, page count and Merkle root (`web.packRoot`, over every page line) match the record. Downloads stop at 64 MiB, and the library stops unpacking at 256 MiB, so a signed gzip bomb cannot exhaust a node. Pages whose URL left the site (a redirect to a login provider or shop) stay in the root but are never indexed or served.
+The node fetches each committed snapshot's pack by `pack_hash` from `TIP_SITE_ARCHIVE_URLS` (`<source>/api/archive/pack/<pack_hash>`, tried in order) and indexes it only if its SHAKE-256, header, page count and Merkle root (`web.packRoot`, over every page line) match the record. Downloads stop at 64 MiB, and the library stops unpacking at 256 MiB, so a signed gzip bomb cannot exhaust a node. The pack is hashed while it downloads and unpacked, checked and given per-page proofs on a worker thread with a capped heap, never on the thread that runs consensus; each page read uses the proof stored at ingest. A snapshot holds at most 20,000 pages. Pages whose URL left the site (a redirect to a login provider or shop) stay in the root but are never indexed or served.
 
 ## Rate Limits
 

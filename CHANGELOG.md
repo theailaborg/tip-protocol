@@ -53,6 +53,17 @@ upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside produ
 - `GET /v1/site/:domain/page?url=&at=`: one page of the snapshot covering `at`, with a
   Merkle proof the node checks with `web.verifyPage`, and `changed` / `kept` against the
   previous snapshot.
+- Private snapshots: an optional signed `visibility: "private"` (absent keeps the 12-field
+  bytes). Nodes keep the record and root but never fetch or index the pack; page reads
+  answer `404 site_snapshot_private`. Column `site_snapshots.visibility` (migration
+  `020_site_snapshot_visibility`), omitted from the canonical row when null, so public
+  rows hash as before.
+- Pack ingest never blocks consensus: the pack is hashed while it downloads, then
+  unpacked, checked and given per-page Merkle proofs on a worker thread (capped heap,
+  timeout); pages are indexed in short slices. A page read checks the proof stored at
+  ingest (`site_page.proof`, migration `021_site_page_proof`, which clears pages indexed
+  without one so they are rebuilt) instead of rebuilding the tree. A snapshot holds at
+  most 20,000 pages.
 - Similar search: archived pages are found by text and pictures, and by documents
   through paragraph keys weighted by how many site owners hold them; returned apart from
   content as `sites` (`GET /v1/content/:ctid/similar`) and `near_duplicate_sites`
@@ -194,6 +205,12 @@ run 2.9.9 before it)
   by design) without fetching each record.
 
 ### Fixed
+
+**In-memory store: picture-hash and passage indexes no longer rescan on every insert**
+- `savePhashCodes` rebuilt a set of every stored code on each call, and
+  `saveDocumentPassages` scanned every holder of each key, so indexing slowed as the store
+  grew (a 1,000-page snapshot took two minutes in tests). Both keep a key set now, like
+  `saveMinhashBands`. The Postgres (Knex) store was not affected.
 
 **Node 2.9.7: an accepted transaction is never lost after its certificate is sealed**
 - A tx answered 202 and sealed into the receiving node's own certificate could be
