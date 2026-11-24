@@ -184,6 +184,18 @@ describe("non-destructive install: regression refusal", () => {
     expect(result.round).toBe(2);
     expect(computeStateMerkleRoot(newFx.sourceDag)).toBe(oldFx.stateRoot);
   });
+
+  test("a majority-confirmed recovery installs an older snapshot over a consistent local head and takes its history", async () => {
+    const oldFx = buildCommittedDag({ committeeSize: 2, round: 2 });
+    const newFx = buildCommittedDag({ committeeSize: 2, round: 5 });
+
+    const result = await attemptInstall(oldFx.sourceDag, newFx.sourceDag, { chunkSize: 16, requestOptions: { allowRegression: true } });
+    expect(result.round).toBe(2);
+    expect(computeStateMerkleRoot(newFx.sourceDag)).toBe(oldFx.stateRoot);
+    // Our round-5 commit was never the network's: the history now ends at the snapshot's head.
+    expect(newFx.sourceDag.getLatestCommit().round).toBe(2);
+    expect(newFx.sourceDag.getLatestCommit().state_merkle_root).toBe(oldFx.stateRoot);
+  });
 });
 
 describe("non-destructive install: stale marker resolution", () => {

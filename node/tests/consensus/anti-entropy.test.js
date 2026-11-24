@@ -1209,6 +1209,7 @@ describe("#46 anti-entropy snapshot fallback", () => {
     expect(snap._calls).toHaveLength(1);
     expect(snap._calls[0].peerId).toBe("peer-id");
     expect(snap._calls[0].opts.minRound).toBe(0);
+    expect(snap._calls[0].opts.allowRegression).toBe(false);   // only a majority-confirmed recovery may regress
   });
 
   test("snapshot install enters sync mode BEFORE install; promotion to ready is owned by snapshot-handler / catch-up flow, not AE", async () => {
@@ -2179,6 +2180,25 @@ describe("self non-ready divergence is graced, but not forever", () => {
     expect(await check(ae, "C")).toBe("divergent");
     expect(warns.some(m => /self catching_up at committed_round=100 still disagrees with ready peer/.test(m))).toBe(true);
     expect(warns.some(m => /majority minority detected while halted/.test(m))).toBe(true);
+  });
+
+  test("the minority recovery it leads to may install an older snapshot; that permission is the majority's alone", async () => {
+    const calls = [];
+    const narwhal = nonReadyNarwhal();
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { "peer-A": "tip://node/A", "peer-B": "tip://node/B", "peer-C": "tip://node/C" } }),
+      syncHandler: fakeSyncHandler(), narwhal,
+      snapshotHandler: { isInstalling: () => false, requestSnapshotFromPeer: async (p, o) => { calls.push(o); return null; } },
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+    await check(ae, "A");
+    advance(GRACE + 1000);
+    for (const id of ["A", "B", "C"]) await check(ae, id);
+    await jest.advanceTimersByTimeAsync(60000);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((o) => o.allowRegression === true)).toBe(true);
   });
 
   test("the same holds while syncing", async () => {

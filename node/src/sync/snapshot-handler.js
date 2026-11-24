@@ -664,7 +664,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
    * @param {string} [opts.requesterNodeId] optional — for server-side logging
    * @returns {Promise<{ round, consensus_index, rows_installed, state_merkle_root, txs_merkle_root }>}
    */
-  async function requestSnapshotFromPeer(peerId, { minRound = 0, requesterNodeId = "" } = {}) {
+  // allowRegression: a committee majority has confirmed our state is wrong, so commits we hold
+  // past the peer's snapshot are not the network's; the install replaces that history.
+  async function requestSnapshotFromPeer(peerId, { minRound = 0, requesterNodeId = "", allowRegression = false } = {}) {
     if (!network) throw new Error("snapshot: no network node");
 
     // First-wins guard: if another install already completed or is in progress
@@ -784,7 +786,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             // accepted: regress-then-replay-own-log is the recovery.
             {
               const latestOwn = typeof dag.getLatestCommit === "function" ? dag.getLatestCommit() : null;
-              if (latestOwn && Number(header.round) < Number(latestOwn.round)
+              if (!allowRegression && latestOwn && Number(header.round) < Number(latestOwn.round)
                 && computeStateMerkleRoot(dag) === latestOwn.state_merkle_root) {
                 throw new Error(
                   `peer snapshot round ${Number(header.round)} < our attested head ${latestOwn.round} ` +
