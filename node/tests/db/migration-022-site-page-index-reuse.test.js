@@ -18,6 +18,7 @@ const knexLib = require("knex");
 const MIGRATIONS_DIR = path.resolve(__dirname, "../../src/db/migrations");
 const SCHEMA_SQL = path.resolve(__dirname, "../../src/db/schema.sql");
 const IDX = "idx_site_page_index_key";
+const NAME = "022_site_page_index_reuse.js";
 const hex = (c) => c.repeat(64);
 
 let tmpDir;
@@ -45,16 +46,16 @@ test("from 021: 022 keeps existing pages with null index columns; down and up ag
   const k = open("upgrade.db");
   try {
     await k.migrate.latest();
-    await k.migrate.down();
+    await k.migrate.down({ name: NAME });
     expect(await k.schema.hasColumn("site_page", "index_key")).toBe(false);
     await k("site_page").insert(page);
 
-    await k.migrate.up();
+    await k.migrate.up({ name: NAME });
     expect(await hasIndex(k)).toBe(true);
     const row = await k("site_page").first();
     expect([row.page_key, row.index_key, row.index_hash]).toEqual([page.page_key, null, null]);
 
-    await k.migrate.down();
+    await k.migrate.down({ name: NAME });
     expect(await k.schema.hasColumn("site_page", "index_hash")).toBe(false);
     expect(await hasIndex(k)).toBe(false);
     await k.migrate.latest();

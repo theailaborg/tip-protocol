@@ -752,6 +752,29 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect([await q(0), await q(1), await q(2)]).toEqual([10, 20, 30]);
   });
 
+  test("site index rows: deleting by ctid removes fingerprints, bands, picture codes and passages of those ctids only", async () => {
+    const dag = await makeDag();
+    const { buildIngestRows } = require(path.join(SRC, "perceptual", "ingest"));
+    const a = uniq("site:a"), b = uniq("site:b");
+    for (const c of [a, b]) {
+      const img = buildIngestRows({ kind: "image", profile: "cf-image-1", pdq: "ab".repeat(32), quality: 90 }, { ctid: c, componentIdx: 1, createdAt: T0 });
+      dag.savePerceptualFingerprints([img.fingerprint]);
+      dag.savePhashCodes(img.codes);
+      dag.saveMinhashBands([{ profile: "cf-text-3", band_idx: 0, band_hash: 111, ctid: c }]);
+      dag.saveDocumentPassages([{ profile: "cf-web-1", passage_key: "aaaaaaaaaaaa", owner: "tip://id/US-aaaaaaaaaaaaaaaa", ctid: c, component_idx: 0, unit: null }]);
+    }
+    if (typeof dag.flush === "function") await dag.flush();
+    dag.deleteSiteIndexRows([a]);
+    dag.deleteSiteIndexRows([]);
+    if (typeof dag.flush === "function") await dag.flush();
+    expect(await dag.getPerceptualFingerprint(a, 1)).toBeNull();
+    expect(await dag.getPerceptualFingerprint(b, 1)).not.toBeNull();
+    expect(await dag.getPhashCodesByCtid(a)).toEqual([]);
+    expect((await dag.getPhashCodesByCtid(b)).length).toBe(1);
+    expect(await dag.findMinhashCandidates("cf-text-3", [111])).toEqual([b]);
+    expect((await dag.findDocumentPassageCandidates("cf-web-1", ["aaaaaaaaaaaa"])).map((r) => r.ctid)).toEqual([b]);
+  });
+
   test("site pages: index_key and index_hash round-trip; the last seq per index entry", async () => {
     const dag = await makeDag();
     const hex = (c) => c.repeat(64);
@@ -769,6 +792,10 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect([got.index_key, got.index_hash]).toEqual([first, hex("3")]);
     expect(await dag.getSitePageLastSeq(first)).toBe(2);
     expect(await dag.getSitePageLastSeq(`site:${hex("c")}:0000000000000000`)).toBeNull();
+    dag.deleteSitePages([`site:${tx2}:0123456789abcdef`]);
+    if (typeof dag.flush === "function") await dag.flush();
+    expect(await dag.getSitePage(`site:${tx2}:0123456789abcdef`)).toBeNull();
+    expect(await dag.getSitePageLastSeq(first)).toBe(1);
   });
 
   test("site snapshots: visibility is kept on a private row and absent from a public one", async () => {

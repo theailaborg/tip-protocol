@@ -100,7 +100,7 @@ function fakeFetch(routes) {
   return fetchImpl;
 }
 
-function setup({ routes = {}, sources = [SOURCE], clock = null } = {}) {
+function setup({ routes = {}, sources = [SOURCE], clock = null, keep = undefined } = {}) {
   const dag = initDAG({ dbPath: ":memory:" });
   const keys = { owner: generateMLDSAKeypair(), poster: generateMLDSAKeypair(), node: generateMLDSAKeypair() };
   dag.saveNode({ node_id: NODE_ID, name: "n1", public_key: keys.node.publicKey, status: "active", registered_at: 1767225600000 });
@@ -121,7 +121,7 @@ function setup({ routes = {}, sources = [SOURCE], clock = null } = {}) {
   });
   const fetchImpl = fakeFetch(routes);
   const log = { info() {}, warn: jest.fn(), error() {} };
-  const siteIngest = createSiteIngest({ dag, sources, fetchImpl, log, ...(clock ? { now: () => clock.t } : {}) });
+  const siteIngest = createSiteIngest({ dag, sources, fetchImpl, log, ...(clock ? { now: () => clock.t } : {}), ...(keep ? { keepSnapshots: keep } : {}) });
   const handler = createCommitHandler({ dag, nodeId: NODE_ID, siteIngest });
   const siteService = createSiteService({ dag, submitTx: () => {}, websitePages: null });
   return { dag, keys, fetchImpl, log, siteIngest, handler, siteService };
@@ -492,6 +492,49 @@ describe("indexing progress", () => {
     await restarted.idle();
     expect(await fx.dag.getSiteIngest(tx.tx_id)).toEqual(expect.objectContaining({ state: "done", pages: 30 }));
     expect((await fx.siteService.getSnapshot(tx.tx_id)).ingest).not.toHaveProperty("total");
+  });
+});
+
+describe("pruning old snapshots", () => {
+  test("beyond the newest kept snapshots, pages and index rows go, except rows a kept page still uses", async () => {
+    const t0 = nowMs() - 90 * MIN;
+    const url = (i) => LINES[i].url;
+    const v2 = repack({ seq: 2, mutate: (l) => { l[2].paragraph_keys = l[2].paragraph_keys.slice(0, 5); l[2].text_hash = hex("2"); return l; } });
+    const v3 = repack({ seq: 3, mutate: (l) => {
+      l[2].paragraph_keys = l[2].paragraph_keys.slice(0, 6); l[2].text_hash = hex("3");
+      l[3].paragraph_keys = l[3].paragraph_keys.slice(0, 4); l[3].text_hash = hex("4");
+      return l;
+    } });
+    const v4 = repack({ seq: 4, mutate: (l) => l.map((x, i) => ({ ...x, paragraph_keys: x.paragraph_keys.slice(0, 7), text_hash: shake256(`v4-${i}`) })) });
+    const fx = setup({ keep: 2, routes: { [route(real)]: real.bytes, [route(v2)]: v2.bytes, [route(v3)]: v3.bytes, [route(v4)]: v4.bytes } });
+    const tx1 = await commitSnapshot(fx, real, { ts: t0, capturedAt: t0 - MIN });
+    const tx2 = await commitSnapshot(fx, v2, { seq: 2, prev: tx1.tx_id, ts: t0 + 20 * MIN, capturedAt: t0 + 15 * MIN });
+    const tx3 = await commitSnapshot(fx, v3, { seq: 3, prev: tx2.tx_id, ts: t0 + 40 * MIN, capturedAt: t0 + 35 * MIN });
+
+    // Kept: seq 3 and 2. Seq 1's page 2 version is used by neither, so it goes;
+    // the rest of seq 1 stays because seq 2 and 3 still point at it.
+    expect(await fx.dag.getSiteIngest(tx1.tx_id)).toEqual(expect.objectContaining({ state: "pruned", pages: 29 }));
+    expect(await fx.dag.getSitePage(pageKeyFor(tx1.tx_id, url(2)))).toBeNull();
+    expect(await fx.dag.getPerceptualFingerprint(pageKeyFor(tx1.tx_id, url(2)), 0)).toBeNull();
+    expect(await fx.dag.getSitePage(pageKeyFor(tx1.tx_id, firstUrl))).not.toBeNull();
+    expect(await fx.dag.getPerceptualFingerprint(pageKeyFor(tx1.tx_id, firstUrl), 0)).not.toBeNull();
+    await expect(fx.siteService.getPage(SITE, { url: firstUrl, at: String(t0 + 5 * MIN) }))
+      .rejects.toEqual(expect.objectContaining({ status: 404, code: "site_snapshot_pruned" }));
+    const now3 = await fx.siteService.getPage(SITE, { url: firstUrl });
+    expect(now3.seq).toBe(3);
+    expect(web.verifyPage(firstUrl, now3.text_hash, now3.proof, v3.root)).toBe(true);
+    expect((await fx.siteService.getSnapshot(tx1.tx_id)).ingest.state).toBe("pruned");
+
+    await commitSnapshot(fx, v4, { seq: 4, prev: tx3.tx_id, ts: t0 + 60 * MIN, capturedAt: t0 + 55 * MIN });
+    // Kept: seq 4 and 3. Seq 2 had nothing left that a kept page uses; seq 1 loses page 3,
+    // which seq 3 indexed anew, and keeps the 28 pages seq 3 still points at.
+    expect(await fx.dag.getSiteIngest(tx2.tx_id)).toEqual(expect.objectContaining({ state: "pruned", pages: 0 }));
+    expect(await fx.dag.listSitePages(tx2.tx_id)).toHaveLength(0);
+    expect(await fx.dag.getSiteIngest(tx1.tx_id)).toEqual(expect.objectContaining({ state: "pruned", pages: 28 }));
+    expect(await fx.dag.getSitePage(pageKeyFor(tx1.tx_id, url(3)))).toBeNull();
+    expect(await fx.dag.getPerceptualFingerprint(pageKeyFor(tx1.tx_id, url(3)), 0)).toBeNull();
+    expect(await fx.dag.getSitePage(pageKeyFor(tx1.tx_id, firstUrl))).not.toBeNull();
+    expect(await fx.dag.listSitePages(tx3.tx_id)).toHaveLength(30);
   });
 });
 

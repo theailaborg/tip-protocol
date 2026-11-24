@@ -17,7 +17,7 @@ const { siteKey, liveBindingFor } = require("../validators/business-rules");
 const { buildIngestRows } = require("./ingest");
 const { checkPack, packError: _fail } = require("./site-pack");
 
-const { PENDING, INDEXING, DONE, FAILED, MISMATCH, PRIVATE } = SITE_INGEST.STATES;
+const { PENDING, INDEXING, DONE, FAILED, MISMATCH, PRIVATE, PRUNED } = SITE_INGEST.STATES;
 const WORKER_FILE = path.join(__dirname, "site-pack-worker.js");
 
 function pageKeyFor(snapshotTx, url) {
@@ -90,7 +90,7 @@ function _keysOf(row) {
   return row && row.paragraph_keys ? row.paragraph_keys.split(" ").filter(Boolean) : [];
 }
 
-function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log = console, now = nowMs } = {}) {
+function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log = console, now = nowMs, keepSnapshots = SITE_INGEST.KEEP_SNAPSHOTS } = {}) {
   const urls = sources.map((s) => String(s).replace(/\/+$/, "")).filter(Boolean);
   const queue = [];
   const queued = new Set();
@@ -178,6 +178,59 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
       }
     }
     throw _fail(`no source served the pack (${errors.join("; ") || "none tried"})`, "pack_unavailable");
+  }
+
+  // Room in the write queue first; then the queued writes must land, and the job rests
+  // as long as they took (the same pacing as indexing).
+  async function _paced(write) {
+    while (!stopped && _writesBehind()) await new Promise((resolve) => setTimeout(resolve, SITE_INGEST.WRITE_WAIT_MS));
+    if (stopped) throw _fail("ingest stopped", "ingest_stopped");
+    const started = performance.now();
+    write();
+    await dag.flush();
+    const took = performance.now() - started;
+    if (took >= 1) await new Promise((resolve) => setTimeout(resolve, took));
+  }
+
+  // Keeps the index of a site's newest keepSnapshots indexed snapshots. An older one
+  // loses its pages, and its index rows unless a kept page still points at them; a
+  // pruned snapshot still holding such rows is revisited on later passes.
+  async function pruneDomain(domain) {
+    const kept = [];
+    const older = [];
+    let before = null;
+    while (true) {
+      const snaps = dag.listSiteSnapshots(domain, { before, limit: SITE_SNAPSHOT.LIST_MAX });
+      if (!snaps.length) break;
+      for (const snap of snaps) {
+        const st = await dag.getSiteIngest(snap.tx_id);
+        if (!st) continue;
+        if (st.state === DONE && kept.length < keepSnapshots) kept.push(snap);
+        else if (st.state === DONE || (st.state === PRUNED && Number(st.pages) > 0)) older.push({ snap, st });
+      }
+      before = Number(snaps[snaps.length - 1].seq);
+      if (before <= 1) break;
+    }
+    if (!older.length) return 0;
+    const inUse = new Set();
+    for (const snap of kept) for (const r of await dag.listSitePages(snap.tx_id)) inUse.add(r.index_key || r.page_key);
+    let dropped = 0;
+    for (const { snap, st } of older) {
+      const rows = await dag.listSitePages(snap.tx_id);
+      const drop = rows.filter((r) => !inUse.has(r.page_key));
+      for (let i = 0; i < drop.length; i += SITE_INGEST.PRUNE_BATCH) {
+        const batch = drop.slice(i, i + SITE_INGEST.PRUNE_BATCH);
+        const owned = batch.filter((r) => (r.index_key || r.page_key) === r.page_key).map((r) => r.page_key);
+        await _paced(() => {
+          dag.deleteSiteIndexRows(owned);
+          dag.deleteSitePages(batch.map((r) => r.page_key));
+        });
+      }
+      dropped += drop.length;
+      dag.saveSiteIngest({ ...st, state: PRUNED, pages: rows.length - drop.length, next_attempt_at: Number.MAX_SAFE_INTEGER, updated_at: now() });
+    }
+    log.info?.(`site ingest: ${domain}: pruned ${older.length} snapshot(s) beyond the newest ${keepSnapshots}, ${dropped} page rows removed`);
+    return older.length;
   }
 
   // Index rows are reused from the newest earlier snapshot this node fully indexed:
@@ -302,7 +355,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     const record = dag.getSiteSnapshot(snapshotTx);
     if (!record) return null;
     const prior = await dag.getSiteIngest(snapshotTx);
-    if (prior && (prior.state === DONE || prior.state === MISMATCH || prior.state === PRIVATE)) return prior;
+    if (prior && (prior.state === DONE || prior.state === MISMATCH || prior.state === PRIVATE || prior.state === PRUNED)) return prior;
     if (prior && Number(prior.next_attempt_at) > now()) return prior;
     const base = {
       snapshot_tx: snapshotTx, domain: record.domain, seq: record.seq,
@@ -334,6 +387,11 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
       const row = { ...base, state: DONE, next_attempt_at: 0, last_error: null, pages: out.pages, offsite: out.offsite, source };
       dag.saveSiteIngest(row);
       log.info?.(`site ingest: ${record.domain} seq ${record.seq} indexed, ${out.pages} pages (${out.offsite} off-site) from ${source}`);
+      try {
+        await pruneDomain(record.domain);
+      } catch (err) {
+        if (err.code !== "ingest_stopped") log.warn?.(`site ingest: pruning ${record.domain} failed: ${err.message}`);
+      }
       return row;
     } catch (err) {
       if (err.code === "ingest_stopped" || stopped) return null;
@@ -358,7 +416,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
       for (const r of batch) {
         if (known.has(r.tx_id)) continue;
         const st = await dag.getSiteIngest(r.tx_id);
-        if (st && (st.state === DONE || st.state === MISMATCH || st.state === PRIVATE)) { known.add(r.tx_id); continue; }
+        if (st && (st.state === DONE || st.state === MISMATCH || st.state === PRIVATE || st.state === PRUNED)) { known.add(r.tx_id); continue; }
         if (!st || Number(st.next_attempt_at) <= now()) enqueue(r.tx_id);
       }
       after = batch[batch.length - 1].tx_id;
@@ -388,7 +446,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     if (worker) worker.terminate();
   }
 
-  return { enqueue, idle, processSnapshot, reconcile, retryDue, start, stop };
+  return { enqueue, idle, processSnapshot, pruneDomain, reconcile, retryDue, start, stop };
 }
 
 module.exports = { createSiteIngest, checkPack, pageKeyFor, isSitePageKey, onSite };

@@ -58,6 +58,10 @@ upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside produ
   answer `404 site_snapshot_private`. Column `site_snapshots.visibility` (migration
   `020_site_snapshot_visibility`), omitted from the canonical row when null, so public
   rows hash as before.
+- Old snapshots are pruned from each node's index: a site keeps its newest 12 indexed
+  snapshots; an older one loses its page rows and the index rows no kept page uses (paced
+  deletes; `tip_ctid` indexes, migration `023_index_ctid_lookup`). Its record stays on TIP;
+  ingest state `pruned`, page reads `404 site_snapshot_pruned`.
 - Indexing progress: while a node indexes a pack, `GET /v1/site/snapshot/:tx` answers
   `ingest: { state: "indexing", pages, total }` (pages indexed so far, refreshed about every
   2 s); a node that stops part-way resumes at its next start.

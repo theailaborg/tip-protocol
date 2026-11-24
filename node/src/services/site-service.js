@@ -137,6 +137,9 @@ function createSiteService({ dag, submitTx, websitePages }) {
       throw schemaError(404, `Snapshot ${snap.seq} of ${domain} is private: its pages are not shared with TIP nodes, so they cannot be shown or matched here. The site owner can share a page proof.`, "site_snapshot_private", { seq: snap.seq, tx_id: snap.tx_id });
     }
     const ingest = await dag.getSiteIngest(snap.tx_id);
+    if (ingest && ingest.state === SITE_INGEST.STATES.PRUNED) {
+      throw schemaError(404, `Snapshot ${snap.seq} of ${domain} is no longer indexed on this node, which keeps the newest ${SITE_INGEST.KEEP_SNAPSHOTS} per site. Its record and root stay on TIP, and the site owner's archive proves its pages.`, "site_snapshot_pruned", { seq: snap.seq, tx_id: snap.tx_id });
+    }
     if (ingest && ingest.state === SITE_INGEST.STATES.MISMATCH) {
       throw schemaError(422, `The pack of snapshot ${snap.seq} of ${domain} does not match its signed record`, "site_snapshot_pack_mismatch", { ingest: _ingestView(ingest, snap.page_count) });
     }

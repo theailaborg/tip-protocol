@@ -107,6 +107,8 @@ CREATE INDEX IF NOT EXISTS `idx_content_signer` on `content` (`signer_tip_id`);
 
 CREATE INDEX IF NOT EXISTS `idx_content_status` on `content` (`status`);
 
+CREATE INDEX IF NOT EXISTS `idx_document_passage_ctid` on `document_passage` (`tip_ctid`);
+
 CREATE INDEX IF NOT EXISTS `idx_document_text_hash` on `document_text` (`profile`, `text_hash`);
 
 CREATE INDEX IF NOT EXISTS `idx_dom_bind_expires` on `domain_bindings` (`expires_at`);
@@ -126,6 +128,8 @@ CREATE INDEX IF NOT EXISTS `idx_id_type` on `identities` (`tip_id_type`);
 CREATE INDEX IF NOT EXISTS `idx_id_vp` on `identities` (`vp_id`);
 
 CREATE INDEX IF NOT EXISTS `idx_interests_registry_category` on `interests_registry` (`category`);
+
+CREATE INDEX IF NOT EXISTS `idx_minhash_band_ctid` on `minhash_band` (`tip_ctid`);
 
 CREATE INDEX IF NOT EXISTS `idx_minhash_band_lookup` on `minhash_band` (`profile`, `band_idx`, `band_hash`);
 

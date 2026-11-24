@@ -1238,11 +1238,16 @@ const SITE_INGEST = Object.freeze({
   MAX_SLICE_ROWS: 1000,
   REUSE_LOOKBACK: 10,                    // earlier snapshots searched for one whose index rows can be reused
   PROGRESS_MS: 2000,                     // an indexing snapshot's page count is saved at most this often
+  // Per site, the newest snapshots kept in the index. An older one is pruned: its pages
+  // and index rows go, except index rows a kept page still points at. Records stay.
+  KEEP_SNAPSHOTS: 12,
+  PRUNE_BATCH: 200,                      // page rows deleted per paced batch
   // failed: retried with backoff. mismatch: the pack named by pack_hash does not
   // match its record (header, pages, root), never retried; shown as not verified.
   // private: a private snapshot, never fetched. indexing: pack checked, pages being
-  // indexed (pages = indexed so far); a restart resumes it.
-  STATES: Object.freeze({ PENDING: "pending", INDEXING: "indexing", DONE: "done", FAILED: "failed", MISMATCH: "mismatch", PRIVATE: "private" }),
+  // indexed (pages = indexed so far); a restart resumes it. pruned: older than the
+  // KEEP_SNAPSHOTS newest (pages = rows kept because newer pages still use them).
+  STATES: Object.freeze({ PENDING: "pending", INDEXING: "indexing", DONE: "done", FAILED: "failed", MISMATCH: "mismatch", PRIVATE: "private", PRUNED: "pruned" }),
 });
 
 // Registered again. Copies of someone's content (same normalized

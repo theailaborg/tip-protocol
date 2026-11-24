@@ -1228,6 +1228,33 @@ class MemoryStore {
     return [...this._sitePages.values()].filter(r => r.snapshot_tx === snapshotTx)
       .sort((a, b) => cmpBin(a.page_key, b.page_key)).map(r => ({ ...r }));
   }
+  deleteSitePages(pageKeys) {
+    for (const k of pageKeys || []) this._sitePages.delete(k);
+  }
+  // Every similar-index row of these ctids (fingerprints, bands, picture codes, passages).
+  deleteSiteIndexRows(ctids) {
+    const drop = new Set(ctids || []);
+    if (!drop.size) return;
+    for (const [k, r] of this._perceptualFingerprints) if (drop.has(r.ctid)) this._perceptualFingerprints.delete(k);
+    this._minhashBands = this._minhashBands.filter((r) => {
+      if (!drop.has(r.ctid)) return true;
+      this._minhashBandKeys.delete(`${r.profile}|${r.band_idx}|${r.band_hash}|${r.ctid}`);
+      return false;
+    });
+    this._phashCodes = this._phashCodes.filter((r) => {
+      if (!drop.has(r.ctid)) return true;
+      this._phashCodeKeys.delete(`${r.ctid}|${r.component_idx}|${r.frame}`);
+      return false;
+    });
+    for (const [k, list] of this._documentPassages) {
+      const keep = list.filter((r) => {
+        if (!drop.has(r.ctid)) return true;
+        this._documentPassageKeys.delete(`${k}|${r.owner}|${r.ctid}|${r.component_idx}`);
+        return false;
+      });
+      if (keep.length) this._documentPassages.set(k, keep); else this._documentPassages.delete(k);
+    }
+  }
   // The newest snapshot seq whose page still points at this index entry.
   getSitePageLastSeq(indexKey) {
     let last = null;
@@ -3141,6 +3168,11 @@ class SQLiteStore {
          VALUES (@page_key, @snapshot_tx, @domain, @seq, @url, @text_hash, @page_hash, @offsite, @changed, @kept, @paragraph_keys, @proof, @index_key, @index_hash, @created_at)`
       ),
       getSitePageLastSeq: this.db.prepare("SELECT MAX(seq) AS seq FROM site_page WHERE index_key=?"),
+      deleteSitePage: this.db.prepare("DELETE FROM site_page WHERE page_key=?"),
+      deleteIndexFingerprints: this.db.prepare("DELETE FROM perceptual_fingerprint WHERE tip_ctid=?"),
+      deleteIndexBands: this.db.prepare("DELETE FROM minhash_band WHERE tip_ctid=?"),
+      deleteIndexCodes: this.db.prepare("DELETE FROM phash_code WHERE tip_ctid=?"),
+      deleteIndexPassages: this.db.prepare("DELETE FROM document_passage WHERE tip_ctid=?"),
       getSitePage: this.db.prepare("SELECT * FROM site_page WHERE page_key=?"),
       listSitePages: this.db.prepare("SELECT * FROM site_page WHERE snapshot_tx=? ORDER BY page_key"),
       saveSiteIngest: this.db.prepare(
@@ -4152,6 +4184,21 @@ class SQLiteStore {
   getSitePageLastSeq(indexKey) {
     const r = this._stmts.getSitePageLastSeq.get(indexKey);
     return r && r.seq != null ? Number(r.seq) : null;
+  }
+  deleteSitePages(pageKeys) {
+    if (!pageKeys || !pageKeys.length) return;
+    this.db.transaction((list) => { for (const k of list) this._stmts.deleteSitePage.run(k); })(pageKeys);
+  }
+  deleteSiteIndexRows(ctids) {
+    if (!ctids || !ctids.length) return;
+    this.db.transaction((list) => {
+      for (const c of list) {
+        this._stmts.deleteIndexFingerprints.run(c);
+        this._stmts.deleteIndexBands.run(c);
+        this._stmts.deleteIndexCodes.run(c);
+        this._stmts.deleteIndexPassages.run(c);
+      }
+    })(ctids);
   }
   saveSiteIngest(row) { this._stmts.saveSiteIngest.run(_siteIngestRow(row)); }
   getSiteIngest(snapshotTx) { return this._stmts.getSiteIngest.get(snapshotTx) || null; }
@@ -5459,6 +5506,8 @@ function _buildDagHandle(store, config) {
     getSitePage: (pageKey) => store.getSitePage(pageKey),
     listSitePages: (snapshotTx) => store.listSitePages(snapshotTx),
     getSitePageLastSeq: (indexKey) => store.getSitePageLastSeq(indexKey),
+    deleteSitePages: (pageKeys) => store.deleteSitePages(pageKeys),
+    deleteSiteIndexRows: (ctids) => store.deleteSiteIndexRows(ctids),
     saveSiteIngest: (row) => store.saveSiteIngest(row),
     getSiteIngest: (snapshotTx) => store.getSiteIngest(snapshotTx),
     listSiteIngestsDue: (atMs) => store.listSiteIngestsDue(atMs),

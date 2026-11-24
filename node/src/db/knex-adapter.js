@@ -1680,6 +1680,25 @@ class KnexAdapter {
   async listSitePages(snapshotTx) {
     return this.knex("site_page").where({ snapshot_tx: snapshotTx }).orderBy("page_key").select("*");
   }
+  deleteSitePages(pageKeys) {
+    if (!pageKeys || !pageKeys.length) return;
+    this._ff(async () => {
+      for (let i = 0; i < pageKeys.length; i += BULK_INSERT_CHUNK_ROWS) {
+        await this.knex("site_page").whereIn("page_key", pageKeys.slice(i, i + BULK_INSERT_CHUNK_ROWS)).del();
+      }
+    });
+  }
+  deleteSiteIndexRows(ctids) {
+    if (!ctids || !ctids.length) return;
+    this._ff(async () => {
+      for (let i = 0; i < ctids.length; i += BULK_INSERT_CHUNK_ROWS) {
+        const chunk = ctids.slice(i, i + BULK_INSERT_CHUNK_ROWS);
+        for (const table of ["perceptual_fingerprint", "minhash_band", "phash_code", "document_passage"]) {
+          await this.knex(table).whereIn("tip_ctid", chunk).del();
+        }
+      }
+    });
+  }
   async getSitePageLastSeq(indexKey) {
     const r = await this.knex("site_page").where({ index_key: indexKey }).max({ seq: "seq" }).first();
     return r && r.seq != null ? Number(r.seq) : null;
