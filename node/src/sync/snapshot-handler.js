@@ -679,6 +679,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     }
     _snapInstallInProgress = true;
     _installFlagSince = nowMs();
+    const pausesOrdering = !!bullshark && typeof bullshark.pauseOrdering === "function";
+    if (pausesOrdering) bullshark.pauseOrdering();
     let markerArmed = false;   // in_progress written for this attempt
     let anyRowLanded = false;  // at least one batch reached the DB
 
@@ -1236,6 +1238,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // on error this only drops rows the retry will re-stream anyway.
       if (typeof dag.endBulkInstall === "function") dag.endBulkInstall();
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
+      if (pausesOrdering) {
+        try { bullshark.resumeOrdering(dag.getLatestRound()); }
+        catch (err) { log.error(`Snapshot: resuming commit ordering after install failed: ${err.message}`); }
+      }
     }
   }
 

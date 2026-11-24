@@ -75,6 +75,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
   // history. Cleared when the missing certs arrive (via onCertSaved) or when
   // the retry timer expires (fall back to best-effort commit with what we have).
   let _pendingAnchorCommit = null; // { voteRound, anchorCert, missingHashes, timer }
+  // A snapshot install prunes rows its cut lacks: a commit applied mid-install loses its
+  // effects but keeps its tx row, so replay skips it. Ordering waits for the install.
+  let _orderingPaused = false;
 
   // No-loss sweep before cert GC: rows go to the node-local tx_rejections table
   // (never part of the state root), so nodes may differ here without diverging.
@@ -98,6 +101,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     // committee_history row count to compute success rate.
     committee_rotation_proposals: 0,
     anchors_deferred_incomplete_dag: 0,  // anchor walks that parked due to missing parent certs
+    anchor_checks_paused: 0,             // anchor checks skipped while a snapshot install runs
     anchors_unblocked_by_cert: 0,        // parked anchors that resumed after missing cert arrived
     bft_time_violations: 0,              // anchors skipped for BFT-time monotonicity violations
   };
@@ -215,6 +219,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    * Check if the leader's certificate from the propose round is committed.
    */
   function _checkAnchorCommit(voteRound, { force = false } = {}) {
+    if (_orderingPaused) { _metrics.anchor_checks_paused++; return; }
     const proposeRound = voteRound - 1;
     const leader = _getLeader(proposeRound);
     if (!leader) {
@@ -1134,6 +1139,16 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
     /** Get the last committed round */
     lastCommittedRound: () => _lastCommittedRound,
+
+    pauseOrdering() { _orderingPaused = true; },
+
+    /** Resume after an install and commit, in order, the anchors that arrived meanwhile. */
+    resumeOrdering(uptoRound) {
+      _orderingPaused = false;
+      return driveCommit(uptoRound);
+    },
+
+    orderingPaused: () => _orderingPaused,
 
     /**
      * Mark all certificates up to a round as already ordered.
