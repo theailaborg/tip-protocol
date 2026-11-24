@@ -23,7 +23,7 @@ const { createStreamPair } = require("./stream-pair");
 // onFirstServerFrame runs once the header has left the server, before the later phases are built.
 // midStream runs once the client has read half the stream (past the header, mid-install).
 async function attemptInstall(sourceDag, destDag, {
-  chunkSize = 8, truncateAfterFraction = 1, onFirstServerFrame = null, destOptions = {}, midStream = null,
+  chunkSize = 8, truncateAfterFraction = 1, onFirstServerFrame = null, destOptions = {}, midStream = null, requestOptions = {},
 } = {}) {
   const { client, server } = createStreamPair();
   let streamBytes = 0;
@@ -72,7 +72,7 @@ async function attemptInstall(sourceDag, destDag, {
 
   const results = await Promise.allSettled([
     sourceHandler._handleIncomingSnapshot(server, "test-client"),
-    destHandler.requestSnapshotFromPeer("test-server", {}),
+    destHandler.requestSnapshotFromPeer("test-server", requestOptions),
   ]);
   const clientResult = results[1];
   if (clientResult.status === "rejected") throw clientResult.reason;

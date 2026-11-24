@@ -440,7 +440,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
    *
    * @returns {"snapshot_installed"|"snapshot_failed"|"snapshot_required_no_handler"}
    */
-  async function _runSnapshotFallback(peerId, syncResult, selfState) {
+  async function _runSnapshotFallback(peerId, syncResult, selfState, { allowRegression = false } = {}) {
     if (!snapshotHandler || typeof snapshotHandler.requestSnapshotFromPeer !== "function") {
       // Backward-compat: AE wired without a snapshot handler. Fall back
       // to old behavior — log and let the next AE cycle retry; halt-gate
@@ -468,7 +468,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // Never all-default: minRound 0 + empty requesterNodeId encodes to ZERO bytes
       // in proto3 and the serve rejects it as an empty request.
       const requesterNodeId = getSelfNodeId ? (getSelfNodeId() || "") : "";
-      const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound, requesterNodeId });
+      const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound, requesterNodeId, allowRegression });
       // null means the handler skipped (already installed or in-progress guard fired).
       // Treat as failure so the caller can try the next peer rather than falsely
       // reporting success and setting the recovery cooldown clock.
@@ -1020,13 +1020,13 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           }
         }
         _log.notice(`anti-entropy: auto-recovery: syncing snapshot from ${libp2pPeerId.slice(0, 12)}`);
-        let result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        let result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState, { allowRegression: true });
         let attempt = 0;
         while (result === "snapshot_failed" && attempt < SNAPSHOT_BUSY_RETRY_ATTEMPTS) {
           attempt++;
           _log.warn(`anti-entropy: auto-recovery: ${libp2pPeerId.slice(0, 12)} busy — retrying in ${SNAPSHOT_BUSY_RETRY_MS}ms (attempt ${attempt}/${SNAPSHOT_BUSY_RETRY_ATTEMPTS})`);
           await new Promise(r => setTimeout(r, SNAPSHOT_BUSY_RETRY_MS));
-          result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+          result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState, { allowRegression: true });
         }
         if (result === "snapshot_installed") {
           _lastAutoRecoveryAt = nowMs();
@@ -1049,7 +1049,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
             `anti-entropy: auto-recovery: all ${rootDriftedPeers.length} drifted peer(s) unanimously ` +
             `agree on new root ${newRoot.slice(0, 16)} — retrying install from ${fallbackPeer.slice(0, 12)}`
           );
-          const result = await _runSnapshotFallback(fallbackPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+          const result = await _runSnapshotFallback(fallbackPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState, { allowRegression: true });
           if (result === "snapshot_installed") {
             _lastAutoRecoveryAt = nowMs();
             _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${fallbackPeer.slice(0, 12)} (drifted-root fallback), resuming consensus`);
