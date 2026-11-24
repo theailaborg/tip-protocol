@@ -243,6 +243,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
       dropped += drop.length;
       dag.saveSiteIngest({ ...st, state: PRUNED, pages: rows.length - drop.length, next_attempt_at: Number.MAX_SAFE_INTEGER, updated_at: now() });
     }
+    await dag.flush();
     log.info?.(`site ingest: ${domain}: pruned ${older.length} snapshot(s) beyond the newest ${keepSnapshots}, ${dropped} page rows removed`);
     return older.length;
   }
@@ -403,6 +404,9 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
       dag.saveSiteIngest(row);
       log.info?.(`site ingest: ${record.domain} seq ${record.seq} indexed, ${out.pages} pages (${out.offsite} off-site) from ${source}`);
       try {
+        // Writes are queued and reads go to the store: the "done" row must land
+        // first, or this pass would not count the snapshot just indexed.
+        await dag.flush();
         await pruneDomain(record.domain);
       } catch (err) {
         if (err.code !== "ingest_stopped") log.warn?.(`site ingest: pruning ${record.domain} failed: ${err.message}`);

@@ -538,6 +538,32 @@ describe("pruning old snapshots", () => {
   });
 });
 
+describe("pruning on a store whose writes land later", () => {
+  test("the snapshot just indexed counts in the same pass, even when its state write is still queued", async () => {
+    const t0 = nowMs() - 70 * MIN;
+    const fx = setup({ keep: 2, routes: { [route(real)]: real.bytes } });
+    // The Postgres store queues writes and reads from the database: mimic that.
+    const queued = [];
+    const save = fx.dag.saveSiteIngest.bind(fx.dag);
+    fx.dag.saveSiteIngest = (row) => { queued.push(row); };
+    const flush = fx.dag.flush.bind(fx.dag);
+    fx.dag.flush = async () => { for (const r of queued.splice(0)) save(r); await flush(); };
+    const v2 = repack({ seq: 2 });
+    const v3 = repack({ seq: 3 });
+    fx.fetchImpl.calls.length = 0;
+    const routes = { [route(real)]: real.bytes, [route(v2)]: v2.bytes, [route(v3)]: v3.bytes };
+    const fetchImpl = fakeFetch(routes);
+    const siteIngest = createSiteIngest({ dag: fx.dag, sources: [SOURCE], fetchImpl, log: fx.log, keepSnapshots: 2 });
+    const handler = createCommitHandler({ dag: fx.dag, nodeId: NODE_ID, siteIngest });
+    const fx2 = { ...fx, siteIngest, handler };
+    const tx1 = await commitSnapshot(fx2, real, { ts: t0, capturedAt: t0 - MIN });
+    const tx2 = await commitSnapshot(fx2, v2, { seq: 2, prev: tx1.tx_id, ts: t0 + 20 * MIN, capturedAt: t0 + 15 * MIN });
+    await commitSnapshot(fx2, v3, { seq: 3, prev: tx2.tx_id, ts: t0 + 40 * MIN, capturedAt: t0 + 35 * MIN });
+    await fx.dag.flush();
+    expect((await fx.dag.getSiteIngest(tx1.tx_id)).state).toBe("pruned");
+  });
+});
+
 describe("a retry after a part-way run", () => {
   test("starts clean, so no page keeps a stale pointer into the index", async () => {
     const t0 = nowMs() - 40 * MIN;
