@@ -20,8 +20,11 @@ const { createStreamPair } = require("./stream-pair");
 // optionally truncates at `truncateAfterFraction` of the total (a fraction, so
 // the cut lands past the header regardless of absolute size). A truncated
 // stream ends mid-frame / before END, exactly a dropped connection.
-async function attemptInstall(sourceDag, destDag, { chunkSize = 8, truncateAfterFraction = 1 } = {}) {
+// `midStream` runs once when the client has read half the stream (past the
+// header, mid-install); `destBullshark` is wired into the installing handler.
+async function attemptInstall(sourceDag, destDag, { chunkSize = 8, truncateAfterFraction = 1, destBullshark = null, midStream = null } = {}) {
   const { client, server } = createStreamPair();
+  let streamBytes = 0;
 
   const origServerSink = server.sink;
   server.sink = async (src) => {
@@ -30,11 +33,25 @@ async function attemptInstall(sourceDag, destDag, { chunkSize = 8, truncateAfter
       for await (const f of src) parts.push(Buffer.from(f));
       const whole = Buffer.concat(parts);
       const limit = Math.floor(whole.length * Math.min(1, truncateAfterFraction));
+      streamBytes = limit;
       for (let off = 0; off < limit; off += chunkSize) {
         yield whole.subarray(off, Math.min(off + chunkSize, limit));
       }
     })());
   };
+
+  if (midStream) {
+    const src = client.source;
+    let read = 0;
+    let fired = false;
+    client.source = (async function* () {
+      for await (const chunk of src) {
+        read += chunk.length;
+        if (!fired && streamBytes > 0 && read >= streamBytes / 2) { fired = true; await midStream(); }
+        yield chunk;
+      }
+    })();
+  }
 
   const sourceHandler = createSnapshotHandler({
     dag: sourceDag,
@@ -45,6 +62,7 @@ async function attemptInstall(sourceDag, destDag, { chunkSize = 8, truncateAfter
     dag: destDag,
     network: { node: {}, openStream: async () => client },
     isAuthorizedPeer: () => true,
+    bullshark: destBullshark,
   });
 
   const results = await Promise.allSettled([

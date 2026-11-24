@@ -672,6 +672,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     }
     _snapInstallInProgress = true;
     _installFlagSince = nowMs();
+    const pausesOrdering = !!bullshark && typeof bullshark.pauseOrdering === "function";
+    if (pausesOrdering) bullshark.pauseOrdering();
     let markerArmed = false;   // in_progress written for this attempt
     let anyRowLanded = false;  // at least one batch reached the DB
 
@@ -1139,6 +1141,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           log.error(`Snapshot: onSnapshotInstalled callback failed: ${err.message} — node may experience BFT-time violations or stale pending commits until restart`);
         }
       }
+      // Commits resumed in the finally must carry the network's anchor count.
+      if (pausesOrdering && typeof bullshark.setConsensusIndex === "function") {
+        bullshark.setConsensusIndex(Math.max(peerConsensusIndex, Number(header.consensusIndex || 0)));
+      }
 
       _snapInstalled = true;
       _snapInstallInProgress = false;
@@ -1198,6 +1204,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // on error this only drops rows the retry will re-stream anyway.
       if (typeof dag.endBulkInstall === "function") dag.endBulkInstall();
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
+      if (pausesOrdering) {
+        try { bullshark.resumeOrdering(dag.getLatestRound()); }
+        catch (err) { log.error(`Snapshot: resuming commit ordering after install failed: ${err.message}`); }
+      }
     }
   }
 

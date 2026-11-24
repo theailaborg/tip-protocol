@@ -141,6 +141,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   // Key: TIP node_id. Value: { round, rootKey, firstSeenMs }.
   const _peerDivergenceFirstSeen = new Map();
 
+  // While self is non-ready: when a ready peer at our committed round first reported
+  // a different root, for our current (committed_round, root). Null when none.
+  let _selfDivergence = null;
+
   // Distinct peers reporting divergence at our (committed_round, state_root).
   // Key: `${round}:${rootPrefix}`. Value: Set<peerNodeId>. Old-round entries
   // are pruned as committed_round advances — divergence observations at a
@@ -756,6 +760,20 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     return false;
   }
 
+  // A genuine catch-up moves committed_round (new key, timer restarts) and a live
+  // install is a partial blend, so only a node stuck at one wrong root outlives this.
+  function _selfDivergencePersistent(round, root) {
+    const installing = _snapshotResyncInFlight
+      || (snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling());
+    if (installing) { _selfDivergence = null; return false; }
+    const key = `${round}:${root}`;
+    if (!_selfDivergence || _selfDivergence.key !== key) {
+      _selfDivergence = { key, firstSeenMs: nowMs() };
+      return false;
+    }
+    return nowMs() - _selfDivergence.firstSeenMs > CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS;
+  }
+
   function _clearDivergenceTracker(peerNodeId) {
     if (peerNodeId && _peerDivergenceFirstSeen.has(peerNodeId)) {
       _peerDivergenceFirstSeen.delete(peerNodeId);
@@ -1296,23 +1314,22 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         ? String(narwhal.joinState() || "ready")
         : "ready";
       const peerJoinState = String(peerStatus.join_state || "ready");
-      // Self non-ready (syncing / catching_up) is INVISIBLE to consensus: it
-      // produces no batches and no acks, so a same-round root mismatch here is a
-      // catch-up artifact (the mirror is partial during snapshot install / cert-
-      // tail replay, or the bullshark committed-round counter merely lags a busy
-      // cluster while the actual state is identical), never a byzantine fault.
-      // Self-halting on it only bounces the joiner into an endless resync
-      // treadmill (and falsely lights up the divergence metric), and it
-      // short-circuits the markCaughtUp promotion so the node can never reach
-      // ready. Grace indefinitely until self is `ready`; the byz-fork check below
-      // still fires the moment self promotes and a genuine mismatch remains , a
-      // non-ready node cannot harm consensus, so deferring the check is safe.
+      // Self non-ready is invisible to consensus and its root is a partial blend while it
+      // installs or replays, so the mismatch is graced; but graced forever a node whose
+      // state really differs never promotes (52 h live). Past the grace it is divergent.
       if (selfJoinState !== "ready") {
-        _log.debug(
-          `anti-entropy: round=${selfCommitted} state-mismatch while self ${selfJoinState} ` +
-          `with peer ${peerLabel} , catch-up artifact, gracing (self invisible to consensus)`
+        if (peerJoinState !== "ready" || !_selfDivergencePersistent(selfCommitted, selfRoot)) {
+          _log.debug(
+            `anti-entropy: round=${selfCommitted} state-mismatch while self ${selfJoinState} ` +
+            `with peer ${peerLabel} , catch-up artifact, gracing (self invisible to consensus)`
+          );
+          return "equal";
+        }
+        _log.warn(
+          `anti-entropy: self ${selfJoinState} at committed_round=${selfCommitted} still disagrees with ready peer ${peerLabel} ` +
+          `after ${Math.round(CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS / 1000)}s (self.root=${selfRoot.slice(0, 16)} ` +
+          `peer.root=${peerRoot.slice(0, 16)}) , treating as divergence`
         );
-        return "equal";
       }
       if (peerJoinState !== "ready") {
         const persistent = _persistentDivergence(peerNode, peerJoinState);
@@ -1371,6 +1388,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // recovered from a transient race isn't held against the grace
     // window if it ever hits another mismatch later.
     _clearDivergenceTracker(peerStatus.node_id || peerId);
+    if (peerCommitted === selfCommitted && selfRoot && selfRoot === peerRoot) _selfDivergence = null;
 
     // Self-healing halt clear. When we're halted with byzantine_fork and
     // this peer's root now matches ours at the same committed_round, check

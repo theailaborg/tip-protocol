@@ -248,3 +248,44 @@ describe("non-destructive install: boot recovery", () => {
     expect(String(destDag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY))).toMatch(/^in_progress/);
   });
 });
+
+describe("non-destructive install: a commit landing while the snapshot streams", () => {
+  // Stand-in for bullshark's ordering: an anchor commit applies at once unless paused.
+  function commitEngine(dag) {
+    let paused = false;
+    const pending = [];
+    const apply = (post) => { post.txId = dag.addTx(post.tx).tx_id; dag.saveContent(post.content); };
+    return {
+      pauseOrdering() { paused = true; },
+      resumeOrdering() { paused = false; while (pending.length) apply(pending.shift()); },
+      setConsensusIndex() { },
+      commit(post) { if (paused) pending.push(post); else apply(post); },
+    };
+  }
+
+  test("the post survives: commits wait for the install instead of being pruned by its reconcile", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const engine = commitEngine(destDag);
+    const ctid = "tip://c/OH-midinstall0001-0001";
+    const post = {
+      tx: { tx_type: "REGISTER_CONTENT", timestamp: T0 + 50, data: { ctid }, signature: "00" },
+      content: {
+        ctid, author_tip_id: "tip://id/US-midinstall001", signer_tip_id: "tip://id/US-midinstall001",
+        origin_code: "OH", content_hash: "cd".repeat(32), cna_version: "2.2", authors: [],
+        attribution_mode: "signer_authored", extras: {}, registered_urls: [], status: "registered", registered_at: T0 + 50,
+      },
+    };
+
+    await attemptInstall(fx.sourceDag, destDag, {
+      chunkSize: 16,
+      destBullshark: engine,
+      midStream: async () => { engine.commit(post); await destDag.flush(); },
+    });
+
+    // Before the fix: content row pruned at END, tx row kept, so replay skips it forever.
+    expect(post.txId).toBeTruthy();
+    expect(destDag.getTx(post.txId)).not.toBeNull();
+    expect(destDag.getContent(ctid)).toBeTruthy();
+  });
+});
