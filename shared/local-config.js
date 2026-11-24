@@ -34,6 +34,9 @@ const LOCAL_CONFIG = Object.freeze({
   SNAPSHOT_BUSY_RETRY_MS:              _num("TIP_SNAPSHOT_BUSY_RETRY_MS",              5000),
   ACK_STREAM_TIMEOUT_MS:               _num("TIP_ACK_STREAM_TIMEOUT_MS",               3000),
   SYNC_DIVERGENCE_GRACE_MS:            _num("TIP_SYNC_DIVERGENCE_GRACE_MS",            30000),
+  // A non-ready node still disagreeing with ready peers at the same committed round
+  // after this long is divergent, not mid-replay (longer than the 60 s anchor defer).
+  SELF_SYNC_DIVERGENCE_GRACE_MS:       _num("TIP_SELF_SYNC_DIVERGENCE_GRACE_MS",       300000),
   FRONTIER_RECONCILE_LOOKBACK_ROUNDS:  _num("TIP_FRONTIER_RECONCILE_LOOKBACK_ROUNDS",  200),
   ROTATION_COORD_REBROADCAST_INTERVAL_MS: _num("TIP_ROTATION_COORD_REBROADCAST_INTERVAL_MS", 1500),
   ROTATION_REPAIR_TIMEOUT_MS:          _num("TIP_ROTATION_REPAIR_TIMEOUT_MS",          5000),

@@ -408,6 +408,7 @@ const CONSENSUS = {
   // be missing at 60s and require a snapshot resync.
   get BULLSHARK_DEFER_MS() { return _c().bullshark_defer_ms ?? 60000; },
   get SYNC_DIVERGENCE_GRACE_MS() { return LC.SYNC_DIVERGENCE_GRACE_MS; },
+  get SELF_SYNC_DIVERGENCE_GRACE_MS() { return LC.SELF_SYNC_DIVERGENCE_GRACE_MS; },
   // Sub-quorum escape: when narwhal is ready but has made no round progress
   // for > this duration, anti-entropy fires a snapshot resync to reset join
   // state + reconnect. Catches the "silently dropped libp2p connection
