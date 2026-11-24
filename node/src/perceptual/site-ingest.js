@@ -192,6 +192,20 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     if (took >= 1) await new Promise((resolve) => setTimeout(resolve, took));
   }
 
+  // Drops what an earlier part-way run left for this snapshot (its page rows and the
+  // index rows they own), so a retry rebuilds every row with this run's reuse choices.
+  async function _clearPartial(snapshotTx) {
+    const rows = await dag.listSitePages(snapshotTx);
+    for (let i = 0; i < rows.length; i += SITE_INGEST.PRUNE_BATCH) {
+      const batch = rows.slice(i, i + SITE_INGEST.PRUNE_BATCH);
+      const owned = batch.filter((r) => (r.index_key || r.page_key) === r.page_key).map((r) => r.page_key);
+      await _paced(() => {
+        dag.deleteSiteIndexRows(owned);
+        dag.deleteSitePages(batch.map((r) => r.page_key));
+      });
+    }
+  }
+
   // Keeps the index of a site's newest keepSnapshots indexed snapshots. An older one
   // loses its pages, and its index rows unless a kept page still points at them; a
   // pruned snapshot still holding such rows is revisited on later passes.
@@ -375,6 +389,7 @@ function createSiteIngest({ dag, sources = [], fetchImpl = globalThis.fetch, log
     }
     try {
       const { bytes, source } = await fetchPack(record);
+      if (prior && (prior.state === INDEXING || prior.state === FAILED)) await _clearPartial(snapshotTx);
       const indexing = (pages) => dag.saveSiteIngest({ ...base, state: INDEXING, pages, next_attempt_at: 0, last_error: null, source });
       indexing(0);
       let saved = now();

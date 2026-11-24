@@ -538,6 +538,31 @@ describe("pruning old snapshots", () => {
   });
 });
 
+describe("a retry after a part-way run", () => {
+  test("starts clean, so no page keeps a stale pointer into the index", async () => {
+    const t0 = nowMs() - 40 * MIN;
+    const v2 = repack({ seq: 2 });
+    const fx = setup({ routes: { [route(real)]: real.bytes, [route(v2)]: v2.bytes } });
+    const tx1 = await commitSnapshot(fx, real, { ts: t0, capturedAt: t0 - MIN });
+    const tx2 = await commitSnapshot(fx, v2, { seq: 2, prev: tx1.tx_id, ts: t0 + 20 * MIN, capturedAt: t0 + 15 * MIN });
+    const key = pageKeyFor(tx2.tx_id, firstUrl);
+    const row = await fx.dag.getSitePage(key);
+    expect(row.index_key).toBe(pageKeyFor(tx1.tx_id, firstUrl));
+
+    // What a part-way run could leave: a page row pointing at index rows that are gone.
+    fx.dag.deleteSitePages([key]);
+    fx.dag.saveSitePages([{ ...row, index_key: `site:${hex("d")}:0000000000000000` }]);
+    fx.dag.saveSiteIngest({ ...(await fx.dag.getSiteIngest(tx2.tx_id)), state: "indexing", pages: 1, next_attempt_at: 0 });
+
+    const restarted = createSiteIngest({ dag: fx.dag, sources: [SOURCE], fetchImpl: fx.fetchImpl, log: fx.log });
+    await restarted.reconcile();
+    await restarted.idle();
+    expect(await fx.dag.getSiteIngest(tx2.tx_id)).toEqual(expect.objectContaining({ state: "done", pages: 30 }));
+    expect((await fx.dag.getSitePage(key)).index_key).toBe(pageKeyFor(tx1.tx_id, firstUrl));
+    expect(await fx.dag.listSitePages(tx2.tx_id)).toHaveLength(30);
+  });
+});
+
 describe("private snapshots", () => {
   test("the record commits but its pack is never fetched, and a page read says why", async () => {
     const fx = setup({ routes: { [route(real)]: real.bytes } });
