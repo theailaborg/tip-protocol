@@ -79,8 +79,9 @@ upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside produ
   through paragraph keys weighted by how many site owners hold them; returned apart from
   content as `sites` (`GET /v1/content/:ctid/similar`) and `near_duplicate_sites`
   (`POST /v1/content/register`).
-- tip-content-fingerprint 2.8.0 (`cf-web-1`, the v2.8.0 release tarball); 2.7.1 to 2.8.0
-  changes nothing the node already used.
+- tip-content-fingerprint 2.9.0 (`cf-web-1`, the v2.9.0 release tarball, SHAKE-256
+  `3b963bbf1959b664f1ba1253dd634ed6890720c8f623c897a6a3ca0d6854929f`); 2.7.1 to 2.9.0
+  changes nothing the node already used. Page proofs come from its `web.merkleTree`.
 
 **Node 2.9.10: a licensed organization's signed emails are one pool** (API time only,
 no consensus change and no activation; mixed versions are safe)

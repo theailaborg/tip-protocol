@@ -1,6 +1,6 @@
 # Site snapshots on the node: `SITE_SNAPSHOT` spec
 
-Status: the record, its rules, state and API, pack ingest, the page lookup and similar search for site pages ("built") are implemented, not yet released, on tip-content-fingerprint 2.8.0 (vendored release tarball). Paragraph keys for ordinary posts ("next") wait for the library's `cf-text-4`. Consensus change, gated by an activation date. Part of the **Website Archive** project.
+Status: the record, its rules, state and API, pack ingest, the page lookup and similar search for site pages ("built") are implemented, not yet released, on tip-content-fingerprint 2.9.0 (vendored release tarball). Paragraph keys for ordinary posts ("next") wait for the library's `cf-text-4`. Consensus change, gated by an activation date. Part of the **Website Archive** project.
 
 **Bindings are agreed by the committee** (#392). A snapshot is accepted only from a site's binding owner, and from the same activation a binding (or its renewal) applies only once ceil(2n/3) of the committee have each checked the owner's DNS record or well-known file within an hour, so no single node or operator can bind a site. See `docs/API.md`, "Domain bindings".
 
@@ -72,12 +72,13 @@ The node does not recompute roots; it stores and indexes them. Verifiers (viewer
 
 **Every hash in the record and the pack is SHAKE-256, 32 bytes, hex**, the TIP rule (`shared/crypto.js`, `docs/CONTENT_SIGNING.md`). SHA-256 appears only inside the WACZ format, which the crawler writes (the file digests listed in `datapackage.json`, WARC record digests). A verifier goes from the record, to SHAKE-256 of `datapackage.json` (`wacz_hash`), to the SHA-256 of each file listed in it.
 
-Golden vectors: `tip-content-fingerprint/test/web-vectors.json` (Test 1, theailab.org, 30 pages: root `15bb6f0d2d36256e0250b92e318c00f6098538002974be2ee62abafe68d01f8c`). The 2.8.0 package ships them and the Test 1 capture they name, so node tests replay Test 1 from `node_modules` (`require.resolve("tip-content-fingerprint/test/fixtures/web/theailab-test-1.json.gz")`).
+Golden vectors: `tip-content-fingerprint/test/web-vectors.json` (Test 1, theailab.org, 30 pages: root `15bb6f0d2d36256e0250b92e318c00f6098538002974be2ee62abafe68d01f8c`). The package (2.8.0 and later) ships them and the Test 1 capture they name, so node tests replay Test 1 from `node_modules` (`require.resolve("tip-content-fingerprint/test/fixtures/web/theailab-test-1.json.gz")`).
 
-Library version: the node bundles the v2.8.0 release tarball (`node/vendor/tip-content-fingerprint-2.8.0.tgz`, SHA-256 `8a630bc4ee5a3b3a35e96bf23386864298d17f54406f646645eb0c1a88aecf91`, the release asset's checksum). It keeps `cf-text-3` and the default LSH bands, and its exports map keeps the node's deep imports working; the full suite gives the same result on 2.7.1 and 2.8.0.
+Library version: the node bundles the v2.9.0 release tarball (`node/vendor/tip-content-fingerprint-2.9.0.tgz`, SHAKE-256 `3b963bbf1959b664f1ba1253dd634ed6890720c8f623c897a6a3ca0d6854929f`, as printed on the release page). It keeps `cf-text-3` and the default LSH bands, and its exports map keeps the node's deep imports working. 2.9.0 adds `web.merkleTree` and changes no `cf-web-1` rule, root or proof.
 
-Library functions the node uses (2.8.0):
+Library functions the node uses (2.9.0):
 - **`web.readPack(bytes)`**, only after `shake256(bytes) === pack_hash`. It reads every gzip member (a pack written in several members loses no pages) and throws on a header whose `web_profile` is not `cf-web-1` or that lacks `domain` or `seq >= 1`.
+- **`web.merkleTree(leaves)`** on the pack worker: one tree per snapshot, then `proof(url)` for every page, so each page's proof is stored once at ingest.
 - **`web.verifyPage(url, textHash, proof, root)`** whenever the node checks a page against a root (evidence, page reads). It recomputes the leaf from the URL and the text hash. `web.verifyProof(leaf, proof, root)` takes the leaf as given, so it proves nothing about the URL or the text unless the caller computed the leaf.
 
 ---

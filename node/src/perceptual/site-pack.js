@@ -61,29 +61,14 @@ function decodeProof(text) {
   return out;
 }
 
-/**
- * Every leaf's Merkle proof from one pass over the tree, so a page read never
- * rebuilds it. levels and byCodePoint come from the pinned library copy, and
- * each proof is checked with the public verifyPage; one that fails is null.
- */
+// Every leaf's Merkle proof from one tree, so a page read never rebuilds it. Each
+// proof is checked with verifyPage; one that fails is stored as none.
 function pageProofs(record, leaves) {
-  const { levels, byCodePoint } = web._internals;
-  const sorted = leaves.map((p, i) => ({ i, url: p.url, leaf: web.leafHash(p.url, p.text_hash) }))
-    .sort((a, b) => byCodePoint(a.url, b.url));
-  const lv = levels(sorted.map((x) => x.leaf));
-  const out = new Array(leaves.length).fill(null);
-  sorted.forEach((x, pos) => {
-    const proof = [];
-    let idx = pos;
-    for (let l = 0; l < lv.length - 1; l++) {
-      const sib = idx ^ 1;
-      if (sib < lv[l].length) proof.push({ side: sib < idx ? "left" : "right", hash: lv[l][sib] });
-      idx >>= 1;
-    }
-    const page = leaves[x.i];
-    if (web.verifyPage(page.url, page.text_hash, proof, record.root)) out[x.i] = encodeProof(proof);
+  const tree = web.merkleTree(leaves.map((p) => ({ url: p.url, leaf: web.leafHash(p.url, p.text_hash) })));
+  return leaves.map((page) => {
+    const proof = tree.proof(page.url);
+    return web.verifyPage(page.url, page.text_hash, proof, record.root) ? encodeProof(proof) : null;
   });
-  return out;
 }
 
 // Everything a page contributes to the similar index. Equal hashes on the same URL
