@@ -385,10 +385,9 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const snapshotHandler = createSnapshotHandler({
     dag, network, isAuthorizedPeer, bullshark, narwhal,
     // Called synchronously inside snapshot-handler, right after narwhal.markSnapshotInstalled,
-    // so cancelPendingCommit + resetBftTimeFloor fire before any anti-entropy tick
-    // can re-detect a stale deferred commit or BFT-time violation (SI-2 / CI-1).
-    // peerCommittedRound (not snapshotRound) is passed so _lastCommittedRound
-    // advances to the true peer head (SI-5).
+    // so alignToSnapshot + resetBftTimeFloor fire before any anti-entropy tick can
+    // re-detect a stale deferred commit or BFT-time violation (SI-2 / CI-1). The boundary is
+    // max(peerCommittedRound, snapshotRound): the frontier moves to it, down as well as up.
     onSnapshotInstalled: (boundaryRound, consensusIndex) => {
       if (bullshark) {
         // Exact, not only forward: commits made past the snapshot must be redone, and new ones

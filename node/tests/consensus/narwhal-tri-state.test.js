@@ -301,6 +301,36 @@ describe("narwhal tri-state join FSM", () => {
     }
   });
 
+  test("a second catching_up cycle under a still-running watchdog warns again", () => {
+    jest.useFakeTimers();
+    const lines = [];
+    const spies = ["log", "warn", "error", "info"].map((m) => jest.spyOn(console, m).mockImplementation((...a) => lines.push(a.join(" "))));
+    try {
+      const { narwhal, dag } = buildNarwhal();
+      const stuck = (l) => /cert tail complete for \d+s but not promoted/.test(l);
+      const cycle = (target) => {
+        narwhal.enterSyncMode();
+        narwhal.markSnapshotInstalled(target - 50, target);
+        dag.saveCertificate({
+          hash: shake256(`cert:${target}:self`), round: target, author_node_id: SELF_ID,
+          batch: { round: target, author_node_id: SELF_ID, txs: [], signature: "00" },
+          acknowledgments: [], parent_hashes: [], signature: "00", timestamp: 1767225600000 + target,
+        });
+        jest.advanceTimersByTime(CONSENSUS.ROUND_TIMEOUT_MS * 11 + CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS * 2 + 5000);
+      };
+      narwhal.enterSyncMode();
+      narwhal.start();
+      cycle(150);
+      expect(lines.filter(stuck)).toHaveLength(1);
+      cycle(400);
+      expect(lines.filter(stuck)).toHaveLength(2);
+      narwhal.stop();
+    } finally {
+      spies.forEach((s) => s.mockRestore());
+      jest.useRealTimers();
+    }
+  });
+
   test("watchdog leaves catching_up alone when within threshold", () => {
     jest.useFakeTimers();
     try {

@@ -544,7 +544,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         `will retry (not forcing ready without state)`
       );
       // Bug 3: cancel any deferred anchor timer that was running before this
-      // install attempt. On success, onSnapshotInstalled calls cancelPendingCommit.
+      // install attempt. On success, onSnapshotInstalled aligns bullshark to the snapshot, which cancels it.
       // On failure, nothing cancels it — the stale timer can fire later and trigger
       // another resync loop.
       if (_cancelPendingCommit) {
