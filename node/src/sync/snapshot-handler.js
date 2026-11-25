@@ -1143,11 +1143,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         await dag.flush();
         log.notice(`Snapshot: reconcile pruned ${prunedRows.length} stale local row(s) absent from the snapshot`);
       }
+      const streamedRotations = new Set(rotationRows.map(r => Number(r.rotation_number)));
+      if (streamedRotations.size > 0) {
+        const droppedRotations = await dag.pruneCommitteeRotationsAfter(Math.max(...streamedRotations));
+        if (droppedRotations.length > 0) {
+          log.notice(`Snapshot: reconcile dropped local rotation(s) ${droppedRotations.join(",")} past the snapshot's history`);
+        }
+      }
       // A streamed rotation tx skipped as a duplicate of ours (same rotation, same payload) stands
-      // for our own copy, so that copy stays.
+      // for our own copy, so that copy stays; a rotation the snapshot did not ship does not.
       for (const tx of dag.getTxsByType(TX_TYPES.COMMITTEE_ROTATION)) {
         const rn = tx.data?.rotation_number;
-        const installedRotation = rn != null ? dag.getCommitteeRotation(rn) : null;
+        if (rn == null || !streamedRotations.has(Number(rn))) continue;
+        const installedRotation = dag.getCommitteeRotation(rn);
         if (installedRotation && installedRotation.payload_hash === tx.data?.payload_hash) streamedTxIds.add(tx.tx_id);
       }
       const prunedTxs = await dag.pruneTransactionsExcept(streamedTxIds);

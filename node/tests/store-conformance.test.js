@@ -646,6 +646,24 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(rotations).toEqual([...rotations].sort((a, b) => a - b));
   });
 
+  test("pruneCommitteeRotationsAfter drops only the rotations past the given one", async () => {
+    const dag = await makeDag();
+    const mkRotation = (rn, effectiveRound) => ({
+      rotation_number: rn, effective_round: effectiveRound, committee: ["n1", "n2", "n3"],
+      prev_rotation: rn - 1, signer_node_ids: ["n1", "n2", "n3"], signatures: [], payload_hash: `ph-${rn}`, committed_at: T0,
+    });
+    dag.saveCommitteeRotation(mkRotation(17, 1000));
+    dag.saveCommitteeRotation(mkRotation(18, 2000));
+    dag.saveCommitteeRotation(mkRotation(19, 3000));
+
+    expect((await dag.pruneCommitteeRotationsAfter(17)).sort((a, b) => a - b)).toEqual([18, 19]);
+    await dag.flush();
+    expect(dag.getCommitteeRotation(18)).toBeFalsy();
+    expect(dag.getCommitteeRotation(17)).toBeTruthy();
+    expect(dag.getLatestRotation().rotation_number).toBe(17);
+    expect(await dag.pruneCommitteeRotationsAfter(17)).toEqual([]);
+  });
+
   // ── 11. Domain bindings + platform links ────────────────────────────────
 
   test("domain bindings and platform links round-trip; link status update merges", async () => {

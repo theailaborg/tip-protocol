@@ -2230,6 +2230,13 @@ class MemoryStore {
   }
   // Snapshot install: drop tx rows the attested history lacks. Catch-up skips a tx it already holds
   // as committed, so a row from past the cut would never have its effects applied.
+  // Snapshot install: rotations past the snapshot's latest are a fork the network never made;
+  // left in place, the latest rotation (and so the committee) would stay this node's own.
+  pruneCommitteeRotationsAfter(rotationNumber) {
+    const removed = [...this._committeeHistory.keys()].filter(rn => rn > rotationNumber);
+    for (const rn of removed) this._committeeHistory.delete(rn);
+    return removed;
+  }
   pruneTransactionsExcept(keepIds) {
     const removed = [...this._txs.keys()].filter(id => !keepIds.has(id));
     for (const id of removed) this._txs.delete(id);
@@ -4893,6 +4900,11 @@ class SQLiteStore {
     for (const r of rows) del.run(r.tx_id);
     return rows.map(r => r.tx_id);
   }
+  pruneCommitteeRotationsAfter(rotationNumber) {
+    const removed = this.db.prepare("SELECT rotation_number FROM committee_history WHERE rotation_number > ?").all(rotationNumber).map(r => r.rotation_number);
+    if (removed.length > 0) this.db.prepare("DELETE FROM committee_history WHERE rotation_number > ?").run(rotationNumber);
+    return removed;
+  }
   pruneTransactionsExcept(keepIds) {
     const removed = this.db.prepare("SELECT tx_id FROM transactions").all().map(r => r.tx_id).filter(id => !keepIds.has(id));
     const del = this.db.prepare("DELETE FROM transactions WHERE tx_id=?");
@@ -5678,6 +5690,7 @@ function _buildDagHandle(store, config) {
     deleteMempoolTxs: (txIds) => store.deleteMempoolTxs(txIds),
     pruneSupersededContentTxs: () => typeof store.pruneSupersededContentTxs === "function" ? store.pruneSupersededContentTxs() : [],
     pruneTransactionsExcept: (keepIds) => store.pruneTransactionsExcept(keepIds),
+    pruneCommitteeRotationsAfter: (rn) => store.pruneCommitteeRotationsAfter(rn),
     clearStaleMempoolTxs: (before) => store.clearStaleMempoolTxs(before),
     mempoolCount: () => store.mempoolCount(),
 

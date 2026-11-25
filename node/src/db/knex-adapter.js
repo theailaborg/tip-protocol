@@ -1962,6 +1962,18 @@ class KnexAdapter {
     if (ids.length > 0) this._ff(() => this._k("transactions").whereIn("tx_id", ids).delete());
     return ids;
   }
+  async pruneCommitteeRotationsAfter(rotationNumber) {
+    const removed = this.mirror.pruneCommitteeRotationsAfter(rotationNumber);
+    if (removed.length === 0) return removed;
+    await this.flush();
+    try {
+      await this._k("committee_history").where("rotation_number", ">", rotationNumber).delete();
+    } catch (err) {
+      this.log.error(`KnexAdapter rotation history prune failed , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
+    return removed;
+  }
   async pruneTransactionsExcept(keepIds) {
     const ids = this.mirror.pruneTransactionsExcept(keepIds);
     await this.flush();
