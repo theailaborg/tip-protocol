@@ -139,11 +139,22 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // when idle; during an install: { phase, installed, total, bytes }.
   let _installProgress = null;
 
+  // A new sync cycle may install again, but a running install stays exclusive: a second one
+  // would replace its bulk buffers and resume commits under it.
   function resetInstallState() {
     _snapInstalled = false;
-    _snapInstallInProgress = false;
+    if (_snapInstallInProgress) return;
     _snapServing = false;
     _installProgress = null;
+  }
+
+  function _clearWedgedInstall() {
+    _snapInstallInProgress = false;
+    resetInstallState();
+    // The wedged call never reaches its finally, so ordering would stay paused.
+    if (bullshark && typeof bullshark.orderingPaused === "function" && bullshark.orderingPaused()) {
+      bullshark.resumeOrdering(dag.getLatestRound());
+    }
   }
 
   // #132 boot recovery: a crash mid-install reboots with MIXED state and the
@@ -176,7 +187,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // A hung open never arms the stall timer; without this the flag wedged forever.
       if (nowMs() - _installFlagSince > 2 * SNAPSHOT_DOWNLOAD.STALL_MS) {
         log.warn(`Snapshot: install flag wedged for ${Math.round((nowMs() - _installFlagSince) / 1000)}s with no progress, resetting`);
-        resetInstallState();
+        _clearWedgedInstall();
       } else {
         return "installing";
       }
