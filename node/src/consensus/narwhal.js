@@ -1438,6 +1438,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _catchingUpEnteredAt = nowMs();
     _catchUpTarget = Math.max(0, peerCommittedRound || round);
     log.notice(`Snapshot installed at round ${round}; catching up to peer head ${_catchUpTarget}`);
+    _resetTailWatch();
     _startWatchdog();
   }
 
@@ -1505,11 +1506,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   let _tailCompleteAt = 0;
   let _tailStuckWarned = false;
 
-  function _startWatchdog() {
-    if (_watchdogTimer) return;
+  // Per catching_up cycle: a new install can start one while the watchdog is still running.
+  function _resetTailWatch() {
     _tailCompleteLogged = false;
     _tailCompleteAt = 0;
     _tailStuckWarned = false;
+  }
+
+  function _startWatchdog() {
+    if (_watchdogTimer) return;
+    _resetTailWatch();
     const tick = Math.max(500, Math.floor(CONSENSUS.ROUND_TIMEOUT_MS / 2));
     _watchdogTimer = safeSetInterval(_watchdogCheck, tick, "narwhal.watchdog");
   }
