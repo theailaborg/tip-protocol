@@ -1874,20 +1874,15 @@ class KnexAdapter {
     this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
   }
 
-  // Snapshot install. Awaited in one transaction rather than queued: bulk mode runs _ff writes
-  // unawaited, and a delete racing the buffered inserts could leave stale rows in Postgres.
-  async replaceCommits(recs) {
-    this.mirror.replaceCommits(recs);
+  // Snapshot install, before the streamed history is saved: awaited, so no buffered commit row
+  // can land ahead of the delete, and local rows cannot collide with it on consensus_index.
+  async clearCommits() {
+    this.mirror.clearCommits();
     await this.flush();
     try {
-      await this.knex.transaction(async (trx) => {
-        await trx("commits").del();
-        for (let i = 0; i < recs.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
-          await trx("commits").insert(recs.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS).map(r => this._commitRow(r)));
-        }
-      });
+      await this._k("commits").del();
     } catch (err) {
-      this.log.error(`KnexAdapter commit history replace failed , persistence lost, fail-stop: ${err.message}`);
+      this.log.error(`KnexAdapter commit history clear failed , persistence lost, fail-stop: ${err.message}`);
       process.exit(78);
     }
   }

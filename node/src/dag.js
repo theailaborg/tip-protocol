@@ -1626,10 +1626,7 @@ class MemoryStore {
   }
   // Snapshot install: the attested history replaces the local one. saveCommit's insert-or-ignore
   // would keep a joiner's own stale rows, so it advertises a wrong root after a correct install.
-  replaceCommits(recs) {
-    this._commits.clear();
-    for (const rec of recs) this.saveCommit(rec);
-  }
+  clearCommits() { this._commits.clear(); }
   getCommit(round) { return this._commits.get(round) || null; }
   getLatestCommit() {
     let latest = null;
@@ -4430,12 +4427,7 @@ class SQLiteStore {
       Number(rec.cert_timestamp || 0),           // BFT-Time: median of acks.signed_at on the anchor cert
     );
   }
-  replaceCommits(recs) {
-    this.db.transaction(() => {
-      this.db.prepare("DELETE FROM commits").run();
-      for (const rec of recs) this.saveCommit(rec);
-    })();
-  }
+  clearCommits() { this.db.prepare("DELETE FROM commits").run(); }
   getCommit(round) {
     const row = this._stmts.getCommit.get(round);
     return row ? this._parseCommit(row) : null;
@@ -5599,7 +5591,7 @@ function _buildDagHandle(store, config) {
 
     // ── Commit checkpoints (§15 Bullshark anchor commits) ───────────────
     saveCommit: (rec) => store.saveCommit(rec),
-    replaceCommits: (recs) => store.replaceCommits(recs),
+    clearCommits: () => store.clearCommits(),
     getCommit: (round) => store.getCommit(round),
     getLatestCommit: () => store.getLatestCommit(),
     getCommitsFromRound: (fromRound) => store.getCommitsFromRound(fromRound),

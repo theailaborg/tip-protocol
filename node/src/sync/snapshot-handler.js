@@ -760,7 +760,6 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const rpRows = [];                        // few; installed at RP boundary
       const seen = { state: 0, tx: 0, commit: 0, rotation: 0, cert: 0, rp: 0 };
       const streamedTxIds = new Set();          // reconcile keep-set for tx history
-      const commitRows = [];                    // replaces the local commit history at finalize
       const commitRounds = new Set();
       const commitIndexes = new Set();
       const phaseVerified = new Set();          // which phase trailers arrived
@@ -900,8 +899,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             }
             commitRounds.add(cRound);
             if (cIndex > 0) commitIndexes.add(cIndex);
-            commitRows.push(c);
+            enqueue(() => dag.saveCommit(c));
             seen.commit++;
+            await maybeFlush();
             break;
           }
           case K.ROTATION: {
@@ -968,6 +968,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
                 if (Number(pe.count) !== seen.tx) throw new Error(`tx phase count mismatch: trailer=${pe.count} seen=${seen.tx}`);
                 derivedTxs = txsRoot.finalize();
                 if (derivedTxs !== peRoot) throw new Error(`txs_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedTxs.slice(0, 16)}...`);
+                // The streamed commit history replaces ours, saved as it arrives rather than held in
+                // memory. Not auth material, and an abort leaves the marker set, so a resync follows.
+                await dag.clearCommits();
                 break;
               }
               case K.COMMIT: {
@@ -1187,7 +1190,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // phase root have verified. Clearing the crash marker (durably, AFTER the
       // header commit is durable) is the instant the install becomes a
       // trusted checkpoint , before this, a crash stays in syncing and resyncs.
-      await dag.replaceCommits([...commitRows, _headerCommitRecord(header)]);
+      dag.runInTransaction(() => { _installHeaderCommitRow(header); });
       await dag.flush();
       dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
       await dag.flush();

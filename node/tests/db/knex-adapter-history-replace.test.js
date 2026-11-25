@@ -53,8 +53,10 @@ describe("knex adapter: snapshot history replace and prune", () => {
 
     a.beginBulkInstall();
     a.saveTx(tx("keep-2"));
+    await a.clearCommits();
+    a.saveCommit(commit(9, 7, "net-9"));
+    a.saveCommit(commit(10, 8, "net-10"));
     const pruned = await a.pruneTransactionsExcept(new Set(["keep-1", "keep-2"]));
-    await a.replaceCommits([commit(9, 7, "net-9"), commit(10, 8, "net-10")]);
     await a.flush();
     a.endBulkInstall();
 
