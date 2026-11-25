@@ -21,7 +21,7 @@ const { createStreamPair } = require("./stream-pair");
 // the cut lands past the header regardless of absolute size). A truncated
 // stream ends mid-frame / before END, exactly a dropped connection.
 // onFirstServerFrame runs once the header has left the server, before the later phases are built.
-// midStream runs once the client has read half the stream (past the header, mid-install).
+// midStream(destHandler) runs once the client has read half the stream (past the header, mid-install).
 async function attemptInstall(sourceDag, destDag, {
   chunkSize = 8, truncateAfterFraction = 1, onFirstServerFrame = null, destOptions = {}, midStream = null, requestOptions = {},
 } = {}) {
@@ -52,7 +52,7 @@ async function attemptInstall(sourceDag, destDag, {
     client.source = (async function* () {
       for await (const chunk of src) {
         read += chunk.length;
-        if (!fired && streamBytes > 0 && read >= streamBytes / 2) { fired = true; await midStream(); }
+        if (!fired && streamBytes > 0 && read >= streamBytes / 2) { fired = true; await midStream(destHandler); }
         yield chunk;
       }
     })();

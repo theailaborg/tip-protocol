@@ -162,6 +162,57 @@ describe("non-destructive install: reconcile exactness", () => {
   });
 });
 
+describe("non-destructive install: one install at a time", () => {
+  test("resetting the install guard mid-install keeps the running install exclusive", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    let installingAfterReset = null;
+    let second = "not requested";
+    await attemptInstall(fx.sourceDag, destDag, {
+      chunkSize: 16,
+      midStream: async (handler) => {
+        handler.resetInstallState();          // anti-entropy starting a new sync cycle
+        installingAfterReset = handler.isInstalling();
+        if (installingAfterReset) second = await handler.requestSnapshotFromPeer("other-peer", {});
+      },
+    });
+    expect(installingAfterReset).toBe(true);
+    expect(second).toBeNull();
+    expect(computeStateMerkleRoot(destDag)).toBe(fx.stateRoot);
+  });
+
+  test("an install wedged on a hung open is cleared and commit ordering resumes", async () => {
+    const { SNAPSHOT_DOWNLOAD } = require(path.join(SHARED, "constants"));
+    const { nowMs } = require(path.join(SHARED, "time"));
+    const destDag = initDAG({ dbPath: ":memory:" });
+    let paused = false;
+    const resumed = [];
+    const bullshark = {
+      pauseOrdering: () => { paused = true; },
+      resumeOrdering: (r) => { paused = false; resumed.push(r); },
+      orderingPaused: () => paused,
+    };
+    const handler = createSnapshotHandler({
+      dag: destDag, bullshark, isAuthorizedPeer: () => true,
+      network: { node: {}, openStream: () => new Promise(() => { }) },   // never opens
+    });
+    jest.useFakeTimers({ doNotFake: ["setImmediate", "queueMicrotask", "nextTick"] });
+    try {
+      handler.requestSnapshotFromPeer("hung-peer", {});
+      await Promise.resolve();
+      expect(handler.isInstalling()).toBe(true);
+      expect(paused).toBe(true);
+      jest.setSystemTime(nowMs() + 2 * SNAPSHOT_DOWNLOAD.STALL_MS + 1000);
+      await handler.resolveStaleInstallMarker();
+      expect(handler.isInstalling()).toBe(false);
+      expect(paused).toBe(false);
+      expect(resumed).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
 describe("non-destructive install: regression refusal", () => {
   test("a snapshot older than our attested head is refused when our state is consistent", async () => {
     const oldFx = buildCommittedDag({ committeeSize: 2, round: 2 });
