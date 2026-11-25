@@ -1763,6 +1763,68 @@ describe("recovery: resync-from-behind guard", () => {
   });
 });
 
+describe("recovery: a halted minority's resync may regress only with a committee majority", () => {
+  // Each opened stream is answered by a responder holding that peer's status, as a live peer would.
+  function statusNetwork(authorized, statuses) {
+    return fakeNetwork({
+      authorized,
+      openStreamImpl: async (peerId) => {
+        const { client, server } = createStreamPair();
+        const st = statuses[peerId];
+        const responder = createAntiEntropy({
+          network: fakeNetwork(), syncHandler: fakeSyncHandler(),
+          getSelfNodeId: () => authorized[peerId],
+          getConsensusState: () => selfState(st),
+          log: silentLog(),
+        });
+        responder._handleIncomingSyncStatus({ stream: server });
+        return client;
+      },
+    });
+  }
+  async function run({ halted, peersOnB }) {
+    const ids = ["A", "B", "C", "D"];
+    const authorized = Object.fromEntries(ids.map((x) => [`peer-${x}`, `tip://node/${x}`]));
+    const rootOf = (i) => (i < peersOnB ? "bbbbbb" : `other${i}`);
+    const statuses = Object.fromEntries(ids.map((x, i) => [`peer-${x}`, { committed_round: 120, state_merkle_root: rootOf(i) }]));
+    const opts = [];
+    let halt = halted ? { reason: "2/2 peers disagree", atRound: 100, since: 1 } : null;
+    const narwhal = {
+      joinState: () => "ready", committeeSize: () => 5,
+      byzantineForkHalt: () => halt, clearByzantineForkHalt: () => { halt = null; },
+      haltDueToByzantineFork: (a) => { halt = a; }, enterSyncMode: () => { }, exitSyncMode: () => { },
+    };
+    const ae = createAntiEntropy({
+      network: statusNetwork(authorized, statuses), syncHandler: fakeSyncHandler(), narwhal,
+      snapshotHandler: { isInstalling: () => false, requestSnapshotFromPeer: async (p, o) => { opts.push(o); return null; } },
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+    for (const [i, x] of ids.entries()) {
+      await ae.checkAndReconcile(`peer-${x}`, peerStatus({ node_id: `tip://node/${x}`, committed_round: 120, state_merkle_root: rootOf(i) }),
+        selfState({ committed_round: 100, state_merkle_root: "aaaaaa" }));
+    }
+    if (halted) halt = { reason: "2/2 peers disagree", atRound: 100, since: 1 };
+    opts.length = 0;
+    await ae.triggerSnapshotResync(100, 0);
+    return opts;
+  }
+
+  test("our fork halt and three of five peers on one root: the install may regress", async () => {
+    const opts = await run({ halted: true, peersOnB: 3 });
+    expect(opts.length).toBeGreaterThan(0);
+    expect(opts[0].allowRegression).toBe(true);
+  });
+
+  test("without our halt, or without a majority on that root, it may not", async () => {
+    for (const o of await run({ halted: false, peersOnB: 3 })) expect(o.allowRegression).toBe(false);
+    const thin = await run({ halted: true, peersOnB: 2 });
+    expect(thin.length).toBeGreaterThan(0);
+    for (const o of thin) expect(o.allowRegression).toBe(false);
+  });
+});
+
 describe("recovery: don't pull-sync from a non-ready peer", () => {
   test("peer ahead but join_state=catching_up → no pull, returns peer_not_ready", async () => {
     const sync = fakeSyncHandler();
