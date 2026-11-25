@@ -73,6 +73,19 @@ describe("snapshot history is cut at the header round", () => {
     for (const t of fx.seededTxs) expect(destDag.getTx(t.tx_id)).toBeTruthy();
   });
 
+  test("the serve takes its tx cut without a second full sorted pass over the history", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const sortedPasses = [];
+    const orig = fx.sourceDag.iterateAllTransactions;
+    fx.sourceDag.iterateAllTransactions = function () { sortedPasses.push(1); return orig.call(this); };
+    try {
+      await attemptInstall(fx.sourceDag, initDAG({ dbPath: ":memory:" }), { chunkSize: 64 });
+    } finally {
+      fx.sourceDag.iterateAllTransactions = orig;
+    }
+    expect(sortedPasses).toHaveLength(1);   // the TX phase only
+  });
+
   test("a stream carrying a commit row at or past its header round is refused", async () => {
     const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 1 });
     const head = fx.sourceDag.getLatestCommit();

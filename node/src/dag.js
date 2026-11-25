@@ -826,6 +826,9 @@ class MemoryStore {
     }
   }
 
+  // Unordered and copy-free of the rows: a snapshot serve takes its tx cut here without a sort.
+  transactionIdSet() { return new Set(this._txs.keys()); }
+
   getTxsByType(type) {
     return [...this._txs.values()].filter(t => t.tx_type === type);
   }
@@ -3824,6 +3827,8 @@ class SQLiteStore {
     }
   }
 
+  transactionIdSet() { return new Set(this.db.prepare("SELECT tx_id FROM transactions").pluck().all()); }
+
   // ── Identities ────────────────────────────────────────────────────────────
   // GH #60: public_key + algorithm auto-route to entity_keys (single
   // source of truth, DID/X.509/JWKS pattern). The identities row stores
@@ -5444,6 +5449,7 @@ function _buildDagHandle(store, config) {
     // leaves the ring at [highest_tx_id, second_highest] after the
     // batch — exactly what a fresh re-prime would compute.
     iterateAllTransactions: () => store.iterateAllTransactions(),
+    transactionIdSet: () => store.transactionIdSet(),
 
     // ── Identity ──────────────────────────────────────────────────────────
     saveIdentity: (rec) => store.saveIdentity(rec),
