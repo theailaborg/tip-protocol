@@ -117,6 +117,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // fires so the guard resets for the next needed resync.
   let _snapInstalled = false;
   let _snapInstallInProgress = false;
+  let _installGen = 0;            // owner of the running install; a superseded call leaves its state alone
+  let _installOpening = false;    // request sent, no header yet: the only phase a call can wedge in
+  let _orderingHeld = false;      // marker armed over a mixed state: commit nothing on it until it resolves
   // Set to true only during the synchronous DB-write phase of _installSnapshot
   // (dag.clearCanonicalState + row rebuild inside runInTransaction). Separate
   // from _snapInstallInProgress so majority peers with stable canonical state
@@ -149,12 +152,30 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   }
 
   function _clearWedgedInstall() {
+    _installGen++;
     _snapInstallInProgress = false;
+    _installOpening = false;
     resetInstallState();
-    // The wedged call never reaches its finally, so ordering would stay paused.
-    if (bullshark && typeof bullshark.orderingPaused === "function" && bullshark.orderingPaused()) {
-      bullshark.resumeOrdering(dag.getLatestRound());
-    }
+    // The wedged call never reaches its finally; nothing landed in it, so only a held marker keeps ordering paused.
+    _resumeOrderingUnlessHeld();
+  }
+
+  function _resumeOrderingUnlessHeld() {
+    if (_orderingHeld || !bullshark || typeof bullshark.orderingPaused !== "function" || !bullshark.orderingPaused()) return;
+    bullshark.resumeOrdering(dag.getLatestRound());
+  }
+
+  // Commits on a partly installed state would carry its root into new commit rows, which the
+  // stale-marker check then takes for attestation.
+  function _holdOrdering() {
+    _orderingHeld = true;
+    if (bullshark && typeof bullshark.pauseOrdering === "function") bullshark.pauseOrdering();
+  }
+
+  function _releaseHeldOrdering() {
+    if (!_orderingHeld) return;
+    _orderingHeld = false;
+    _resumeOrderingUnlessHeld();
   }
 
   // #132 boot recovery: a crash mid-install reboots with MIXED state and the
@@ -171,9 +192,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // this node authorize the peers it must now resync from.
     log.warn(
       `Snapshot: interrupted install detected (marker=${marker}) , keeping state; ` +
-      `node stays in syncing and reconciles on the next install`
+      `node stays in syncing, commits nothing and reconciles on the next install`
     );
     resetInstallState();
+    _holdOrdering();
     return true;
   }
 
@@ -184,8 +206,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // treat "inconsistent" as the resync-now signal, not just retry.
   async function resolveStaleInstallMarker() {
     if (_snapInstallInProgress) {
-      // A hung open never arms the stall timer; without this the flag wedged forever.
-      if (nowMs() - _installFlagSince > 2 * SNAPSHOT_DOWNLOAD.STALL_MS) {
+      // A hung open never arms the stall timer; past the header the stream's stall timer and the
+      // local finalize own the time, so a slow finalize is not a wedge.
+      if (_installOpening && nowMs() - _installFlagSince > 2 * SNAPSHOT_DOWNLOAD.STALL_MS) {
         log.warn(`Snapshot: install flag wedged for ${Math.round((nowMs() - _installFlagSince) / 1000)}s with no progress, resetting`);
         _clearWedgedInstall();
       } else {
@@ -195,7 +218,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     let marker = null;
     try { marker = typeof dag.getConsensusMeta === "function" ? dag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) : null; }
     catch { return "none"; }
-    if (!marker || !String(marker).startsWith("in_progress")) return "none";
+    if (!marker || !String(marker).startsWith("in_progress")) { _releaseHeldOrdering(); return "none"; }
     const latest = typeof dag.getLatestCommit === "function" ? dag.getLatestCommit() : null;
     if (!latest || !latest.state_merkle_root) return "no_commit";
     const selfRoot = computeStateMerkleRoot(dag);
@@ -212,6 +235,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       `Snapshot: stale install marker cleared , state root matches attested commit ${latest.round} ` +
       `(${selfRoot.slice(0, 12)}...), no re-install needed`
     );
+    _releaseHeldOrdering();
     return "cleared";
   }
 
@@ -691,11 +715,16 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       return null;
     }
     _snapInstallInProgress = true;
+    _installOpening = true;
     _installFlagSince = nowMs();
+    const gen = ++_installGen;
+    const owns = () => gen === _installGen;
     const pausesOrdering = !!bullshark && typeof bullshark.pauseOrdering === "function";
     if (pausesOrdering) bullshark.pauseOrdering();
     let markerArmed = false;   // in_progress written for this attempt
     let anyRowLanded = false;  // at least one batch reached the DB
+    let bulkBegun = false;
+    let installedOk = false;
 
     log.info(`Snapshot: requesting from ${peerId.slice(0, 12)}... (min_round=${minRound})`);
 
@@ -704,6 +733,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     let stream;
     try {
       stream = await network.openStream(peerId, SNAPSHOT_PROTOCOL);
+      if (!owns()) throw new Error("install superseded: its open wedged and was cleared");
       // Write the request (one frame, length-prefixed for symmetry with the
       // server-side framing — server reads exactly one message).
       const reqBuf = encode("SnapshotRequest", { minRound, requesterNodeId });
@@ -788,6 +818,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         }
         switch (kind) {
           case K.HEADER: {
+            if (!owns()) throw new Error("install superseded: its open wedged and was cleared");
+            _installOpening = false;
             header = decode("SnapshotHeader", proto);
             if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
             snapTotalRows = Number(header.totalRows) || 0;
@@ -817,7 +849,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             // Route DB writes through per-table batchInsert with per-row
             // conflict semantics (Postgres only; no-op where unsupported).
             // endBulkInstall() runs in the finally.
-            if (typeof dag.beginBulkInstall === "function") dag.beginBulkInstall();
+            if (typeof dag.beginBulkInstall === "function") { dag.beginBulkInstall(); bulkBegun = true; }
             break;
           }
           case K.STATE: {
@@ -1193,8 +1225,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         }
       }
 
-      _snapInstalled = true;
-      _snapInstallInProgress = false;
+      installedOk = true;
+      if (owns()) {
+        _snapInstalled = true;
+        _snapInstallInProgress = false;
+      }
       _lastInstallSource = peerId;
       return {
         round: Number(header.round),
@@ -1233,27 +1268,35 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // peers, and the next install's upsert+prune reconciles it exactly.
       // Before any row landed there is nothing mixed; the marker would only
       // refuse ready on state that is exactly what it was (AZ, 147 refusals/10 min).
-      if (markerArmed && !anyRowLanded) {
-        try {
-          dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
-          if (typeof dag.flush === "function") await dag.flush();
-          log.warn(`Snapshot: aborted from ${peerId.slice(0, 12)} before any row landed, install marker cleared`);
-        } catch { /* the marker path resolves it on the next AE tick */ }
+      if (owns()) {
+        if (markerArmed && !anyRowLanded) {
+          try {
+            dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
+            if (typeof dag.flush === "function") await dag.flush();
+            log.warn(`Snapshot: aborted from ${peerId.slice(0, 12)} before any row landed, install marker cleared`);
+          } catch { /* the marker path resolves it on the next AE tick */ }
+        }
+        _snapInstallInProgress = false;
+        _installOpening = false;
+        _snapServing = false;
+        _installProgress = null;
+        _metrics.install_in_progress_bytes = 0;
+        _metrics.install_in_progress_rows = 0;
       }
-      _snapInstallInProgress = false;
-      _snapServing = false;
-      _installProgress = null;
-      _metrics.install_in_progress_bytes = 0;
-      _metrics.install_in_progress_rows = 0;
       throw err;
     } finally {
       // Always leave bulk mode: buffers are drained at every batch flush, so
       // on error this only drops rows the retry will re-stream anyway.
-      if (typeof dag.endBulkInstall === "function") dag.endBulkInstall();
+      if (bulkBegun && typeof dag.endBulkInstall === "function") dag.endBulkInstall();
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
-      if (pausesOrdering) {
-        try { bullshark.resumeOrdering(dag.getLatestRound()); }
-        catch (err) { log.error(`Snapshot: resuming commit ordering after install failed: ${err.message}`); }
+      if (pausesOrdering && owns()) {
+        try {
+          if (!installedOk && markerArmed && anyRowLanded) _holdOrdering();
+          else {
+            if (installedOk) _orderingHeld = false;
+            _resumeOrderingUnlessHeld();
+          }
+        } catch (err) { log.error(`Snapshot: resuming commit ordering after install failed: ${err.message}`); }
       }
     }
   }
