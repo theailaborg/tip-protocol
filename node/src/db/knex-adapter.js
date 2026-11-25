@@ -885,6 +885,7 @@ class KnexAdapter {
   getRecentPrev() { return this.mirror.getRecentPrev ? this.mirror.getRecentPrev() : []; }
 
   *iterateAllTransactions() { yield* this.mirror.iterateAllTransactions(); }
+  transactionIdSet() { return this.mirror.transactionIdSet(); }
 
   // ── Identities ─────────────────────────────────────────────────────────────
 

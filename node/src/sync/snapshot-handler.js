@@ -399,8 +399,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
     // History is cut at the header: txs and commits added while the stream is in flight would put
     // the joiner's history ahead of its state, and its catch-up then skips those anchors.
-    const txIdsAtCut = new Set();
-    for (const tx of dag.iterateAllTransactions()) txIdsAtCut.add(tx.tx_id);
+    const txIdsAtCut = dag.transactionIdSet();
 
     // Total rows for the joiner's install % (display-only, never hashed/signed);
     // the tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.

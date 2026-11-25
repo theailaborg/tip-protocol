@@ -225,6 +225,16 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  test("transactionIdSet holds exactly the stored tx ids", async () => {
+    const dag = await makeDag();
+    for (let i = 0; i < 5; i++) dag.addTx({ tx_type: "TEST_EVENT", data: { i, set: true } });
+    await dag.flush();
+    const all = [...dag.iterateAllTransactions()].map(t => t.tx_id);
+    const set = dag.transactionIdSet();
+    expect(set.size).toBe(all.length);
+    for (const id of all) expect(set.has(id)).toBe(true);
+  });
+
   // ── 2. Identity + entity_keys ────────────────────────────────────────────
 
   test("saveIdentity/getIdentity round-trips fields and routes public_key into entity_keys", async () => {
