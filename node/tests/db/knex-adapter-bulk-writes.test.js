@@ -87,6 +87,39 @@ describe("knex adapter: writes queued during a bulk install", () => {
     expect(meta.value).toBe("v2");
   });
 
+  test("an insert then a delete of the same row in one bulk window land in that order", async () => {
+    a.beginBulkInstall();
+    a.saveMempoolTx({ tx_id: "mp-order", tx_type: "REGISTER_CONTENT", data: {}, timestamp: 1767225600000 });
+    a.deleteMempoolTxs(["mp-order"]);
+    await a.flush();
+    a.endBulkInstall();
+    await a.flush();
+    expect(await a.knex("mempool").where("tx_id", "mp-order").first()).toBeUndefined();
+    expect(a.getMempoolTxs().map(t => t.tx_id)).not.toContain("mp-order");
+  });
+
+  test("a delete issued in bulk mode while a transaction is mid-flush runs on the pool, not that transaction", async () => {
+    a.saveMempoolTx({ tx_id: "mp-trx", tx_type: "REGISTER_CONTENT", data: {}, timestamp: 1767225600000 });
+    await a.flush();
+    let finished = null;
+    await a.knex.transaction(async (trx) => { finished = trx; });
+    const exit = jest.spyOn(process, "exit").mockImplementation(() => { });
+    try {
+      a._activeTrx = finished;                 // a runInTransaction flush still holding the slot
+      a.beginBulkInstall();
+      a.deleteMempoolTxs(["mp-trx"]);
+      a._activeTrx = null;
+      await a.flush();
+      a.endBulkInstall();
+      await a.flush();
+      expect(exit).not.toHaveBeenCalled();
+      expect(await a.knex("mempool").where("tx_id", "mp-trx").first()).toBeUndefined();
+    } finally {
+      a._activeTrx = null;
+      exit.mockRestore();
+    }
+  });
+
   test("rows still buffered when bulk mode ends reach the database instead of being dropped", async () => {
     a.beginBulkInstall();
     a.saveTx(tx("left-1"));
