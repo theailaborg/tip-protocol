@@ -749,8 +749,15 @@ class KnexAdapter {
     // Bulk install: run the write NOW so _dbInsert buffers the row for batchInsert. Anything else
     // it returns (a lazy delete builder, an async write) must still run, and flush() awaits it.
     if (this._bulkInstall) {
-      const pending = fn();
-      if (pending && typeof pending.then === "function") this._chainWrite(() => pending);
+      // A builder made now would bind to a transaction still mid-flush and run after it ends.
+      const prevTrx = this._activeTrx;
+      this._activeTrx = null;
+      let pending;
+      try { pending = fn(); } finally { this._activeTrx = prevTrx; }
+      if (pending && typeof pending.then === "function") {
+        this._chainBulkPass();   // rows buffered before this write land before it
+        this._chainWrite(() => pending);
+      }
       return;
     }
     // Inside runInTransaction(fn): buffer the write so it joins the single
@@ -2167,18 +2174,27 @@ class KnexAdapter {
    * for the claim-timeout safety net to recover.
    */
   async flush() {
+    this._chainBulkPass();
     if (this._ffChain) {
       try { await this._ffChain; } catch { /* per-write errors already logged */ }
     }
-    if (this._bulkInstall && this._bulkInstall.size > 0) await this._queueBulkFlush();
   }
 
-  // An install and a background job can flush at once: each pass runs after the previous one and
-  // takes only the rows buffered when it starts, so none is written twice, reordered, or cleared unwritten.
-  _queueBulkFlush() {
-    const run = () => (this._bulkInstall ? this._flushBulkBuffers(this._bulkInstall) : undefined);
-    this._bulkFlushChain = (this._bulkFlushChain || Promise.resolve()).then(run, run);
-    return this._bulkFlushChain;
+  // Bulk rows ride the write chain: each pass takes the rows buffered when it is queued, so
+  // concurrent flushers never share a batch and a buffered insert keeps its place before later writes.
+  _chainBulkPass() {
+    if (!this._bulkInstall) return;
+    const taken = [];
+    for (const [table, buf] of this._bulkInstall) {
+      if (buf.rows.length > 0) taken.push([table, buf.pkCols, buf.onConflict, buf.rows.splice(0)]);
+    }
+    if (taken.length === 0) return;
+    this._chainWrite(async () => {
+      for (const [table, pkCols, onConflict, rows] of taken) await this._insertBulkRows(table, pkCols, onConflict, rows);
+      // Bulk rows bypass the per-row path; a stale clock read the first post-install
+      // write as a multi-minute stall and fail-stopped a healthy node.
+      this._ffLastSettledMs = nowMs();
+    });
   }
 
   // batchInsert each table's buffer (chunked under the bind-parameter cap). A
@@ -2223,18 +2239,11 @@ class KnexAdapter {
   }
 
   beginBulkInstall() { this._bulkInstall = new Map(); }
-  // Rows buffered after the last flush (a concurrent writer) are already in the mirror, so they go
-  // to the write chain behind any bulk pass still running instead of being dropped.
+  // Rows buffered after the last flush (a concurrent writer) are already in the mirror, so they
+  // join the write chain instead of being dropped.
   endBulkInstall() {
-    const left = this._bulkInstall;
+    this._chainBulkPass();
     this._bulkInstall = null;
-    if (!left) return;
-    for (const [table, buf] of left) {
-      const rows = buf.rows.splice(0);
-      if (rows.length === 0) continue;
-      const pass = this._bulkFlushChain || Promise.resolve();
-      this._chainWrite(() => pass.then(() => this._insertBulkRows(table, buf.pkCols, buf.onConflict, rows)));
-    }
   }
 
   close() {
