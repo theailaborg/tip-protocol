@@ -2039,10 +2039,17 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       _log.notice(`anti-entropy: triggerSnapshotResync: clearing active halt before snapshot install`);
       narwhal.clearByzantineForkHalt();
     }
+    // Our fork halt plus a committee majority on one other root is the minority recovery's
+    // condition: only then may the install go back past local commits the network never made.
+    const committeeN = narwhal && typeof narwhal.committeeSize === "function" ? Number(narwhal.committeeSize() || 0) : 0;
+    const majority = committeeN > 0 ? Math.floor(committeeN / 2) + 1 : Infinity;
+    const selfRootNow = String((selfState && selfState.state_merkle_root) || "");
+    const majorityConfirmed = (root, votes) => !!_activeHalt && !!root && root !== selfRootNow && votes >= majority;
 
     try {
       const rootDriftedPeers = []; // peers skipped because root drifted from bestRoot
       for (const candidatePeer of orderedPeerIds) {
+        let candidateOnBest = false;
         // Verify each candidate still holds the majority root before installing.
         // A peer that was at the majority root when tallied may have since
         // installed a minority snapshot; re-checking avoids propagating wrong
@@ -2069,8 +2076,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
             rootDriftedPeers.push({ peerId: candidatePeer, freshRoot: freshCandidateRoot });
             continue;
           }
+          candidateOnBest = !!bestRoot && freshCandidateRoot === bestRoot;
         }
-        const result = await _runSnapshotFallback(candidatePeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        const result = await _runSnapshotFallback(candidatePeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState,
+          { allowRegression: candidateOnBest && majorityConfirmed(bestRoot, bestVotes) });
         if (result === "snapshot_installed") {
           _lastAutoRecoveryAt = nowMs();
           _lastSnapshotResyncCompletedAt = nowMs();
@@ -2104,7 +2113,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
             `fresh majority root ${freshBestRoot.slice(0, 16)} (${freshBestVotes}/${rootDriftedPeers.length} drifted peers) — ` +
             `retrying install from ${freshBestPeer.slice(0, 12)}`
           );
-          const result = await _runSnapshotFallback(freshBestPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+          const result = await _runSnapshotFallback(freshBestPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState,
+            { allowRegression: majorityConfirmed(freshBestRoot, freshBestVotes) });
           if (result === "snapshot_installed") {
             _lastAutoRecoveryAt = nowMs();
             _lastSnapshotResyncCompletedAt = nowMs();
