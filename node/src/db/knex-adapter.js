@@ -788,19 +788,24 @@ class KnexAdapter {
   // only INSERT when the UPDATE affects 0 rows. If a concurrent writer sneaks
   // in between the 0-row UPDATE and our INSERT, the duplicate-key catch fires
   // a second UPDATE so our value still wins.
-  async _dbInsert(table, pkCols, row, onConflict) {
+  _dbInsert(table, pkCols, row, onConflict) {
     // Snapshot bulk install: collect the row (with its pk + conflict mode) for a
     // per-table chunked INSERT in _flushBulkBuffers , ~100x fewer round-trips than
     // the per-row path (the difference between finishing inside the download
     // deadline and timing out on a large, WAN-served snapshot). Conflict handling
     // is preserved there because non-state tables (transactions/certs/commits)
-    // aren't cleared and collide with genesis-seeded rows.
+    // aren't cleared and collide with genesis-seeded rows. Returns nothing, so
+    // _ff chains no per-row promise for a buffered row.
     if (this._bulkInstall) {
       let buf = this._bulkInstall.get(table);
       if (!buf) { buf = { pkCols, onConflict, rows: [] }; this._bulkInstall.set(table, buf); }
       buf.rows.push(row);
-      return;
+      return undefined;
     }
+    return this._dbInsertNow(table, pkCols, row, onConflict);
+  }
+
+  async _dbInsertNow(table, pkCols, row, onConflict) {
     if (!this._noOnConflict) {
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const q = this._k(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
@@ -2153,49 +2158,72 @@ class KnexAdapter {
     if (this._ffChain) {
       try { await this._ffChain; } catch { /* per-write errors already logged */ }
     }
-    if (this._bulkInstall && this._bulkInstall.size > 0) await this._flushBulkBuffers();
+    if (this._bulkInstall && this._bulkInstall.size > 0) await this._queueBulkFlush();
+  }
+
+  // An install and a background job can flush at once: each pass runs after the previous one and
+  // takes only the rows buffered when it starts, so none is written twice, reordered, or cleared unwritten.
+  _queueBulkFlush() {
+    const run = () => (this._bulkInstall ? this._flushBulkBuffers(this._bulkInstall) : undefined);
+    this._bulkFlushChain = (this._bulkFlushChain || Promise.resolve()).then(run, run);
+    return this._bulkFlushChain;
   }
 
   // batchInsert each table's buffer (chunked under the bind-parameter cap). A
   // failed chunk fail-stops: a partial snapshot rehydrates a divergent mirror on
   // restart, and the crash marker keeps the node in syncing either way.
-  async _flushBulkBuffers() {
-    for (const [table, buf] of this._bulkInstall) {
-      const { pkCols, onConflict, rows } = buf;
-      if (rows.length === 0) continue;
-      // transactions/certs/commits are not cleared before install and the joiner's
-      // genesis seed already wrote the genesis rows, so the full-history stream
-      // collides on tx_id: insert with ON CONFLICT (skip the dupes), never fail-stop.
-      const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
-      const conflictTarget = pks.length === 1 ? pks[0] : pks;
-      // Postgres rejects one upsert statement touching a key twice; collapse
-      // merge buffers to the last write per key (same as applying in order).
-      let rowsOut = rows;
-      if (onConflict === "merge") {
-        const byPk = new Map();
-        for (const r of rows) byPk.set(JSON.stringify(pks.map(c => r[c])), r);
-        rowsOut = [...byPk.values()];
-      }
-      try {
-        for (let i = 0; i < rowsOut.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
-          const chunk = rowsOut.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
-          const q = this._k(table).insert(chunk).onConflict(conflictTarget);
-          await (onConflict === "merge" ? q.merge() : q.ignore())
-            .catch(err => { if (!_isDuplicateKeyError(err)) throw err; });
-        }
-      } catch (err) {
-        this.log.error(`KnexAdapter bulk install failed on ${table} , persistence lost, fail-stop: ${err.message}`);
-        process.exit(78);
-      }
-      rows.length = 0;
+  async _flushBulkBuffers(buffers = this._bulkInstall) {
+    if (!buffers) return;
+    for (const [table, buf] of buffers) {
+      const rows = buf.rows.splice(0);
+      if (rows.length > 0) await this._insertBulkRows(table, buf.pkCols, buf.onConflict, rows);
     }
     // Bulk rows bypass the _ff chain; a stale clock read the first post-install
     // write as a multi-minute stall and fail-stopped a healthy node.
     this._ffLastSettledMs = nowMs();
   }
 
+  async _insertBulkRows(table, pkCols, onConflict, rows) {
+    // transactions/certs/commits are not cleared before install and the joiner's
+    // genesis seed already wrote the genesis rows, so the full-history stream
+    // collides on tx_id: insert with ON CONFLICT (skip the dupes), never fail-stop.
+    const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
+    const conflictTarget = pks.length === 1 ? pks[0] : pks;
+    // Postgres rejects one upsert statement touching a key twice; collapse
+    // merge buffers to the last write per key (same as applying in order).
+    let rowsOut = rows;
+    if (onConflict === "merge") {
+      const byPk = new Map();
+      for (const r of rows) byPk.set(JSON.stringify(pks.map(c => r[c])), r);
+      rowsOut = [...byPk.values()];
+    }
+    try {
+      for (let i = 0; i < rowsOut.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+        const chunk = rowsOut.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
+        const q = this._k(table).insert(chunk).onConflict(conflictTarget);
+        await (onConflict === "merge" ? q.merge() : q.ignore())
+          .catch(err => { if (!_isDuplicateKeyError(err)) throw err; });
+      }
+    } catch (err) {
+      this.log.error(`KnexAdapter bulk install failed on ${table} , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
+  }
+
   beginBulkInstall() { this._bulkInstall = new Map(); }
-  endBulkInstall() { this._bulkInstall = null; }
+  // Rows buffered after the last flush (a concurrent writer) are already in the mirror, so they go
+  // to the write chain behind any bulk pass still running instead of being dropped.
+  endBulkInstall() {
+    const left = this._bulkInstall;
+    this._bulkInstall = null;
+    if (!left) return;
+    for (const [table, buf] of left) {
+      const rows = buf.rows.splice(0);
+      if (rows.length === 0) continue;
+      const pass = this._bulkFlushChain || Promise.resolve();
+      this._chainWrite(() => pass.then(() => this._insertBulkRows(table, buf.pkCols, buf.onConflict, rows)));
+    }
+  }
 
   close() {
     clearInterval(this._ffWatchdog);
