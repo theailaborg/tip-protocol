@@ -2129,6 +2129,7 @@ describe("catching_up promotes within the sync tolerance", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 describe("self non-ready divergence is graced, but not forever", () => {
   const GRACE = require("../../../shared/protocol-constants").CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS;
+  const TICK = 4000;   // anti-entropy poll interval
   beforeEach(() => jest.useFakeTimers({ doNotFake: ["setImmediate", "queueMicrotask", "nextTick"] }));
   afterEach(() => jest.useRealTimers());
   const advance = (ms) => jest.setSystemTime(nowMs() + ms);
@@ -2146,55 +2147,54 @@ describe("self non-ready divergence is graced, but not forever", () => {
       _haltCalls: haltCalls,
     };
   }
-  function harness({ joinState, installing = false } = {}) {
+  function harness({ joinState, installing = false, snapshotHandler, network } = {}) {
     const narwhal = nonReadyNarwhal({ joinState });
     const warns = [];
     const ae = createAntiEntropy({
-      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
-      snapshotHandler: { isInstalling: () => installing, requestSnapshotFromPeer: async () => null },
+      network: network || fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      snapshotHandler: snapshotHandler || { isInstalling: () => installing, requestSnapshotFromPeer: async () => null },
       getSelfNodeId: () => "tip://node/self",
       getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "aaaaaa" }),
       log: { info: () => { }, debug: () => { }, warn: (m) => warns.push(m), error: () => { }, notice: () => { } },
     });
     return { ae, narwhal, warns };
   }
-  const check = (ae, id, { root = "bbbbbb", join = "ready", round = 100, selfRound = 100, selfRoot = "aaaaaa" } = {}) =>
+  const check = (ae, id, { root = "bbbbbb", join = "ready", round = 100, selfRound = round, selfRoot = "aaaaaa" } = {}) =>
     ae.checkAndReconcile(`peer-${id}`, peerStatus({ node_id: `tip://node/${id}`, committed_round: round, state_merkle_root: root, join_state: join }),
       selfState({ committed_round: selfRound, state_merkle_root: selfRoot }));
+  // Polls peer A every tick for `ms`, the way the AE loop does; opts(i) varies a tick.
+  async function poll(ae, ms, opts = () => ({})) {
+    let last;
+    for (let i = 0, t = 0; t < ms; i++, t += TICK) { last = await check(ae, "A", opts(i)); advance(TICK); }
+    return last;
+  }
 
   test("within the grace, ready peers on another root are graced: no halt", async () => {
     const { ae, narwhal } = harness();
-    for (const id of ["A", "B", "C"]) expect(await check(ae, id)).toBe("equal");
-    advance(GRACE - 1000);
-    for (const id of ["A", "B", "C"]) expect(await check(ae, id)).toBe("equal");
+    expect(await poll(ae, GRACE - 2 * TICK)).toBe("equal");
+    for (const id of ["B", "C"]) expect(await check(ae, id)).toBe("equal");
     expect(narwhal._haltCalls).toHaveLength(0);
   });
 
-  test("past the grace at the same round and root, it is divergence: halt at f+1, minority recovery from the majority", async () => {
+  test("a node following the network on a wrong root escalates although its committed round moves every check", async () => {
     const { ae, narwhal, warns } = harness();
-    expect(await check(ae, "A")).toBe("equal");
-    advance(GRACE + 1000);
-    expect(await check(ae, "A")).toBe("divergent");
-    expect(await check(ae, "B")).toBe("divergent");
+    let round = 100;
+    await poll(ae, GRACE + 2 * TICK, () => ({ round: round += 2 }));
+    expect(await check(ae, "A", { round })).toBe("divergent");
+    expect(await check(ae, "B", { round })).toBe("divergent");
     expect(narwhal._haltCalls).toHaveLength(1);
-    expect(await check(ae, "C")).toBe("divergent");
-    expect(warns.some(m => /self catching_up at committed_round=100 still disagrees with ready peer/.test(m))).toBe(true);
+    expect(await check(ae, "C", { round })).toBe("divergent");
+    expect(warns.some(m => /still disagrees with ready peer/.test(m))).toBe(true);
     expect(warns.some(m => /majority minority detected while halted/.test(m))).toBe(true);
   });
 
   test("the minority recovery it leads to may install an older snapshot; that permission is the majority's alone", async () => {
     const calls = [];
-    const narwhal = nonReadyNarwhal();
-    const ae = createAntiEntropy({
+    const { ae } = harness({
       network: fakeNetwork({ authorized: { "peer-A": "tip://node/A", "peer-B": "tip://node/B", "peer-C": "tip://node/C" } }),
-      syncHandler: fakeSyncHandler(), narwhal,
       snapshotHandler: { isInstalling: () => false, requestSnapshotFromPeer: async (p, o) => { calls.push(o); return null; } },
-      getSelfNodeId: () => "tip://node/self",
-      getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "aaaaaa" }),
-      log: silentLog(),
     });
-    await check(ae, "A");
-    advance(GRACE + 1000);
+    await poll(ae, GRACE + 2 * TICK);
     for (const id of ["A", "B", "C"]) await check(ae, id);
     await jest.advanceTimersByTimeAsync(60000);
     expect(calls.length).toBeGreaterThan(0);
@@ -2203,8 +2203,7 @@ describe("self non-ready divergence is graced, but not forever", () => {
 
   test("the same holds while syncing", async () => {
     const { ae, narwhal } = harness({ joinState: "syncing" });
-    await check(ae, "A");
-    advance(GRACE + 1000);
+    await poll(ae, GRACE + 2 * TICK);
     await check(ae, "A");
     await check(ae, "B");
     expect(narwhal._haltCalls).toHaveLength(1);
@@ -2212,35 +2211,45 @@ describe("self non-ready divergence is graced, but not forever", () => {
 
   test("a non-ready peer never counts, however long", async () => {
     const { ae, narwhal } = harness();
-    await check(ae, "A", { join: "syncing" });
-    advance(GRACE * 3);
-    for (const id of ["A", "B", "C"]) expect(await check(ae, id, { join: "catching_up" })).toBe("equal");
+    await poll(ae, GRACE * 2, () => ({ join: "catching_up" }));
+    for (const id of ["A", "B", "C"]) expect(await check(ae, id, { join: "syncing" })).toBe("equal");
     expect(narwhal._haltCalls).toHaveLength(0);
   });
 
-  test("an advancing committed round restarts the grace (a genuine catch-up never escalates)", async () => {
+  test("a node behind the network is never compared at an equal round, so it never escalates", async () => {
     const { ae, narwhal } = harness();
-    await check(ae, "A", { round: 100, selfRound: 100 });
-    advance(GRACE + 1000);
-    for (const id of ["A", "B", "C"]) expect(await check(ae, id, { round: 101, selfRound: 101 })).toBe("equal");
+    let r = 100;
+    await poll(ae, GRACE * 2, () => ({ round: r + 40, selfRound: (r += 2) }));
     expect(narwhal._haltCalls).toHaveLength(0);
   });
 
   test("a live snapshot install never escalates", async () => {
     const { ae, narwhal } = harness({ installing: true });
-    await check(ae, "A");
-    advance(GRACE * 3);
+    await poll(ae, GRACE * 2);
     for (const id of ["A", "B", "C"]) expect(await check(ae, id)).toBe("equal");
     expect(narwhal._haltCalls).toHaveLength(0);
   });
 
-  test("a ready peer agreeing with our root at the same round resets the timer", async () => {
+  test("a ready peer agreeing at the same round resets the clock; a non-ready one does not", async () => {
+    const reset = harness();
+    await poll(reset.ae, GRACE - 2 * TICK);
+    await check(reset.ae, "D", { root: "aaaaaa" });
+    await poll(reset.ae, 4 * TICK);
+    for (const id of ["A", "B", "C"]) expect(await check(reset.ae, id)).toBe("equal");
+    expect(reset.narwhal._haltCalls).toHaveLength(0);
+
+    const kept = harness();
+    await poll(kept.ae, GRACE - 2 * TICK);
+    await check(kept.ae, "D", { root: "aaaaaa", join: "catching_up" });
+    await poll(kept.ae, 4 * TICK);
+    await check(kept.ae, "B");
+    expect(kept.narwhal._haltCalls).toHaveLength(1);
+  });
+
+  test("samples further apart than the grace never add up to a persistent divergence", async () => {
     const { ae, narwhal } = harness();
-    await check(ae, "A");
-    advance(GRACE - 1000);
-    await check(ae, "D", { root: "aaaaaa" });
-    advance(2000);
-    for (const id of ["A", "B", "C"]) expect(await check(ae, id)).toBe("equal");
+    for (let i = 0; i < 4; i++) { await check(ae, "A"); advance(GRACE + 1000); }
+    for (const id of ["B", "C"]) expect(await check(ae, id)).toBe("equal");
     expect(narwhal._haltCalls).toHaveLength(0);
   });
 });
