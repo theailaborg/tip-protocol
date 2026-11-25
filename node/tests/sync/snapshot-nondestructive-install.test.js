@@ -162,6 +162,24 @@ describe("non-destructive install: reconcile exactness", () => {
   });
 });
 
+describe("non-destructive install: rotation history", () => {
+  test("a local rotation past the snapshot's history, and its tx, do not survive the install", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const shipped = [...fx.sourceDag.getRotationsFromGenesis()].map(r => r.rotation_number);
+    const forked = Math.max(...shipped) + 1;
+    const latest = fx.sourceDag.getLatestRotation();
+    destDag.saveCommitteeRotation({ ...latest, rotation_number: forked, effective_round: latest.effective_round + 1000, prev_rotation: forked - 1, payload_hash: shake256("forked-rotation") });
+    const forkTx = destDag.addTx({ tx_type: "COMMITTEE_ROTATION", timestamp: T0 + 9, data: { rotation_number: forked, payload_hash: shake256("forked-rotation") }, signature: "00" });
+
+    await attemptInstall(fx.sourceDag, destDag, { chunkSize: 16 });
+
+    expect(destDag.getCommitteeRotation(forked)).toBeFalsy();
+    expect(destDag.getLatestRotation().rotation_number).toBe(Math.max(...shipped));
+    expect(destDag.getTx(forkTx.tx_id)).toBeNull();
+  });
+});
+
 describe("non-destructive install: one install at a time", () => {
   test("resetting the install guard mid-install keeps the running install exclusive", async () => {
     const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
