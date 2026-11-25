@@ -1062,6 +1062,24 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    * @param {number} round
    * @returns {string|null}
    */
+  function _markAnchorHistoryOrdered(voteRound) {
+    const proposeRound = voteRound - 1;
+    const leader = proposeRound >= 1 ? _getLeader(proposeRound) : null;
+    let anchor = null;
+    try { anchor = leader ? dag.getCertificateByAuthorRound(leader, proposeRound) : null; } catch { anchor = null; }
+    const stack = anchor ? [anchor] : [];
+    while (stack.length > 0) {
+      const cert = stack.pop();
+      if (!cert || _orderedCertHashes.has(cert.hash)) continue;
+      _orderedCertHashes.add(cert.hash);
+      for (const parentHash of cert.parent_hashes || []) {
+        let parent = null;
+        try { parent = dag.getCertificate(parentHash); } catch { parent = null; }   // below the window: ordered long ago
+        if (parent) stack.push(parent);
+      }
+    }
+  }
+
   function _getLeader(round) {
     // Committee is wave-stable, so use this round's wave to pick leader
     // consistently across both propose and vote rounds of the wave.
@@ -1246,13 +1264,15 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
         _pendingAnchorCommit = null;
       }
       if (_lastCommittedRound > boundaryRound) {
-        for (const hash of [..._orderedCertHashes]) {
-          const cert = dag.getCertificate(hash);
-          if (cert && cert.round > boundaryRound) _orderedCertHashes.delete(hash);
-        }
+        // Our anchors past the snapshot are not the network's, so neither is what they ordered,
+        // at or below the boundary too: keep only the snapshot anchor's history, marked below.
+        _orderedCertHashes.clear();
         log.notice(`Bullshark: commit frontier lowered ${_lastCommittedRound} → ${boundaryRound} to the snapshot`);
       }
       _lastCommittedRound = boundaryRound;
+      // Ordered at the snapshot is exactly the last anchor's causal history: marking it keeps the
+      // next anchor from re-collecting shipped certs, and from skipping one only a later anchor orders.
+      _markAnchorHistoryOrdered(boundaryRound);
       if (consensusIndex > 0 && consensusIndex !== _consensusIndex) {
         _consensusIndex = consensusIndex;
         if (dag.setConsensusMeta) {
