@@ -1,0 +1,6 @@
+# Local synthetic experiments and their exported evidence are reviewer data.
+*.sqlite3
+*.sqlite3-*
+simulation-data/
+__pycache__/
+.pytest_cache/

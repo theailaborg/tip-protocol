@@ -1,0 +1,1534 @@
+[
+  {
+    "schema": "tip-simulation/v1",
+    "id": "s-health",
+    "title": "Three agents, four patients",
+    "domain": "healthcare",
+    "seed": null,
+    "policy": {
+      "mode": "distinct",
+      "unit": "subjects",
+      "purpose": "claim-preparation",
+      "shared_limit": 4,
+      "agents": [
+        {
+          "id": "Agent A",
+          "limit": 2
+        },
+        {
+          "id": "Agent B",
+          "limit": 2
+        },
+        {
+          "id": "Agent C",
+          "limit": 2
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Agent A",
+        "site": "site-1",
+        "purpose": "claim-preparation",
+        "amount": 1,
+        "subject": "Patient 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Agent A",
+        "site": "site-2",
+        "purpose": "claim-preparation",
+        "amount": 1,
+        "subject": "Patient 2"
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Agent B",
+        "site": "site-1",
+        "purpose": "claim-preparation",
+        "amount": 1,
+        "subject": "Patient 3"
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Agent B",
+        "site": "site-2",
+        "purpose": "claim-preparation",
+        "amount": 1,
+        "subject": "Patient 4"
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Agent C",
+        "site": "site-1",
+        "purpose": "claim-preparation",
+        "amount": 1,
+        "subject": "Patient 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-6",
+        "agent": "Agent C",
+        "site": "site-2",
+        "purpose": "claim-preparation",
+        "amount": 1,
+        "subject": "Patient 5"
+      },
+      {
+        "kind": "request",
+        "id": "request-7",
+        "agent": "Agent C",
+        "site": "site-1",
+        "purpose": "marketing",
+        "amount": 1,
+        "subject": "Patient 6"
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "s-money",
+    "title": "Three payment agents, one daily limit",
+    "domain": "finance",
+    "seed": null,
+    "policy": {
+      "mode": "sum",
+      "unit": "₹",
+      "purpose": "household-payments",
+      "shared_limit": 50000,
+      "agents": [
+        {
+          "id": "Shopping agent",
+          "limit": 25000
+        },
+        {
+          "id": "Bills agent",
+          "limit": 25000
+        },
+        {
+          "id": "Travel agent",
+          "limit": 25000
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Shopping agent",
+        "site": "site-1",
+        "purpose": "household-payments",
+        "amount": 20000,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Bills agent",
+        "site": "site-2",
+        "purpose": "household-payments",
+        "amount": 20000,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Travel agent",
+        "site": "site-1",
+        "purpose": "household-payments",
+        "amount": 15000,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Travel agent",
+        "site": "site-2",
+        "purpose": "household-payments",
+        "amount": 5000,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Bills agent",
+        "site": "site-1",
+        "purpose": "household-payments",
+        "amount": 8000,
+        "subject": ""
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "s-gov",
+    "title": "Pension checks across departments",
+    "domain": "government",
+    "seed": null,
+    "policy": {
+      "mode": "distinct",
+      "unit": "subjects",
+      "purpose": "pension-verification",
+      "shared_limit": 3,
+      "agents": [
+        {
+          "id": "Agent X",
+          "limit": 2
+        },
+        {
+          "id": "Agent Y",
+          "limit": 2
+        },
+        {
+          "id": "Agent Z",
+          "limit": 2
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Agent X",
+        "site": "site-1",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Agent X",
+        "site": "site-2",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 2"
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Agent Y",
+        "site": "site-1",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 3"
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Agent Y",
+        "site": "site-2",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 4"
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Agent Z",
+        "site": "site-1",
+        "purpose": "tax-audit",
+        "amount": 1,
+        "subject": "Citizen 2"
+      },
+      {
+        "kind": "request",
+        "id": "request-6",
+        "agent": "Agent Q",
+        "site": "site-2",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 1"
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "powerschool",
+    "title": "District support exports across tools",
+    "domain": "education",
+    "seed": null,
+    "policy": {
+      "mode": "sum",
+      "unit": "records",
+      "purpose": "support-ticket-district-12",
+      "shared_limit": 500,
+      "agents": [
+        {
+          "id": "Support agent",
+          "limit": 500
+        },
+        {
+          "id": "Export tool agent",
+          "limit": 500
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Support agent",
+        "site": "site-1",
+        "purpose": "support-ticket-district-12",
+        "amount": 300,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Export tool agent",
+        "site": "site-2",
+        "purpose": "support-ticket-district-12",
+        "amount": 150,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Export tool agent",
+        "site": "site-1",
+        "purpose": "support-ticket-district-12",
+        "amount": 200,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Export tool agent",
+        "site": "site-2",
+        "purpose": "bulk-export-all-districts",
+        "amount": 60000,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Support agent",
+        "site": "site-1",
+        "purpose": "support-ticket-district-12",
+        "amount": 40,
+        "subject": ""
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "baltimore",
+    "title": "Grade entry outside the approved purpose",
+    "domain": "education",
+    "seed": null,
+    "policy": {
+      "mode": "distinct",
+      "unit": "subjects",
+      "purpose": "term-1-grade-entry",
+      "shared_limit": 4,
+      "agents": [
+        {
+          "id": "Grade agent 1",
+          "limit": 3
+        },
+        {
+          "id": "Grade agent 2",
+          "limit": 3
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Grade agent 1",
+        "site": "site-1",
+        "purpose": "term-1-grade-entry",
+        "amount": 1,
+        "subject": "Student 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Grade agent 1",
+        "site": "site-2",
+        "purpose": "term-1-grade-entry",
+        "amount": 1,
+        "subject": "Student 2"
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Grade agent 2",
+        "site": "site-1",
+        "purpose": "term-1-grade-entry",
+        "amount": 1,
+        "subject": "Student 3"
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Grade agent 2",
+        "site": "site-2",
+        "purpose": "term-1-grade-entry",
+        "amount": 1,
+        "subject": "Student 4"
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Grade agent 1",
+        "site": "site-1",
+        "purpose": "term-1-grade-entry",
+        "amount": 1,
+        "subject": "Student 5"
+      },
+      {
+        "kind": "request",
+        "id": "request-6",
+        "agent": "Grade agent 2",
+        "site": "site-2",
+        "purpose": "after-results-grade-change",
+        "amount": 1,
+        "subject": "Student 2"
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "scholarship",
+    "title": "Scholarship checks across three agents",
+    "domain": "education",
+    "seed": null,
+    "policy": {
+      "mode": "distinct",
+      "unit": "subjects",
+      "purpose": "scholarship-verification",
+      "shared_limit": 5,
+      "agents": [
+        {
+          "id": "Income check agent",
+          "limit": 3
+        },
+        {
+          "id": "Marks check agent",
+          "limit": 3
+        },
+        {
+          "id": "Caste certificate agent",
+          "limit": 3
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Income check agent",
+        "site": "site-1",
+        "purpose": "scholarship-verification",
+        "amount": 1,
+        "subject": "Student 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Income check agent",
+        "site": "site-2",
+        "purpose": "scholarship-verification",
+        "amount": 1,
+        "subject": "Student 2"
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Marks check agent",
+        "site": "site-1",
+        "purpose": "scholarship-verification",
+        "amount": 1,
+        "subject": "Student 3"
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Marks check agent",
+        "site": "site-2",
+        "purpose": "scholarship-verification",
+        "amount": 1,
+        "subject": "Student 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Caste certificate agent",
+        "site": "site-1",
+        "purpose": "scholarship-verification",
+        "amount": 1,
+        "subject": "Student 4"
+      },
+      {
+        "kind": "request",
+        "id": "request-6",
+        "agent": "Caste certificate agent",
+        "site": "site-2",
+        "purpose": "scholarship-verification",
+        "amount": 1,
+        "subject": "Student 5"
+      },
+      {
+        "kind": "request",
+        "id": "request-7",
+        "agent": "Marks check agent",
+        "site": "site-1",
+        "purpose": "scholarship-verification",
+        "amount": 1,
+        "subject": "Student 6"
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "fakedegree",
+    "title": "Unknown certificate issuer and mismatched purpose",
+    "domain": "education",
+    "seed": null,
+    "policy": {
+      "mode": "distinct",
+      "unit": "subjects",
+      "purpose": "degree-issue-2026",
+      "shared_limit": 3,
+      "agents": [
+        {
+          "id": "Registrar agent",
+          "limit": 3
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Registrar agent",
+        "site": "site-1",
+        "purpose": "degree-issue-2026",
+        "amount": 1,
+        "subject": "Graduate 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Registrar agent",
+        "site": "site-2",
+        "purpose": "degree-issue-2026",
+        "amount": 1,
+        "subject": "Graduate 2"
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Fake verification site",
+        "site": "site-1",
+        "purpose": "degree-issue-2026",
+        "amount": 1,
+        "subject": "Graduate 3"
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Registrar agent",
+        "site": "site-2",
+        "purpose": "backdated-2022-issue",
+        "amount": 1,
+        "subject": "Graduate 4"
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Registrar agent",
+        "site": "site-1",
+        "purpose": "degree-issue-2026",
+        "amount": 1,
+        "subject": "Graduate 3"
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "yakima",
+    "title": "Record access across five agents",
+    "domain": "healthcare",
+    "seed": null,
+    "policy": {
+      "mode": "distinct",
+      "unit": "subjects",
+      "purpose": "emergency-care",
+      "shared_limit": 25,
+      "agents": [
+        {
+          "id": "Triage agent 1",
+          "limit": 20
+        },
+        {
+          "id": "Triage agent 2",
+          "limit": 20
+        },
+        {
+          "id": "Triage agent 3",
+          "limit": 20
+        },
+        {
+          "id": "Triage agent 4",
+          "limit": 20
+        },
+        {
+          "id": "Triage agent 5",
+          "limit": 20
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Triage agent 1",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Triage agent 1",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 2"
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Triage agent 1",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 3"
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Triage agent 1",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 4"
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Triage agent 1",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 5"
+      },
+      {
+        "kind": "request",
+        "id": "request-6",
+        "agent": "Triage agent 1",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 6"
+      },
+      {
+        "kind": "request",
+        "id": "request-7",
+        "agent": "Triage agent 2",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 7"
+      },
+      {
+        "kind": "request",
+        "id": "request-8",
+        "agent": "Triage agent 2",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 8"
+      },
+      {
+        "kind": "request",
+        "id": "request-9",
+        "agent": "Triage agent 2",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 9"
+      },
+      {
+        "kind": "request",
+        "id": "request-10",
+        "agent": "Triage agent 2",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 10"
+      },
+      {
+        "kind": "request",
+        "id": "request-11",
+        "agent": "Triage agent 2",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 11"
+      },
+      {
+        "kind": "request",
+        "id": "request-12",
+        "agent": "Triage agent 2",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 12"
+      },
+      {
+        "kind": "request",
+        "id": "request-13",
+        "agent": "Triage agent 3",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 13"
+      },
+      {
+        "kind": "request",
+        "id": "request-14",
+        "agent": "Triage agent 3",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 14"
+      },
+      {
+        "kind": "request",
+        "id": "request-15",
+        "agent": "Triage agent 3",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 15"
+      },
+      {
+        "kind": "request",
+        "id": "request-16",
+        "agent": "Triage agent 3",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 16"
+      },
+      {
+        "kind": "request",
+        "id": "request-17",
+        "agent": "Triage agent 3",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 17"
+      },
+      {
+        "kind": "request",
+        "id": "request-18",
+        "agent": "Triage agent 3",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 18"
+      },
+      {
+        "kind": "request",
+        "id": "request-19",
+        "agent": "Triage agent 4",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 19"
+      },
+      {
+        "kind": "request",
+        "id": "request-20",
+        "agent": "Triage agent 4",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 20"
+      },
+      {
+        "kind": "request",
+        "id": "request-21",
+        "agent": "Triage agent 4",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 21"
+      },
+      {
+        "kind": "request",
+        "id": "request-22",
+        "agent": "Triage agent 4",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 22"
+      },
+      {
+        "kind": "request",
+        "id": "request-23",
+        "agent": "Triage agent 4",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 23"
+      },
+      {
+        "kind": "request",
+        "id": "request-24",
+        "agent": "Triage agent 4",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 24"
+      },
+      {
+        "kind": "request",
+        "id": "request-25",
+        "agent": "Triage agent 5",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 25"
+      },
+      {
+        "kind": "request",
+        "id": "request-26",
+        "agent": "Triage agent 5",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 26"
+      },
+      {
+        "kind": "request",
+        "id": "request-27",
+        "agent": "Triage agent 5",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 27"
+      },
+      {
+        "kind": "request",
+        "id": "request-28",
+        "agent": "Triage agent 5",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 28"
+      },
+      {
+        "kind": "request",
+        "id": "request-29",
+        "agent": "Triage agent 5",
+        "site": "site-1",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 29"
+      },
+      {
+        "kind": "request",
+        "id": "request-30",
+        "agent": "Triage agent 5",
+        "site": "site-2",
+        "purpose": "emergency-care",
+        "amount": 1,
+        "subject": "Patient 30"
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "gulfcoast",
+    "title": "Billing contractors sharing one record allowance",
+    "domain": "healthcare",
+    "seed": null,
+    "policy": {
+      "mode": "sum",
+      "unit": "records",
+      "purpose": "claims-billing",
+      "shared_limit": 5000,
+      "agents": [
+        {
+          "id": "Billing agent A",
+          "limit": 2000
+        },
+        {
+          "id": "Billing agent B",
+          "limit": 2000
+        },
+        {
+          "id": "Billing agent C",
+          "limit": 2000
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Billing agent A",
+        "site": "site-1",
+        "purpose": "claims-billing",
+        "amount": 1800,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Billing agent B",
+        "site": "site-2",
+        "purpose": "claims-billing",
+        "amount": 1900,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Billing agent C",
+        "site": "site-1",
+        "purpose": "claims-billing",
+        "amount": 1500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Billing agent C",
+        "site": "site-2",
+        "purpose": "claims-billing",
+        "amount": 300,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Billing agent A",
+        "site": "site-1",
+        "purpose": "claims-billing",
+        "amount": 200,
+        "subject": ""
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "ctr",
+    "title": "Linked deposits crossing a review threshold",
+    "domain": "finance",
+    "seed": null,
+    "policy": {
+      "mode": "sum",
+      "unit": "₹",
+      "purpose": "cash-deposit",
+      "shared_limit": 1000000,
+      "agents": [
+        {
+          "id": "Depositor 1",
+          "limit": 350000
+        },
+        {
+          "id": "Depositor 2",
+          "limit": 350000
+        },
+        {
+          "id": "Depositor 3",
+          "limit": 350000
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Depositor 1",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Depositor 2",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Depositor 3",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Depositor 1",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Depositor 2",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-6",
+        "agent": "Depositor 3",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-7",
+        "agent": "Depositor 1",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-8",
+        "agent": "Depositor 2",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-9",
+        "agent": "Depositor 3",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-10",
+        "agent": "Depositor 1",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-11",
+        "agent": "Depositor 2",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-12",
+        "agent": "Depositor 3",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-13",
+        "agent": "Depositor 1",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-14",
+        "agent": "Depositor 2",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-15",
+        "agent": "Depositor 3",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-16",
+        "agent": "Depositor 1",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-17",
+        "agent": "Depositor 2",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-18",
+        "agent": "Depositor 3",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-19",
+        "agent": "Depositor 1",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-20",
+        "agent": "Depositor 2",
+        "site": "site-2",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-21",
+        "agent": "Depositor 3",
+        "site": "site-1",
+        "purpose": "cash-deposit",
+        "amount": 49500,
+        "subject": ""
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "hastert",
+    "title": "Withdrawals across two branches",
+    "domain": "finance",
+    "seed": null,
+    "policy": {
+      "mode": "sum",
+      "unit": "$",
+      "purpose": "cash-withdrawal",
+      "shared_limit": 10000,
+      "agents": [
+        {
+          "id": "Branch A",
+          "limit": 9999
+        },
+        {
+          "id": "Branch B",
+          "limit": 9999
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Branch A",
+        "site": "site-1",
+        "purpose": "cash-withdrawal",
+        "amount": 9500,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Branch B",
+        "site": "site-2",
+        "purpose": "cash-withdrawal",
+        "amount": 9000,
+        "subject": ""
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "shopping",
+    "title": "Shopping agents sharing one budget",
+    "domain": "finance",
+    "seed": null,
+    "policy": {
+      "mode": "sum",
+      "unit": "$",
+      "purpose": "household-shopping",
+      "shared_limit": 1000,
+      "agents": [
+        {
+          "id": "Grocery agent",
+          "limit": 400
+        },
+        {
+          "id": "Travel agent",
+          "limit": 400
+        },
+        {
+          "id": "Gifts agent",
+          "limit": 400
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Grocery agent",
+        "site": "site-1",
+        "purpose": "household-shopping",
+        "amount": 350,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Travel agent",
+        "site": "site-2",
+        "purpose": "household-shopping",
+        "amount": 380,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Gifts agent",
+        "site": "site-1",
+        "purpose": "household-shopping",
+        "amount": 355,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Travel agent",
+        "site": "site-2",
+        "purpose": "household-shopping",
+        "amount": 380,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Gifts agent",
+        "site": "site-1",
+        "purpose": "household-shopping",
+        "amount": 200,
+        "subject": ""
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "welfare",
+    "title": "Welfare checks and unrelated data use",
+    "domain": "government",
+    "seed": null,
+    "policy": {
+      "mode": "distinct",
+      "unit": "subjects",
+      "purpose": "pension-verification",
+      "shared_limit": 3,
+      "agents": [
+        {
+          "id": "Pension agent",
+          "limit": 3
+        },
+        {
+          "id": "Ration card agent",
+          "limit": 3
+        },
+        {
+          "id": "Police data agent",
+          "limit": 3
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Pension agent",
+        "site": "site-1",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Ration card agent",
+        "site": "site-2",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 2"
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Ration card agent",
+        "site": "site-1",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 1"
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Pension agent",
+        "site": "site-2",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 3"
+      },
+      {
+        "kind": "request",
+        "id": "request-5",
+        "agent": "Ration card agent",
+        "site": "site-1",
+        "purpose": "pension-verification",
+        "amount": 1,
+        "subject": "Citizen 4"
+      },
+      {
+        "kind": "request",
+        "id": "request-6",
+        "agent": "Police data agent",
+        "site": "site-2",
+        "purpose": "police-investigation",
+        "amount": 1,
+        "subject": "Citizen 2"
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "irs",
+    "title": "Tax-record batches and purpose limits",
+    "domain": "government",
+    "seed": null,
+    "policy": {
+      "mode": "sum",
+      "unit": "records",
+      "purpose": "address-matched-request",
+      "shared_limit": 50000,
+      "agents": [
+        {
+          "id": "Disclosure agent 1",
+          "limit": 30000
+        },
+        {
+          "id": "Disclosure agent 2",
+          "limit": 30000
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Disclosure agent 1",
+        "site": "site-1",
+        "purpose": "address-matched-request",
+        "amount": 20000,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Disclosure agent 2",
+        "site": "site-2",
+        "purpose": "address-matched-request",
+        "amount": 27000,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Disclosure agent 2",
+        "site": "site-1",
+        "purpose": "zip-code-only",
+        "amount": 15000,
+        "subject": ""
+      },
+      {
+        "kind": "request",
+        "id": "request-4",
+        "agent": "Disclosure agent 1",
+        "site": "site-2",
+        "purpose": "address-matched-request",
+        "amount": 8000,
+        "subject": ""
+      }
+    ]
+  },
+  {
+    "schema": "tip-simulation/v1",
+    "id": "sumleaks",
+    "title": "Combining separately disclosed information",
+    "domain": "privacy",
+    "seed": null,
+    "policy": {
+      "mode": "distinct",
+      "unit": "pieces",
+      "purpose": "customer-support",
+      "shared_limit": 2,
+      "agents": [
+        {
+          "id": "Identity agent",
+          "limit": 5
+        },
+        {
+          "id": "Purchases agent",
+          "limit": 5
+        },
+        {
+          "id": "Claims agent",
+          "limit": 5
+        }
+      ],
+      "sites": [
+        "site-1",
+        "site-2"
+      ]
+    },
+    "events": [
+      {
+        "kind": "request",
+        "id": "request-1",
+        "agent": "Identity agent",
+        "site": "site-1",
+        "purpose": "customer-support",
+        "amount": 1,
+        "subject": "Customer 42: name"
+      },
+      {
+        "kind": "request",
+        "id": "request-2",
+        "agent": "Purchases agent",
+        "site": "site-2",
+        "purpose": "customer-support",
+        "amount": 1,
+        "subject": "Customer 42: purchases"
+      },
+      {
+        "kind": "request",
+        "id": "request-3",
+        "agent": "Claims agent",
+        "site": "site-1",
+        "purpose": "customer-support",
+        "amount": 1,
+        "subject": "Customer 42: insurance claims"
+      }
+    ]
+  }
+]
