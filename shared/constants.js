@@ -714,6 +714,9 @@ const TX_TYPES = Object.freeze({
   // Domain binding (org-only)
   BIND_DOMAIN: "BIND_DOMAIN",
   UNBIND_DOMAIN: "UNBIND_DOMAIN",
+  // One owner-signed record per version of a whole protected site; rows live
+  // in site_snapshots (canonical), chained per domain by seq.
+  SITE_SNAPSHOT: "SITE_SNAPSHOT",
   // Content
   REGISTER_CONTENT: "REGISTER_CONTENT",
   UPDATE_ORIGIN: "UPDATE_ORIGIN",
@@ -862,6 +865,11 @@ const TX_REJECTION_REASON = Object.freeze({
   // Signer (or cosigner) key already retired by a rotation / recovery when the
   // round certified; see KEY_RETIREMENT_GRACE_MS.
   SIGNER_KEY_RETIRED: "signer_key_retired",
+  // SITE_SNAPSHOT whose prev/seq no longer extends the domain's latest snapshot
+  // (another snapshot committed first); the owner signs the next one again.
+  SITE_SNAPSHOT_STALE: "site_snapshot_stale",
+  // SITE_SNAPSHOT witness from an inactive VP, or a malformed witness.
+  SITE_SNAPSHOT_WITNESS_INVALID: "site_snapshot_witness_invalid",
   // Site 5 — generic fallback for unexpected drops; always logs detail.
   TX_DECODE_FAILED: "tx_decode_failed",
 });
@@ -1173,6 +1181,75 @@ const DOMAIN_RELEASE = Object.freeze({
   SKEW_MS: 60 * 1000,           // and this far ahead (client clock skew)
 });
 
+// Site snapshots (SITE_SNAPSHOT). New commit rules, so judged at max(tx.timestamp,
+// certificate time) against ACTIVATION_MS and the fleet upgrades first
+// (TIP_SITE_SNAPSHOT_ACTIVATION_MS overrides it outside production only).
+const SITE_SNAPSHOT = Object.freeze({
+  ACTIVATION_MS: 1797292800000,          // 2026-12-15 00:00:00 UTC, provisional mainnet activation
+  MIN_INTERVAL_MS: 10 * 60 * 1000,       // per domain, after the previous snapshot's tx time
+  CAPTURE_SKEW_MS: 60 * 1000,            // captured_at may be this far ahead of the commit time
+  MAX_PAGES: 20000,                      // keeps a pack under SITE_INGEST.MAX_PACK_BYTES (about 3 KB a page)
+  // Optional signed field. A private snapshot's pack stays with the owner:
+  // nodes keep the record but never fetch or index its pages.
+  VISIBILITY: Object.freeze({ PRIVATE: "private" }),
+  PROFILES: Object.freeze(["cf-web-1"]),
+  HASH_PATTERN: /^[0-9a-f]{64}$/,        // SHAKE-256, 32 bytes, lowercase hex
+  TX_ID_PATTERN: /^[0-9a-f]{64}$/,
+  VP_ID_PATTERN: /^tip:\/\/vp\/[A-Za-z0-9._-]{1,128}$/,
+  LIST_MAX: 100,
+});
+
+// A domain binding (or its renewal) applies once ceil(2n/3) of the committee have each
+// checked the proof themselves; one node's BIND_DOMAIN is one attestation.
+const DOMAIN_QUORUM = Object.freeze({
+  ACTIVATION_MS: 1797292800000,          // 2026-12-15 00:00:00 UTC, provisional, with SITE_SNAPSHOT
+  WINDOW_MS: 60 * 60 * 1000,             // attestations for one claim count together within this
+  MAX_AHEAD_MS: 60 * 1000,               // verified_at may be this far ahead of the commit time
+  RETRY_DELAYS_MS: Object.freeze([30 * 1000, 2 * 60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000]),
+  CONCURRENCY: 2,
+  QUEUE_MAX: 1000,
+  RECONCILE_MS: 10 * 60 * 1000,
+});
+
+// Off-DAG ingest of each committed snapshot's fingerprint pack (node-local,
+// advisory, rebuildable). Packs come from TIP_SITE_ARCHIVE_URLS by pack_hash.
+const SITE_INGEST = Object.freeze({
+  PAGE_KEY_PREFIX: "site:",              // perceptual-index key: site:<snapshot tx_id>:<16 hex of SHAKE-256(url)>
+  PASSAGE_PROFILE: "cf-web-1",           // document_passage profile for site paragraph keys
+  MAX_PACK_BYTES: 64 * 1024 * 1024,      // downloaded (gzip) bytes; readPack caps the unpacked size
+  FETCH_TIMEOUT_MS: 60 * 1000,
+  RETRY_BASE_MS: 60 * 1000,              // doubles per failed attempt
+  RETRY_MAX_MS: 6 * 60 * 60 * 1000,
+  RECONCILE_MS: 10 * 60 * 1000,          // also picks up snapshots installed by state sync
+  // A pack is unzipped, parsed and checked on a worker thread, never on the
+  // consensus thread; pages come back in batches and are indexed in short slices.
+  PACK_BATCH_PAGES: 50,
+  SLICE_MS: 10,
+  CHECK_TIMEOUT_MS: 5 * 60 * 1000,
+  WORKER_HEAP_MB: 1024,                  // a pack past this fails on its own; the node is unaffected
+  // Ingest writes share the node's one ordered persistence queue with consensus:
+  // indexing adds a slice only while that queue is short and fresh, so commits wait
+  // behind at most one slice and a slow disk never trips the 503 overload guard.
+  MAX_QUEUED_WRITES: 2,
+  MAX_OLDEST_WRITE_MS: 2000,
+  WRITE_WAIT_MS: 25,
+  // A slice is written once it holds this many rows (all tables), and after its
+  // writes land the ingest rests as long as they took: at most half the disk.
+  MAX_SLICE_ROWS: 1000,
+  REUSE_LOOKBACK: 10,                    // earlier snapshots searched for one whose index rows can be reused
+  PROGRESS_MS: 2000,                     // an indexing snapshot's page count is saved at most this often
+  // Per site, the newest snapshots kept in the index. An older one is pruned: its pages
+  // and index rows go, except index rows a kept page still points at. Records stay.
+  KEEP_SNAPSHOTS: 12,
+  PRUNE_BATCH: 200,                      // page rows deleted per paced batch
+  // failed: retried with backoff. mismatch: the pack named by pack_hash does not
+  // match its record (header, pages, root), never retried; shown as not verified.
+  // private: a private snapshot, never fetched. indexing: pack checked, pages being
+  // indexed (pages = indexed so far); a restart resumes it. pruned: older than the
+  // KEEP_SNAPSHOTS newest (pages = rows kept because newer pages still use them).
+  STATES: Object.freeze({ PENDING: "pending", INDEXING: "indexing", DONE: "done", FAILED: "failed", MISMATCH: "mismatch", PRIVATE: "private", PRUNED: "pruned" }),
+});
+
 // Registered again. Copies of someone's content (same normalized
 // content_hash, by an unconnected TIP-ID) registered from this instant tell
 // the first author in their Inbox. Read side only, not consensus: nodes on
@@ -1347,6 +1424,9 @@ module.exports = {
   URL_TAKEOVER_ACTIVATION_MS,
   DOMAIN_RELEASE_ACTIVATION_MS,
   DOMAIN_RELEASE,
+  SITE_SNAPSHOT,
+  SITE_INGEST,
+  DOMAIN_QUORUM,
   REGISTERED_AGAIN_ACTIVATION_MS,
   SHARED_HOST_DOMAINS,
   PRESCAN_REVIEW_CAP,

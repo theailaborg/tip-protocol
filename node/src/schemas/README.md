@@ -109,6 +109,7 @@ verification and commit-time re-verification.
 | `ORG_MEMBER_INVITED` | 4-field canonical (org sig) | ✅ | `schemas/org-member-invited.js` | inline header doc; shared state helpers in `schemas/_org-members.js` |
 | `ORG_MEMBER_ADDED` | 4-field canonical (member sig) | ✅ | `schemas/org-member-added.js` | inline header doc |
 | `ORG_MEMBER_REMOVED` | 5-field canonical (org or member sig) | ✅ | `schemas/org-member-removed.js` | inline header doc |
+| `SITE_SNAPSHOT` | 12-field canonical (owner sig, optional VP witness cosignature) | ✅ | `schemas/site-snapshot.js` | inline header doc + `docs/SITE_SNAPSHOT_SPEC.md` |
 | `CONTENT_VERIFIED` | (verifier sig) | ⏳ inline today | — | TBD |
 | `UPDATE_ORIGIN` | (author sig) | ⏳ inline today | — | TBD |
 | `CONTENT_RETRACTED` | (author sig) | ⏳ inline today | — | TBD |

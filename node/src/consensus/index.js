@@ -39,6 +39,8 @@ const { createVerdictTrigger } = require("./verdict-trigger");
 const { createCleanRecordTrigger } = require("./clean-record-trigger");
 const { createPrescanReviewTrigger } = require("./prescan-review-trigger");
 const { createPrescanCompletionTrigger } = require("./prescan-completion-trigger");
+const { createSiteIngest } = require("../perceptual/site-ingest");
+const { createCoAttest } = require("../domain/co-attest");
 const { createTxSubmitter } = require("../services/helpers");
 const { nowMs } = require("../../../shared/time");
 const { LOCALLY_VERIFIED_TX_CACHE_CAP, STATE_ROOT_INTEGRITY_CHECK_MS } = require("../../../shared/constants");
@@ -171,6 +173,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getCommittee,
   });
 
+  const siteIngest = createSiteIngest({ dag, sources: (config && config.siteArchiveUrls) || [], log: getLogger("tip.site.ingest") });
+  siteIngest.start();
+
+  // Domain bindings by committee quorum: this node checks claims others attested.
+  const coAttest = createCoAttest({ dag, config, submitTx: triggerSubmitter.submitTx, log: getLogger("tip.domain.coattest") });
+  coAttest.start();
+
   // Locally-verified tx cache: addTx-only (schema verified the signature at
   // the API; tx_id is content-addressed), consumed once at commit. Gossip,
   // trigger, and rotation txs never enter it and always fully verify.
@@ -188,7 +197,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // ── Create commit handler ─────────────────────────────────────────────────
   const commitHandler = createCommitHandler({
     dag, scoring, config, mempool,
-    verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger,
+    verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, siteIngest, coAttest,
     isLocallyVerified: _consumeLocallyVerified,
   });
 
@@ -640,6 +649,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       heartbeat.stop();
       clearInterval(_triggerFallbackTimer);
       clearInterval(_stateRootIntegrityTimer);
+      siteIngest.stop();
+      coAttest.stop();
       antiEntropy.stop();
       summary.stop();
       narwhal.stop();

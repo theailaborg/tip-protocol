@@ -20,7 +20,7 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS, KEY_RETIREMENT_GRACE_MS, KEY_RETIREMENT_ACTIVATION_MS, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, DOMAIN_QUORUM, PRESCAN_REVIEW_STATES, REGISTER_CREDIT, ORG_MEMBER_STATUS, KEY_RETIREMENT_GRACE_MS, KEY_RETIREMENT_ACTIVATION_MS, PRESCAN_REVIEW_CAP } = require("../../../shared/constants");
 const { regCreditSums, regCreditRemaining } = require("../reg-credit");
 const { inAnchorDedupActive } = require("./sealed-requeue-gate");
 const { validateTransaction } = require("../validators/tx-validator");
@@ -30,6 +30,8 @@ const { noteRegistration } = require("../services/registered-again");
 const contentRegisterSchema = require("../schemas/content-register");
 const registerIdentitySchema = require("../schemas/register-identity");
 const bindDomainSchema = require("../schemas/bind-domain");
+const { domainQuorumOn } = require("../validators/website-gate");
+const siteSnapshotSchema = require("../schemas/site-snapshot");
 const nodeEndpointUpdateSchema = require("../schemas/node-endpoint-update");
 const updateProfileSchema = require("../schemas/update-profile");
 const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggered");
@@ -108,6 +110,8 @@ function _mapBusinessRuleReason(error) {
   if (error.includes("Content already registered")) return TX_REJECTION_REASON.CONTENT_ALREADY_REGISTERED;
   if (error.includes("already bound to a different TIP-ID")) return TX_REJECTION_REASON.DOMAIN_ALREADY_CLAIMED;
   if (error.includes("reg_credit rate cap reached")) return TX_REJECTION_REASON.REG_CREDIT_CAP_REACHED;
+  if (error.startsWith(siteSnapshotSchema.STALE)) return TX_REJECTION_REASON.SITE_SNAPSHOT_STALE;
+  if (error.startsWith(siteSnapshotSchema.WITNESS_INVALID)) return TX_REJECTION_REASON.SITE_SNAPSHOT_WITNESS_INVALID;
   return TX_REJECTION_REASON.REVALIDATION_FAILED;
 }
 
@@ -178,6 +182,7 @@ function _actorTipId(tx) {
       return d.member_tip_id ?? null;
     case TX_TYPES.ORG_MEMBER_INVITE_CANCELLED:
     case TX_TYPES.ORG_MEMBER_REMOVED:
+    case TX_TYPES.SITE_SNAPSHOT:
       return d.signer_tip_id ?? null;
     // Content actions — actor field name varies by role.
     case TX_TYPES.REGISTER_CONTENT:
@@ -208,7 +213,7 @@ function _actorTipId(tx) {
   }
 }
 
-function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId, isLocallyVerified }) {
+function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, siteIngest, coAttest, config, nodeId, isLocallyVerified }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
   // as mempool rejections. nodeId precedence: explicit option →
@@ -716,6 +721,15 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         return { valid: true };
       }
 
+      // Siblings in one batch all extend the same committed head, so only the
+      // first snapshot per domain can be the next link.
+      case TX_TYPES.SITE_SNAPSHOT: {
+        if (typeof d.domain !== "string") return { valid: true };
+        const inBatch = validated.find(t => t.tx_type === TX_TYPES.SITE_SNAPSHOT && t.data?.domain === d.domain);
+        if (inBatch) return { valid: false, error: `${siteSnapshotSchema.STALE}: another snapshot of ${d.domain} is in this batch` };
+        return { valid: true };
+      }
+
       // AG-7: in-batch dedup for registration tx types. Phase 1 validates
       // all txs before Phase 2 writes anything, so two competing txs for the
       // same entity both see "not yet registered" in _statefulCheck and both
@@ -1046,8 +1060,12 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const sameSite = rules.websiteProtectionOn(tx.timestamp)
           ? (a, b) => rules.siteKey(a) === rules.siteKey(b)
           : (a, b) => a === b;
+        // With the quorum rule each node's BIND_DOMAIN is one attestation, so
+        // several nodes may attest a site in one batch, once each.
+        const perNode = domainQuorumOn(_siteAt(Number(tx.timestamp), certTimestamp));
         const inBatch = validated.find(t =>
-          t.tx_type === TX_TYPES.BIND_DOMAIN && typeof t.data?.domain === "string" && sameSite(t.data.domain, d.domain));
+          t.tx_type === TX_TYPES.BIND_DOMAIN && typeof t.data?.domain === "string" && sameSite(t.data.domain, d.domain)
+          && (!perNode || t.data.node_id === d.node_id));
         if (inBatch) return { valid: false, error: `duplicate BIND_DOMAIN in batch for domain ${d.domain}` };
         return { valid: true };
       }
@@ -1197,7 +1215,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // organization, user's claim_signature attestation still verifies.
         // GH #51 split — node binding signature is verified by the
         // unified dispatcher; this is the non-signature state piece.
-        const s = bindDomainSchema.verifyTx(tx, dag, { atMs: _siteAt(now, certTimestamp) });
+        const s = bindDomainSchema.verifyTx(tx, dag, { atMs: _siteAt(now, certTimestamp), certMs: certTimestamp });
         return s.ok ? { valid: true } : { valid: false, error: s.error };
       }
 
@@ -1391,6 +1409,13 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
+      // Judged at max(tx.timestamp, certificate time), so a backdated tx can
+      // neither enter before activation nor skip the owner and rate checks.
+      case TX_TYPES.SITE_SNAPSHOT: {
+        const r = siteSnapshotSchema.verifyTx(tx, dag, { atMs: _siteAt(Number(tx.timestamp), certTimestamp) });
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
       default:
         return { valid: true };
     }
@@ -1425,6 +1450,48 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
    * Apply derived state updates for a committed transaction.
    * Handles all tx types — identity, content, dispute, jury, appeal, revocation, governance.
    */
+  // Quorum rule: record this node's attestation; the binding (or its renewal)
+  // applies once ceil(2n/3) of the committee have attested the same claim.
+  // `at` is the certificate time, so the window cannot be stretched by a node.
+  function _applyAttestation(tx, at, round) {
+    const d = tx.data;
+    dag.saveDomainAttestation({
+      domain: d.domain, node_id: d.node_id, tip_id: d.tip_id, claimed_at: d.claimed_at,
+      claimed_method: d.claimed_method, verified_at: d.verified_at, tx_id: tx.tx_id,
+    });
+    const q = bindDomainSchema.attestationQuorum(dag, d, at, round);
+    const current = dag.getDomainBinding(d.domain);
+    const appliedThisWindow = current && current.binding_state === "verified" && current.tip_id === d.tip_id
+      && Number(current.claimed_at) === Number(d.claimed_at) && current.verified_at >= at - DOMAIN_QUORUM.WINDOW_MS;
+    if (q.have < q.need) {
+      if (coAttest) {
+        try { coAttest.enqueue(tx.tx_id); } catch (err) { log.warn(`co-attest enqueue failed for ${d.domain}: ${err.message}`); }
+      }
+      return;
+    }
+    if (appliedThisWindow) return;
+    // Expiry runs from the oldest check that made the quorum.
+    const verifiedAt = Math.min(...q.rows.map(r => r.verified_at));
+    const claimCosig = Array.isArray(d.cosignatures)
+      ? d.cosignatures.find(c => c && c.signer_kind === "subject" && c.signer_ref === d.tip_id)
+      : null;
+    dag.saveDomainBinding({
+      domain: d.domain,
+      tip_id: d.tip_id,
+      binding_state: d.binding_state,
+      method: d.method,
+      claimed_at: d.claimed_at,
+      verified_at: verifiedAt,
+      expires_at: verifiedAt + DOMAIN_HEALTHY_EXPIRY_MS,
+      consecutive_failures: 0,
+      node_id: d.node_id,
+      claim_signature: claimCosig ? claimCosig.signature : null,
+      binding_signature: tx.signature,
+      tx_id: tx.tx_id,
+    });
+    if (typeof dag.deletePendingDomainClaim === "function") dag.deletePendingDomainClaim(d.domain);
+  }
+
   function _applyDerivedState(tx, _committedCertTimestamp = 0, round = 0) {
     const d = tx.data || {};
 
@@ -1790,7 +1857,9 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       // blob is NOT persisted on the binding row — it lives on tx.data
       // for audit replay only.
       case TX_TYPES.BIND_DOMAIN:
-        if (d.domain && d.tip_id) {
+        if (d.domain && d.tip_id && domainQuorumOn(_siteAt(Number(tx.timestamp), _committedCertTimestamp))) {
+          _applyAttestation(tx, _committedCertTimestamp > 0 ? _committedCertTimestamp : _siteAt(Number(tx.timestamp), 0), round);
+        } else if (d.domain && d.tip_id) {
           // expires_at + consecutive_failures are v2 renewal prep slots
           // (adaptive-expiry RENEW_DOMAIN, deferred). Set deterministically
           // from verified_at — every replicating node computes the same
@@ -1916,6 +1985,32 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         }
         break;
       }
+
+      // registered_at is the tx envelope time, so every node writes the same row.
+      case TX_TYPES.SITE_SNAPSHOT:
+        dag.saveSiteSnapshot({
+          tx_id: tx.tx_id,
+          domain: d.domain,
+          seq: d.seq,
+          prev_snapshot_tx: d.prev_snapshot_tx ?? null,
+          root: d.root,
+          page_count: d.page_count,
+          template_hash: d.template_hash,
+          profile: d.profile,
+          wacz_hash: d.wacz_hash,
+          pack_hash: d.pack_hash,
+          ai_signals_hash: d.ai_signals_hash,
+          captured_at: d.captured_at,
+          signer_tip_id: d.signer_tip_id,
+          witness_vp_id: d.witness_vp_id ?? null,
+          visibility: d.visibility ?? null,
+          registered_at: tx.timestamp,
+        });
+        // Off-DAG pack ingest runs later and never touches consensus.
+        if (siteIngest) {
+          try { siteIngest.enqueue(tx.tx_id); } catch (err) { log.warn(`site ingest enqueue failed for ${tx.tx_id.slice(0, 16)}: ${err.message}`); }
+        }
+        break;
 
       case TX_TYPES.ORG_MEMBER_REMOVED: {
         const row = dag.getOrgMemberByAddTxId(d.add_tx_id);

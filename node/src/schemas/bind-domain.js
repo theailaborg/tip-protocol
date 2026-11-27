@@ -51,12 +51,12 @@ const DOMAIN_SPEC = Object.freeze({
 const {
   TX_TYPES, TIP_ID_TYPES,
   DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHOD_VALUES,
-  DOMAIN_UNBIND_REASON_VALUES, DOMAIN_UNBIND_REASONS, DOMAIN_RELEASE,
+  DOMAIN_UNBIND_REASON_VALUES, DOMAIN_UNBIND_REASONS, DOMAIN_RELEASE, DOMAIN_QUORUM,
   SIGNATURE_SCOPE, SIGNED_BY_KIND,
 } = require("../../../shared/constants");
 const { isValidMs } = require("../../../shared/time");
 const registerDomainSchema = require("./register-domain");
-const { mayBindDomain, domainReleaseOn } = require("../validators/website-gate");
+const { mayBindDomain, domainReleaseOn, domainQuorumOn } = require("../validators/website-gate");
 
 const TX_TYPE = TX_TYPES.BIND_DOMAIN;
 
@@ -187,6 +187,14 @@ function verifyTx(tx, dag, opts = {}) {
   const stale = registerDomainSchema.claimAfterRelease(dag, d.domain, d.claimed_at, at);
   if (stale) return { ok: false, ...stale };
 
+  // The window is measured from the certificate time (BFT-agreed), never from the
+  // attesting node's own tx.timestamp.
+  if (domainQuorumOn(at)) {
+    const ref = Number(opts.certMs) > 0 ? Number(opts.certMs) : at;
+    const attest = checkAttestation(d, dag, ref);
+    if (attest) return { ok: false, ...attest };
+  }
+
   // Cosignature verification runs in commit-handler via the cosignatures
   // dispatcher (calls getCosignatureContract below). Verify it here too
   // so the schema-level verifyTx remains a complete state check (used by
@@ -197,6 +205,37 @@ function verifyTx(tx, dag, opts = {}) {
   }
 
   return { ok: true };
+}
+
+// From the quorum activation a BIND_DOMAIN is one node's attestation: its check
+// must be recent, and a node attests a claim once per window.
+function checkAttestation(d, dag, at) {
+  if (!Number.isFinite(d.verified_at) || d.verified_at > at + DOMAIN_QUORUM.MAX_AHEAD_MS) {
+    return { status: 400, error: "verified_at is ahead of the commit time", code: "attestation_ahead" };
+  }
+  if (d.verified_at < at - DOMAIN_QUORUM.WINDOW_MS) {
+    return { status: 400, error: "verified_at is older than the attestation window", code: "attestation_stale" };
+  }
+  const prev = typeof dag.getDomainAttestation === "function" ? dag.getDomainAttestation(d.domain, d.node_id) : null;
+  if (prev && sameClaim(prev, d) && prev.verified_at >= at - DOMAIN_QUORUM.WINDOW_MS) {
+    return { status: 409, error: `${d.node_id} already attested this claim for ${d.domain}`, code: "attestation_duplicate" };
+  }
+  return null;
+}
+
+const sameClaim = (a, b) => a.tip_id === b.tip_id && Number(a.claimed_at) === Number(b.claimed_at);
+
+// Committee attestations for one claim within the window ending at `at`. Rows are
+// one per (domain, node), so `have` counts distinct committee members.
+function attestationQuorum(dag, claim, at, round) {
+  const { getActiveCommittee } = require("../consensus/participants");
+  const { computeQuorum } = require("../consensus/certificate");
+  const committee = getActiveCommittee(dag, round);
+  const members = new Set(committee);
+  const since = at - DOMAIN_QUORUM.WINDOW_MS;
+  const rows = dag.listDomainAttestations(claim.domain)
+    .filter(r => sameClaim(r, claim) && r.verified_at >= since && members.has(r.node_id));
+  return { have: rows.length, need: Math.max(1, computeQuorum(committee.length)), rows };
 }
 
 /**
@@ -395,8 +434,11 @@ function verifyUnbindTx(tx, dag, opts = {}) {
 }
 
 module.exports = {
+  checkAttestation,
+  attestationQuorum,
   TX_TYPE,
   TX_TYPE_UNBIND: TX_TYPES.UNBIND_DOMAIN,
+  DOMAIN_SPEC,
   BIND_DOMAIN_STATES,
   buildSigningPayload,
   buildUnbindSigningPayload,

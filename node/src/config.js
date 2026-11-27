@@ -181,6 +181,11 @@ function loadConfig() {
       timeoutMs: parseInt(process.env.TIP_WEBSITE_PAGES_TIMEOUT_MS || "", 10) || 3000,
     },
 
+    // Where this node fetches site snapshot fingerprint packs by hash (comma-
+    // separated base URLs, tried in order). Empty: snapshots are recorded but
+    // not indexed for similar search or page reads.
+    siteArchiveUrls: (process.env.TIP_SITE_ARCHIVE_URLS || "").split(",").map(s => s.trim()).filter(Boolean),
+
     // ── Team seats (optional billing service) ─────────────────────────────────
     // Same channel as mediaQuota; see services/seat-allowance-client.js.
     seats: {

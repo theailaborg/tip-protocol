@@ -11,6 +11,82 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.10.0: domain bindings by committee quorum** (consensus change behind `DOMAIN_QUORUM.ACTIVATION_MS`,
+provisional 2026-12-15 00:00 UTC, with site snapshots; `TIP_DOMAIN_QUORUM_ACTIVATION_MS`
+overrides it outside production)
+- A `BIND_DOMAIN` is one node's attestation that it saw the owner's DNS record or
+  well-known file. A binding or its renewal applies only once ceil(2n/3) of the committee
+  have attested the same claim within an hour of the certificate time (4 of 5 today); the
+  signed bytes are unchanged. Until now one node's check bound a site.
+- Every node checks claims other nodes attested and attests too when the proof holds
+  (`node/src/domain/co-attest.js`, retries within the hour, reconcile at start).
+- Canonical table `domain_attestations` (migration `019_domain_attestations`, keyed by
+  domain and node, in the state root and snapshot install), on every store.
+- `verify` / `renew` answers and `GET /v1/domain/:domain` show the attestations so far.
+
+**Node 2.10.0: site snapshots, one owner-signed record per version of a whole website** (consensus
+change behind `SITE_SNAPSHOT.ACTIVATION_MS`, provisional 2026-12-15 00:00 UTC; every node
+upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside production)
+- New tx type `SITE_SNAPSHOT`: the site's owner, or an active member of the owning
+  organization, signs 12 fields (domain, seq, prev_snapshot_tx, root, page_count,
+  template_hash, profile `cf-web-1`, wacz_hash, pack_hash, ai_signals_hash, captured_at,
+  signer_tip_id). Every hash is SHAKE-256. An optional witness is the capturing VP's
+  ML-DSA-65 signature over the same payload, carried as a VP cosignature.
+- Commit rules, judged at max(tx time, certificate time): live binding and owner or
+  member, chain (`prev_snapshot_tx` is the domain's latest, `seq` + 1, first wins, the
+  loser is `site_snapshot_stale`), at least 10 minutes after the previous snapshot,
+  `captured_at` later than the previous and not ahead of the commit time, witness VP
+  registered and active (`site_snapshot_witness_invalid`).
+- Canonical table `site_snapshots` (migration `017_site_snapshots`, in the state root
+  and snapshot install), on every store.
+- `POST /v1/site/snapshot`, `GET /v1/site/:domain/snapshots`, `GET /v1/site/snapshot/:tx`
+  (`docs/API.md`); the operator's plan is asked first (`POST /api/websites/snapshot`,
+  fails open, a refusal is kept until `next_allowed_at`).
+- Off-DAG pack ingest (node-local, advisory, rebuildable): after commit each node fetches
+  the snapshot's fingerprint pack by `pack_hash` from `TIP_SITE_ARCHIVE_URLS`, and indexes
+  it only if its SHAKE-256, header (domain, seq), page count and Merkle root match the
+  record (`web.packRoot` over every page line, so a URL twice is refused too); off-site
+  pages stay in the root but are never indexed; an unreachable pack retries with backoff
+  (`failed`), a pack that does not match is refused for good (`mismatch`, shown as not
+  verified); downloads stop at 64 MiB and unpacking at 256 MiB; tables `site_page` and `site_ingest`
+  (migration `018_site_pages`, node-local).
+- `GET /v1/site/:domain/page?url=&at=`: one page of the snapshot covering `at`, with a
+  Merkle proof the node checks with `web.verifyPage`, and `changed` / `kept` against the
+  previous snapshot.
+- Private snapshots: an optional signed `visibility: "private"` (absent keeps the 12-field
+  bytes). Nodes keep the record and root but never fetch or index the pack; page reads
+  answer `404 site_snapshot_private`. Column `site_snapshots.visibility` (migration
+  `020_site_snapshot_visibility`), omitted from the canonical row when null, so public
+  rows hash as before.
+- Old snapshots are pruned from each node's index: a site keeps its newest 12 indexed
+  snapshots; an older one loses its page rows and the index rows no kept page uses (paced
+  deletes; `tip_ctid` indexes, migration `023_index_ctid_lookup`). Its record stays on TIP;
+  ingest state `pruned`, page reads `404 site_snapshot_pruned`.
+- Indexing progress: while a node indexes a pack, `GET /v1/site/snapshot/:tx` answers
+  `ingest: { state: "indexing", pages, total }` (pages indexed so far, refreshed about every
+  2 s); a node that stops part-way resumes at its next start.
+- Unchanged pages are not indexed again: a page whose indexed content and owner equal
+  the previous snapshot's points at that version's index rows (`site_page.index_key`,
+  `index_hash`, migration `022_site_page_index_reuse`), so only new and changed pages
+  cost index storage. Site cards name the snapshot that first archived the matching
+  version and add `last_seen_seq`.
+- Pack ingest never blocks consensus: the pack is hashed while it downloads, then
+  unpacked, checked and given per-page Merkle proofs on a worker thread (capped heap,
+  timeout on the check); pages are indexed in short slices, written one batch per table
+  per slice (new store primitive `savePerceptualFingerprints`), and indexing waits while
+  the node's write queue is long, so memory stays bounded and commits never queue
+  behind a pack. A page read checks the proof stored at
+  ingest (`site_page.proof`, migration `021_site_page_proof`, which clears pages indexed
+  without one so they are rebuilt) instead of rebuilding the tree. A snapshot holds at
+  most 20,000 pages.
+- Similar search: archived pages are found by text and pictures, and by documents
+  through paragraph keys weighted by how many site owners hold them; returned apart from
+  content as `sites` (`GET /v1/content/:ctid/similar`) and `near_duplicate_sites`
+  (`POST /v1/content/register`).
+- tip-content-fingerprint 2.9.0 (`cf-web-1`, the v2.9.0 release tarball, SHAKE-256
+  `3b963bbf1959b664f1ba1253dd634ed6890720c8f623c897a6a3ca0d6854929f`); 2.7.1 to 2.9.0
+  changes nothing the node already used. Page proofs come from its `web.merkleTree`.
+
 **Node 2.9.10: a licensed organization's signed emails are one pool** (API time only,
 no consensus change and no activation; mixed versions are safe)
 - The billing answer to `POST /api/email-signs/check` may now carry
@@ -145,6 +221,12 @@ run 2.9.9 before it)
   by design) without fetching each record.
 
 ### Fixed
+
+**Node 2.10.0: in-memory store picture-hash and passage indexes no longer rescan on every insert**
+- `savePhashCodes` rebuilt a set of every stored code on each call, and
+  `saveDocumentPassages` scanned every holder of each key, so indexing slowed as the store
+  grew (a 1,000-page snapshot took two minutes in tests). Both keep a key set now, like
+  `saveMinhashBands`. The Postgres (Knex) store was not affected.
 
 **Node 2.9.11: a snapshot install stays exact under load, and a diverged node that is
 not ready recovers** (no commit-rule change and no activation; serving nodes first)

@@ -35,6 +35,7 @@ const { createDisputeDetailsService } = require("./services/dispute-details-serv
 const { createRevocationService } = require("./services/revocation-service");
 const { createGovernanceService } = require("./services/governance-service");
 const { createDomainService } = require("./services/domain-service");
+const { createSiteService } = require("./services/site-service");
 const { createReviewService } = require("./services/review-service");
 const { createStatsService } = require("./services/stats-service");
 const { createMediaService } = require("./services/media-service");
@@ -57,6 +58,7 @@ const revocationRoutes = require("./routes/revocation");
 const governanceRoutes = require("./routes/governance");
 const dagRoutes = require("./routes/dag");
 const domainRoutes = require("./routes/domain");
+const siteRoutes = require("./routes/site");
 const reviewRoutes = require("./routes/reviews");
 const mediaRoutes = require("./routes/media");
 const prescanCallbackRoutes = require("./routes/prescan-callback");
@@ -120,6 +122,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   const revocationService = createRevocationService(ctx);
   const governanceService = createGovernanceService(ctx);
   const domainService = createDomainService(ctx);
+  const siteService = createSiteService(ctx);
   const reviewService = createReviewService(ctx);
   const statsService = createStatsService(ctx);
 
@@ -236,6 +239,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, revocationRoutes.createRouter({ revocationService }));
   app.use(API_VERSION, governanceRoutes.createRouter({ governanceService }));
   app.use(API_VERSION, domainRoutes.createRouter({ domainService }));
+  app.use(API_VERSION, siteRoutes.createRouter({ siteService }));
   app.use(API_VERSION, reviewRoutes.createRouter({ reviewService }));
   app.use(API_VERSION, mediaRoutes.createRouter({ mediaService, chunkedUploadService }));
   app.use(API_VERSION, dagRoutes.createRouter(ctx));

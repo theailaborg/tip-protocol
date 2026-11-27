@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS `document_passage` (`profile` varchar(64) not null, `
 
 CREATE TABLE IF NOT EXISTS `document_text` (`tip_ctid` varchar(512) not null, `component_idx` integer not null, `profile` varchar(64) not null, `text_hash` varchar(64) not null, `chars` integer not null, `text` text, primary key (`tip_ctid`, `component_idx`));
 
+CREATE TABLE IF NOT EXISTS `domain_attestations` (`domain` varchar(253) not null, `node_id` varchar(512) not null, `tip_id` varchar(512) not null, `claimed_at` bigint not null, `claimed_method` varchar(8) not null, `verified_at` bigint not null, `tx_id` varchar(64) not null, primary key (`domain`, `node_id`));
+
 CREATE TABLE IF NOT EXISTS `domain_bindings` (`domain` varchar(253), `tip_id` varchar(512) not null, `binding_state` varchar(32) not null, `method` varchar(16) not null, `claimed_at` bigint not null, `verified_at` bigint not null, `expires_at` bigint not null, `consecutive_failures` integer not null default '0', `node_id` varchar(512) not null, `claim_signature` text not null, `binding_signature` text not null, `tx_id` varchar(512) not null, primary key (`domain`));
 
 CREATE TABLE IF NOT EXISTS `entity_keys` (`entity_type` varchar(32) not null, `entity_id` varchar(128) not null, `public_key` text not null, `algorithm` varchar(64) not null default 'ml-dsa-65', `valid_from_ts` bigint not null, `valid_to_ts` bigint null, `source_tx_id` varchar(512) not null, constraint `pk_entity_keys` primary key (`entity_type`, `entity_id`, `valid_from_ts`));
@@ -63,6 +65,12 @@ CREATE TABLE IF NOT EXISTS `rotation_participation` (`node_id` varchar(512) not 
 
 CREATE TABLE IF NOT EXISTS `scores` (`tip_id` varchar(512), `score` integer not null default '500', `offense_count` integer not null default '0', `last_updated` bigint not null, primary key (`tip_id`));
 
+CREATE TABLE IF NOT EXISTS `site_ingest` (`snapshot_tx` varchar(64), `domain` varchar(253) not null, `seq` bigint not null, `state` varchar(16) not null, `attempts` integer not null default '0', `next_attempt_at` bigint not null default '0', `last_error` text null, `pages` integer null, `offsite` integer null, `source` text null, `updated_at` bigint not null, primary key (`snapshot_tx`));
+
+CREATE TABLE IF NOT EXISTS `site_page` (`page_key` varchar(96), `snapshot_tx` varchar(64) not null, `domain` varchar(253) not null, `seq` bigint not null, `url` text not null, `text_hash` varchar(64) not null, `page_hash` varchar(64) not null, `offsite` integer not null default '0', `changed` integer null, `kept` float null, `paragraph_keys` text not null, `created_at` bigint not null, `proof` text null, `index_key` varchar(96) null, `index_hash` varchar(64) null, primary key (`page_key`));
+
+CREATE TABLE IF NOT EXISTS `site_snapshots` (`tx_id` varchar(64), `domain` varchar(253) not null, `seq` bigint not null, `prev_snapshot_tx` varchar(64) null, `root` varchar(64) not null, `page_count` integer not null, `template_hash` varchar(64) not null, `profile` varchar(32) not null, `wacz_hash` varchar(64) not null, `pack_hash` varchar(64) not null, `ai_signals_hash` varchar(64) not null, `captured_at` bigint not null, `signer_tip_id` varchar(512) not null, `witness_vp_id` varchar(512) null, `registered_at` bigint not null, `visibility` varchar(16) null, primary key (`tx_id`));
+
 CREATE TABLE IF NOT EXISTS `transactions` (`tx_id` varchar(512), `tx_type` varchar(64) not null, `data` text not null, `timestamp` bigint not null, `signature` text null, `subject_tip_id` varchar(512) null, `local_inserted_at` bigint not null default (unixepoch() * 1000), primary key (`tx_id`));
 
 CREATE TABLE IF NOT EXISTS `tx_rejections` (`tx_id` varchar(128), `reason` varchar(64) not null, `reason_detail` text null, `rejected_at_ms` bigint not null, `rejected_at_round` integer null, `dropper_node_id` varchar(512) not null, `tx_type` varchar(64) null, `origin_node_id` varchar(512) null, `tx_data` text null, `subject_tip_id` varchar(512) null, primary key (`tx_id`));
@@ -99,6 +107,8 @@ CREATE INDEX IF NOT EXISTS `idx_content_signer` on `content` (`signer_tip_id`);
 
 CREATE INDEX IF NOT EXISTS `idx_content_status` on `content` (`status`);
 
+CREATE INDEX IF NOT EXISTS `idx_document_passage_ctid` on `document_passage` (`tip_ctid`);
+
 CREATE INDEX IF NOT EXISTS `idx_document_text_hash` on `document_text` (`profile`, `text_hash`);
 
 CREATE INDEX IF NOT EXISTS `idx_dom_bind_expires` on `domain_bindings` (`expires_at`);
@@ -106,6 +116,8 @@ CREATE INDEX IF NOT EXISTS `idx_dom_bind_expires` on `domain_bindings` (`expires
 CREATE INDEX IF NOT EXISTS `idx_dom_bind_state` on `domain_bindings` (`binding_state`);
 
 CREATE INDEX IF NOT EXISTS `idx_dom_bind_tip_id` on `domain_bindings` (`tip_id`);
+
+CREATE INDEX IF NOT EXISTS `idx_domain_attestations_claim` on `domain_attestations` (`domain`, `tip_id`, `claimed_at`);
 
 CREATE INDEX IF NOT EXISTS `idx_entity_keys_active` on `entity_keys` (`entity_type`, `entity_id`, `valid_to_ts`);
 
@@ -116,6 +128,8 @@ CREATE INDEX IF NOT EXISTS `idx_id_type` on `identities` (`tip_id_type`);
 CREATE INDEX IF NOT EXISTS `idx_id_vp` on `identities` (`vp_id`);
 
 CREATE INDEX IF NOT EXISTS `idx_interests_registry_category` on `interests_registry` (`category`);
+
+CREATE INDEX IF NOT EXISTS `idx_minhash_band_ctid` on `minhash_band` (`tip_ctid`);
 
 CREATE INDEX IF NOT EXISTS `idx_minhash_band_lookup` on `minhash_band` (`profile`, `band_idx`, `band_hash`);
 
@@ -174,6 +188,14 @@ CREATE INDEX IF NOT EXISTS `idx_prescan_reviews_reviewer` on `prescan_reviews` (
 CREATE INDEX IF NOT EXISTS `idx_prescan_reviews_state` on `prescan_reviews` (`state`);
 
 CREATE INDEX IF NOT EXISTS `idx_rotation_participation_rotation` on `rotation_participation` (`rotation_number`);
+
+CREATE INDEX IF NOT EXISTS `idx_site_ingest_state` on `site_ingest` (`state`, `next_attempt_at`);
+
+CREATE INDEX IF NOT EXISTS `idx_site_page_index_key` on `site_page` (`index_key`);
+
+CREATE INDEX IF NOT EXISTS `idx_site_page_snapshot` on `site_page` (`snapshot_tx`);
+
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_site_snapshots_domain_seq` on `site_snapshots` (`domain`, `seq`);
 
 CREATE INDEX IF NOT EXISTS `idx_tx_rej_at` on `tx_rejections` (`rejected_at_ms`);
 
