@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-**Domain bindings by committee quorum** (consensus change behind `DOMAIN_QUORUM.ACTIVATION_MS`,
+**Node 2.10.0: domain bindings by committee quorum** (consensus change behind `DOMAIN_QUORUM.ACTIVATION_MS`,
 provisional 2026-12-15 00:00 UTC, with site snapshots; `TIP_DOMAIN_QUORUM_ACTIVATION_MS`
 overrides it outside production)
 - A `BIND_DOMAIN` is one node's attestation that it saw the owner's DNS record or
@@ -24,7 +24,7 @@ overrides it outside production)
   domain and node, in the state root and snapshot install), on every store.
 - `verify` / `renew` answers and `GET /v1/domain/:domain` show the attestations so far.
 
-**Site snapshots: one owner-signed record per version of a whole website** (consensus
+**Node 2.10.0: site snapshots, one owner-signed record per version of a whole website** (consensus
 change behind `SITE_SNAPSHOT.ACTIVATION_MS`, provisional 2026-12-15 00:00 UTC; every node
 upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside production)
 - New tx type `SITE_SNAPSHOT`: the site's owner, or an active member of the owning
@@ -222,7 +222,7 @@ run 2.9.9 before it)
 
 ### Fixed
 
-**In-memory store: picture-hash and passage indexes no longer rescan on every insert**
+**Node 2.10.0: in-memory store picture-hash and passage indexes no longer rescan on every insert**
 - `savePhashCodes` rebuilt a set of every stored code on each call, and
   `saveDocumentPassages` scanned every holder of each key, so indexing slowed as the store
   grew (a 1,000-page snapshot took two minutes in tests). Both keep a key set now, like
