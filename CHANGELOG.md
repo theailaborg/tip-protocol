@@ -146,6 +146,37 @@ run 2.9.9 before it)
 
 ### Fixed
 
+**Node 2.9.11: a snapshot install stays exact under load, and a diverged node that is
+not ready recovers** (no commit-rule change and no activation; serving nodes first)
+- A node that installed a snapshot while the network kept committing could end up
+  with state no other node had, and never recover. Seen live on 2026-11-22: a mainnet
+  node stayed in `catching_up` for 52 hours with one post missing. Commits ran during
+  the install, its final reconcile deleted their effects but kept their tx rows, and
+  replay skips a tx it already holds.
+- Commit ordering (Bullshark and the peer-sync replay) pauses while a snapshot
+  installs and resumes in order from the snapshot's cut. Nothing commits on a partly
+  installed state (a failed install, or a reboot with the install marker set) until
+  an install lands.
+- Snapshot history is cut at the header on both sides. The serving node streams only
+  the txs and commits at or below the header; the joiner refuses a stream that is not
+  cut, replaces its commit and tx history with the snapshot's, drops local rotations
+  past it, and aligns its commit frontier and anchor count to the snapshot exactly.
+- Bulk-install writes are no longer lost: every queued write runs and is awaited in
+  call order, and rows left when the install ends reach the database. Before, the
+  mirror kept rows the database had lost and the parity probe fail-stopped the node.
+- An install owns its state: resetting the anti-entropy guard no longer lets a second
+  install start under a running one.
+- A node that is not ready and still disagrees with ready peers on the same round
+  after `TIP_SELF_SYNC_DIVERGENCE_GRACE_MS` (default 5 minutes, per join phase) treats
+  it as divergence: f+1 halt, then majority recovery. Before, it graced the mismatch
+  forever.
+- A majority-confirmed recovery may install a snapshot older than a local head the
+  network never made, so a minority node holding a stray commit can rejoin.
+- Rollout: Lab (serving) nodes first, partners after. Under load an upgraded joiner
+  refuses an uncut stream from an older server; an older joiner accepts a cut stream.
+  No database migration and no wipe: a node that is already diverged recovers on its
+  own after the upgrade.
+
 **Node 2.9.7: an accepted transaction is never lost after its certificate is sealed**
 - A tx answered 202 and sealed into the receiving node's own certificate could be
   lost when no committed anchor ever reached that certificate (the node skipped a
