@@ -236,6 +236,36 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     expect(narwhal.joinState()).toBe("catching_up");
   });
 
+  test("certs synced while a snapshot install pauses ordering are not replayed or marked ordered; otherwise they are", async () => {
+    const run = async (paused) => {
+      const narwhal = stubNarwhal();
+      narwhal.markSnapshotInstalled(100, 150);
+      const syncHandler = { calls: [], syncFromPeer: async () => ({ imported: 5, fromRound: 641, toRound: 645, peerLatestRound: 645 }) };
+      const marked = [];
+      const replayed = [];
+      const bullshark = { markOrderedUpTo: (r) => marked.push(r), lastCommittedRound: () => 640, orderingPaused: () => paused };
+      const dag = {
+        getLatestRound: () => 640,
+        getCommitsFromRound: (r) => [{ round: r, anchor_cert_hash: `a${r}` }],
+        getCertificate: () => ({ timestamp: 1767225600000 }),
+        getCertificatesByRound: (r) => [{ batch: { txs: [{ tx_id: `t${r}` }] } }],
+      };
+      await onPeerAuthorized("peer-p", "TIP_NODE_A", {
+        queryPeerStatus: async () => ({ committed_round: 999999 }),
+        syncHandler, snapshotHandler: { requestSnapshotFromPeer: async () => null },
+        commitHandler: { commitOrderedTxs: (txs, r) => { replayed.push(r); return { committed: txs.length, dropped: 0 }; } },
+        dag, narwhal, bullshark, nodeId: "OUR_NODE",
+      });
+      return { marked, replayed };
+    };
+    const whilePaused = await run(true);
+    expect(whilePaused.replayed).toHaveLength(0);
+    expect(whilePaused.marked).toHaveLength(0);
+    const normal = await run(false);
+    expect(normal.replayed).toEqual([641, 642, 643, 644, 645]);
+    expect(normal.marked).toEqual([645]);
+  });
+
   test("phase-2 watermark is the installed cert tail, not the snapshot's commit round", async () => {
     const narwhal = stubNarwhal();
     const syncHandler = stubSyncHandler();

@@ -20,21 +20,43 @@ const { createStreamPair } = require("./stream-pair");
 // optionally truncates at `truncateAfterFraction` of the total (a fraction, so
 // the cut lands past the header regardless of absolute size). A truncated
 // stream ends mid-frame / before END, exactly a dropped connection.
-async function attemptInstall(sourceDag, destDag, { chunkSize = 8, truncateAfterFraction = 1 } = {}) {
+// onFirstServerFrame runs once the header has left the server, before the later phases are built.
+// midStream(destHandler) runs once the client has read half the stream (past the header, mid-install).
+async function attemptInstall(sourceDag, destDag, {
+  chunkSize = 8, truncateAfterFraction = 1, onFirstServerFrame = null, destOptions = {}, midStream = null, requestOptions = {},
+} = {}) {
   const { client, server } = createStreamPair();
+  let streamBytes = 0;
 
   const origServerSink = server.sink;
   server.sink = async (src) => {
     await origServerSink((async function* () {
       const parts = [];
-      for await (const f of src) parts.push(Buffer.from(f));
+      for await (const f of src) {
+        if (parts.length === 0 && onFirstServerFrame) onFirstServerFrame();
+        parts.push(Buffer.from(f));
+      }
       const whole = Buffer.concat(parts);
       const limit = Math.floor(whole.length * Math.min(1, truncateAfterFraction));
+      streamBytes = limit;
       for (let off = 0; off < limit; off += chunkSize) {
         yield whole.subarray(off, Math.min(off + chunkSize, limit));
       }
     })());
   };
+
+  if (midStream) {
+    const src = client.source;
+    let read = 0;
+    let fired = false;
+    client.source = (async function* () {
+      for await (const chunk of src) {
+        read += chunk.length;
+        if (!fired && streamBytes > 0 && read >= streamBytes / 2) { fired = true; await midStream(destHandler); }
+        yield chunk;
+      }
+    })();
+  }
 
   const sourceHandler = createSnapshotHandler({
     dag: sourceDag,
@@ -45,11 +67,12 @@ async function attemptInstall(sourceDag, destDag, { chunkSize = 8, truncateAfter
     dag: destDag,
     network: { node: {}, openStream: async () => client },
     isAuthorizedPeer: () => true,
+    ...destOptions,
   });
 
   const results = await Promise.allSettled([
     sourceHandler._handleIncomingSnapshot(server, "test-client"),
-    destHandler.requestSnapshotFromPeer("test-server", {}),
+    destHandler.requestSnapshotFromPeer("test-server", requestOptions),
   ]);
   const clientResult = results[1];
   if (clientResult.status === "rejected") throw clientResult.reason;

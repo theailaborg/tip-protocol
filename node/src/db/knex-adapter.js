@@ -746,12 +746,27 @@ class KnexAdapter {
   // final SQL state matches the mirror. Failures are swallowed per-write so a
   // single bad write doesn't poison the chain for everyone behind it.
   _ff(fn) {
-    // Bulk install: run the write NOW so _dbInsert buffers the row for batchInsert.
-    // Inserts-only into cleared tables, so no ordering hazard vs the _ffChain.
-    if (this._bulkInstall) { fn(); return; }
+    // Bulk install: run the write NOW so _dbInsert buffers the row for batchInsert. Anything else
+    // it returns (a lazy delete builder, an async write) must still run, and flush() awaits it.
+    if (this._bulkInstall) {
+      // A builder made now would bind to a transaction still mid-flush and run after it ends.
+      const prevTrx = this._activeTrx;
+      this._activeTrx = null;
+      let pending;
+      try { pending = fn(); } finally { this._activeTrx = prevTrx; }
+      if (pending && typeof pending.then === "function") {
+        this._chainBulkPass();   // rows buffered before this write land before it
+        this._chainWrite(() => pending);
+      }
+      return;
+    }
     // Inside runInTransaction(fn): buffer the write so it joins the single
     // transaction flushed afterwards, instead of firing on its own connection.
     if (this._txBuffer) { this._txBuffer.push(fn); return; }
+    this._chainWrite(fn);
+  }
+
+  _chainWrite(fn) {
     this._ffPendingSince.push(nowMs());
     this._ffChain = (this._ffChain || Promise.resolve())
       .then(() => fn())
@@ -780,19 +795,24 @@ class KnexAdapter {
   // only INSERT when the UPDATE affects 0 rows. If a concurrent writer sneaks
   // in between the 0-row UPDATE and our INSERT, the duplicate-key catch fires
   // a second UPDATE so our value still wins.
-  async _dbInsert(table, pkCols, row, onConflict) {
+  _dbInsert(table, pkCols, row, onConflict) {
     // Snapshot bulk install: collect the row (with its pk + conflict mode) for a
     // per-table chunked INSERT in _flushBulkBuffers , ~100x fewer round-trips than
     // the per-row path (the difference between finishing inside the download
     // deadline and timing out on a large, WAN-served snapshot). Conflict handling
     // is preserved there because non-state tables (transactions/certs/commits)
-    // aren't cleared and collide with genesis-seeded rows.
+    // aren't cleared and collide with genesis-seeded rows. Returns nothing, so
+    // _ff chains no per-row promise for a buffered row.
     if (this._bulkInstall) {
       let buf = this._bulkInstall.get(table);
       if (!buf) { buf = { pkCols, onConflict, rows: [] }; this._bulkInstall.set(table, buf); }
       buf.rows.push(row);
-      return;
+      return undefined;
     }
+    return this._dbInsertNow(table, pkCols, row, onConflict);
+  }
+
+  async _dbInsertNow(table, pkCols, row, onConflict) {
     if (!this._noOnConflict) {
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const q = this._k(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
@@ -865,6 +885,7 @@ class KnexAdapter {
   getRecentPrev() { return this.mirror.getRecentPrev ? this.mirror.getRecentPrev() : []; }
 
   *iterateAllTransactions() { yield* this.mirror.iterateAllTransactions(); }
+  transactionIdSet() { return this.mirror.transactionIdSet(); }
 
   // ── Identities ─────────────────────────────────────────────────────────────
 
@@ -1763,7 +1784,25 @@ class KnexAdapter {
 
   saveCommit(rec) {
     this.mirror.saveCommit(rec);
-    const row = {
+    const row = this._commitRow(rec);
+    this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
+  }
+
+  // Snapshot install, before the streamed history is saved: awaited, so no buffered commit row
+  // can land ahead of the delete, and local rows cannot collide with it on consensus_index.
+  async clearCommits() {
+    this.mirror.clearCommits();
+    await this.flush();
+    try {
+      await this._k("commits").del();
+    } catch (err) {
+      this.log.error(`KnexAdapter commit history clear failed , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
+  }
+
+  _commitRow(rec) {
+    return {
       round: rec.round,
       anchor_cert_hash: rec.anchor_cert_hash,
       leader_node_id: rec.leader_node_id,
@@ -1780,7 +1819,6 @@ class KnexAdapter {
       anchor_batch_hash: rec.anchor_batch_hash || null,
       local_inserted_at: nowMs(),
     };
-    this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
   }
 
   getCommit(round) { return this.mirror.getCommit(round); }
@@ -1839,6 +1877,31 @@ class KnexAdapter {
   pruneSupersededContentTxs() {
     const ids = this.mirror.pruneSupersededContentTxs();
     if (ids.length > 0) this._ff(() => this._k("transactions").whereIn("tx_id", ids).delete());
+    return ids;
+  }
+  async pruneCommitteeRotationsAfter(rotationNumber) {
+    const removed = this.mirror.pruneCommitteeRotationsAfter(rotationNumber);
+    if (removed.length === 0) return removed;
+    await this.flush();
+    try {
+      await this._k("committee_history").where("rotation_number", ">", rotationNumber).delete();
+    } catch (err) {
+      this.log.error(`KnexAdapter rotation history prune failed , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
+    return removed;
+  }
+  async pruneTransactionsExcept(keepIds) {
+    const ids = this.mirror.pruneTransactionsExcept(keepIds);
+    await this.flush();
+    try {
+      for (let i = 0; i < ids.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+        await this._k("transactions").whereIn("tx_id", ids.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS)).delete();
+      }
+    } catch (err) {
+      this.log.error(`KnexAdapter tx history prune failed , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
     return ids;
   }
   deleteMempoolTxs(txIds) {
@@ -2107,52 +2170,77 @@ class KnexAdapter {
    * for the claim-timeout safety net to recover.
    */
   async flush() {
+    this._chainBulkPass();
     if (this._ffChain) {
       try { await this._ffChain; } catch { /* per-write errors already logged */ }
     }
-    if (this._bulkInstall && this._bulkInstall.size > 0) await this._flushBulkBuffers();
+  }
+
+  // Bulk rows ride the write chain: each pass takes the rows buffered when it is queued, so
+  // concurrent flushers never share a batch and a buffered insert keeps its place before later writes.
+  _chainBulkPass() {
+    if (!this._bulkInstall) return;
+    const taken = [];
+    for (const [table, buf] of this._bulkInstall) {
+      if (buf.rows.length > 0) taken.push([table, buf.pkCols, buf.onConflict, buf.rows.splice(0)]);
+    }
+    if (taken.length === 0) return;
+    this._chainWrite(async () => {
+      for (const [table, pkCols, onConflict, rows] of taken) await this._insertBulkRows(table, pkCols, onConflict, rows);
+      // Bulk rows bypass the per-row path; a stale clock read the first post-install
+      // write as a multi-minute stall and fail-stopped a healthy node.
+      this._ffLastSettledMs = nowMs();
+    });
   }
 
   // batchInsert each table's buffer (chunked under the bind-parameter cap). A
   // failed chunk fail-stops: a partial snapshot rehydrates a divergent mirror on
   // restart, and the crash marker keeps the node in syncing either way.
-  async _flushBulkBuffers() {
-    for (const [table, buf] of this._bulkInstall) {
-      const { pkCols, onConflict, rows } = buf;
-      if (rows.length === 0) continue;
-      // transactions/certs/commits are not cleared before install and the joiner's
-      // genesis seed already wrote the genesis rows, so the full-history stream
-      // collides on tx_id: insert with ON CONFLICT (skip the dupes), never fail-stop.
-      const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
-      const conflictTarget = pks.length === 1 ? pks[0] : pks;
-      // Postgres rejects one upsert statement touching a key twice; collapse
-      // merge buffers to the last write per key (same as applying in order).
-      let rowsOut = rows;
-      if (onConflict === "merge") {
-        const byPk = new Map();
-        for (const r of rows) byPk.set(JSON.stringify(pks.map(c => r[c])), r);
-        rowsOut = [...byPk.values()];
-      }
-      try {
-        for (let i = 0; i < rowsOut.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
-          const chunk = rowsOut.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
-          const q = this._k(table).insert(chunk).onConflict(conflictTarget);
-          await (onConflict === "merge" ? q.merge() : q.ignore())
-            .catch(err => { if (!_isDuplicateKeyError(err)) throw err; });
-        }
-      } catch (err) {
-        this.log.error(`KnexAdapter bulk install failed on ${table} , persistence lost, fail-stop: ${err.message}`);
-        process.exit(78);
-      }
-      rows.length = 0;
+  async _flushBulkBuffers(buffers = this._bulkInstall) {
+    if (!buffers) return;
+    for (const [table, buf] of buffers) {
+      const rows = buf.rows.splice(0);
+      if (rows.length > 0) await this._insertBulkRows(table, buf.pkCols, buf.onConflict, rows);
     }
     // Bulk rows bypass the _ff chain; a stale clock read the first post-install
     // write as a multi-minute stall and fail-stopped a healthy node.
     this._ffLastSettledMs = nowMs();
   }
 
+  async _insertBulkRows(table, pkCols, onConflict, rows) {
+    // transactions/certs/commits are not cleared before install and the joiner's
+    // genesis seed already wrote the genesis rows, so the full-history stream
+    // collides on tx_id: insert with ON CONFLICT (skip the dupes), never fail-stop.
+    const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
+    const conflictTarget = pks.length === 1 ? pks[0] : pks;
+    // Postgres rejects one upsert statement touching a key twice; collapse
+    // merge buffers to the last write per key (same as applying in order).
+    let rowsOut = rows;
+    if (onConflict === "merge") {
+      const byPk = new Map();
+      for (const r of rows) byPk.set(JSON.stringify(pks.map(c => r[c])), r);
+      rowsOut = [...byPk.values()];
+    }
+    try {
+      for (let i = 0; i < rowsOut.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+        const chunk = rowsOut.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
+        const q = this._k(table).insert(chunk).onConflict(conflictTarget);
+        await (onConflict === "merge" ? q.merge() : q.ignore())
+          .catch(err => { if (!_isDuplicateKeyError(err)) throw err; });
+      }
+    } catch (err) {
+      this.log.error(`KnexAdapter bulk install failed on ${table} , persistence lost, fail-stop: ${err.message}`);
+      process.exit(78);
+    }
+  }
+
   beginBulkInstall() { this._bulkInstall = new Map(); }
-  endBulkInstall() { this._bulkInstall = null; }
+  // Rows buffered after the last flush (a concurrent writer) are already in the mirror, so they
+  // join the write chain instead of being dropped.
+  endBulkInstall() {
+    this._chainBulkPass();
+    this._bulkInstall = null;
+  }
 
   close() {
     clearInterval(this._ffWatchdog);

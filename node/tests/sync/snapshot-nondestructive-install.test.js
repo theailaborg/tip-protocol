@@ -162,6 +162,177 @@ describe("non-destructive install: reconcile exactness", () => {
   });
 });
 
+describe("non-destructive install: rotation history", () => {
+  test("a local rotation past the snapshot's history, and its tx, do not survive the install", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const shipped = [...fx.sourceDag.getRotationsFromGenesis()].map(r => r.rotation_number);
+    const forked = Math.max(...shipped) + 1;
+    const latest = fx.sourceDag.getLatestRotation();
+    destDag.saveCommitteeRotation({ ...latest, rotation_number: forked, effective_round: latest.effective_round + 1000, prev_rotation: forked - 1, payload_hash: shake256("forked-rotation") });
+    const forkTx = destDag.addTx({ tx_type: "COMMITTEE_ROTATION", timestamp: T0 + 9, data: { rotation_number: forked, payload_hash: shake256("forked-rotation") }, signature: "00" });
+
+    await attemptInstall(fx.sourceDag, destDag, { chunkSize: 16 });
+
+    expect(destDag.getCommitteeRotation(forked)).toBeFalsy();
+    expect(destDag.getLatestRotation().rotation_number).toBe(Math.max(...shipped));
+    expect(destDag.getTx(forkTx.tx_id)).toBeNull();
+  });
+});
+
+describe("non-destructive install: one install at a time", () => {
+  test("resetting the install guard mid-install keeps the running install exclusive", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    let installingAfterReset = null;
+    let second = "not requested";
+    await attemptInstall(fx.sourceDag, destDag, {
+      chunkSize: 16,
+      midStream: async (handler) => {
+        handler.resetInstallState();          // anti-entropy starting a new sync cycle
+        installingAfterReset = handler.isInstalling();
+        if (installingAfterReset) second = await handler.requestSnapshotFromPeer("other-peer", {});
+      },
+    });
+    expect(installingAfterReset).toBe(true);
+    expect(second).toBeNull();
+    expect(computeStateMerkleRoot(destDag)).toBe(fx.stateRoot);
+  });
+
+  test("an install wedged on a hung open is cleared and commit ordering resumes", async () => {
+    const { SNAPSHOT_DOWNLOAD } = require(path.join(SHARED, "constants"));
+    const { nowMs } = require(path.join(SHARED, "time"));
+    const destDag = initDAG({ dbPath: ":memory:" });
+    let paused = false;
+    const resumed = [];
+    const bullshark = {
+      pauseOrdering: () => { paused = true; },
+      resumeOrdering: (r) => { paused = false; resumed.push(r); },
+      orderingPaused: () => paused,
+    };
+    const handler = createSnapshotHandler({
+      dag: destDag, bullshark, isAuthorizedPeer: () => true,
+      network: { node: {}, openStream: () => new Promise(() => { }) },   // never opens
+    });
+    jest.useFakeTimers({ doNotFake: ["setImmediate", "queueMicrotask", "nextTick"] });
+    try {
+      handler.requestSnapshotFromPeer("hung-peer", {});
+      await Promise.resolve();
+      expect(handler.isInstalling()).toBe(true);
+      expect(paused).toBe(true);
+      jest.setSystemTime(nowMs() + 2 * SNAPSHOT_DOWNLOAD.STALL_MS + 1000);
+      await handler.resolveStaleInstallMarker();
+      expect(handler.isInstalling()).toBe(false);
+      expect(paused).toBe(false);
+      expect(resumed).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe("non-destructive install: commit ordering around a failed or abandoned install", () => {
+  const { SNAPSHOT_DOWNLOAD } = require(path.join(SHARED, "constants"));
+  const { nowMs } = require(path.join(SHARED, "time"));
+  function orderingRecorder() {
+    let paused = false;
+    const resumed = [];
+    return {
+      pauseOrdering: () => { paused = true; },
+      resumeOrdering: (r) => { paused = false; resumed.push(r); },
+      orderingPaused: () => paused,
+      setConsensusIndex() { },
+      resumed,
+    };
+  }
+  const onlyDateFaked = { doNotFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "queueMicrotask", "nextTick", "performance", "hrtime"] };
+
+  test("a failed install that left rows behind keeps ordering paused until a later install lands", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    seedDestState(destDag);
+    const bullshark = orderingRecorder();
+    await expect(
+      attemptInstall(fx.sourceDag, destDag, { chunkSize: 16, truncateAfterFraction: 0.9, destOptions: { bullshark } })
+    ).rejects.toThrow();
+    expect(bullshark.orderingPaused()).toBe(true);
+    expect(bullshark.resumed).toHaveLength(0);
+
+    await attemptInstall(fx.sourceDag, destDag, { chunkSize: 16, destOptions: { bullshark } });
+    expect(bullshark.orderingPaused()).toBe(false);
+    expect(bullshark.resumed).toHaveLength(1);
+    expect(computeStateMerkleRoot(destDag)).toBe(fx.stateRoot);
+  });
+
+  test("an abandoned open that settles late leaves the newer install's state and pause alone", async () => {
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const bullshark = orderingRecorder();
+    const opens = [];
+    const handler = createSnapshotHandler({
+      dag: destDag, bullshark, isAuthorizedPeer: () => true,
+      network: { node: {}, openStream: () => new Promise((resolve, reject) => opens.push({ resolve, reject })) },
+    });
+    jest.useFakeTimers(onlyDateFaked);
+    try {
+      const first = handler.requestSnapshotFromPeer("hung-peer", {}).catch((e) => e);
+      await Promise.resolve();
+      jest.setSystemTime(nowMs() + 2 * SNAPSHOT_DOWNLOAD.STALL_MS + 1000);
+      await handler.resolveStaleInstallMarker();          // clears the wedged first install
+      const second = handler.requestSnapshotFromPeer("next-peer", {}).catch((e) => e);
+      await Promise.resolve();
+      expect(handler.isInstalling()).toBe(true);
+      expect(bullshark.orderingPaused()).toBe(true);
+
+      opens[0].resolve({ sink: async () => { }, source: (async function* () { })(), close() { } });
+      expect(String(await first)).toMatch(/superseded/);
+      expect(handler.isInstalling()).toBe(true);          // still the second install's
+      expect(bullshark.orderingPaused()).toBe(true);
+
+      opens[1].reject(new Error("dial failed"));
+      await second;
+      expect(handler.isInstalling()).toBe(false);
+      expect(bullshark.orderingPaused()).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a slow phase after the header is not mistaken for a wedged open", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const bullshark = orderingRecorder();
+    let verdict = null;
+    let pausedDuring = null;
+    jest.useFakeTimers(onlyDateFaked);
+    try {
+      await attemptInstall(fx.sourceDag, destDag, {
+        chunkSize: 16, destOptions: { bullshark },
+        midStream: async (handler) => {
+          jest.setSystemTime(nowMs() + 3 * SNAPSHOT_DOWNLOAD.STALL_MS);
+          verdict = await handler.resolveStaleInstallMarker();
+          pausedDuring = bullshark.orderingPaused();
+        },
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(verdict).toBe("installing");
+    expect(pausedDuring).toBe(true);
+    expect(computeStateMerkleRoot(destDag)).toBe(fx.stateRoot);
+  });
+
+  test("a reboot with the install marker set commits nothing until the marker resolves", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const bullshark = orderingRecorder();
+    const handler = createSnapshotHandler({ dag: fx.sourceDag, bullshark, network: { node: {} }, isAuthorizedPeer: () => true });
+    fx.sourceDag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "in_progress:2");
+    expect(await handler.recoverInterruptedInstall()).toBe(true);
+    expect(bullshark.orderingPaused()).toBe(true);
+    expect(await handler.resolveStaleInstallMarker()).toBe("cleared");   // state still equals its attested head
+    expect(bullshark.orderingPaused()).toBe(false);
+  });
+});
+
 describe("non-destructive install: regression refusal", () => {
   test("a snapshot older than our attested head is refused when our state is consistent", async () => {
     const oldFx = buildCommittedDag({ committeeSize: 2, round: 2 });
@@ -183,6 +354,18 @@ describe("non-destructive install: regression refusal", () => {
     const result = await attemptInstall(oldFx.sourceDag, newFx.sourceDag, { chunkSize: 16 });
     expect(result.round).toBe(2);
     expect(computeStateMerkleRoot(newFx.sourceDag)).toBe(oldFx.stateRoot);
+  });
+
+  test("a majority-confirmed recovery installs an older snapshot over a consistent local head and takes its history", async () => {
+    const oldFx = buildCommittedDag({ committeeSize: 2, round: 2 });
+    const newFx = buildCommittedDag({ committeeSize: 2, round: 5 });
+
+    const result = await attemptInstall(oldFx.sourceDag, newFx.sourceDag, { chunkSize: 16, requestOptions: { allowRegression: true } });
+    expect(result.round).toBe(2);
+    expect(computeStateMerkleRoot(newFx.sourceDag)).toBe(oldFx.stateRoot);
+    // Our round-5 commit was never the network's: the history now ends at the snapshot's head.
+    expect(newFx.sourceDag.getLatestCommit().round).toBe(2);
+    expect(newFx.sourceDag.getLatestCommit().state_merkle_root).toBe(oldFx.stateRoot);
   });
 });
 
@@ -246,5 +429,47 @@ describe("non-destructive install: boot recovery", () => {
     // just signalled can actually fetch a snapshot. The retry reconciles.
     expectDestStateIntact(destDag);
     expect(String(destDag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY))).toMatch(/^in_progress/);
+  });
+});
+
+describe("non-destructive install: a commit landing while the snapshot streams", () => {
+  // Stand-in for bullshark's ordering: an anchor commit applies at once unless paused.
+  function commitEngine(dag) {
+    let paused = false;
+    const pending = [];
+    const apply = (post) => { post.txId = dag.addTx(post.tx).tx_id; dag.saveContent(post.content); };
+    return {
+      pauseOrdering() { paused = true; },
+      resumeOrdering() { paused = false; while (pending.length) apply(pending.shift()); },
+      orderingPaused: () => paused,
+      setConsensusIndex() { },
+      commit(post) { if (paused) pending.push(post); else apply(post); },
+    };
+  }
+
+  test("the post survives: commits wait for the install instead of being pruned by its reconcile", async () => {
+    const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const engine = commitEngine(destDag);
+    const ctid = "tip://c/OH-midinstall0001-0001";
+    const post = {
+      tx: { tx_type: "REGISTER_CONTENT", timestamp: T0 + 50, data: { ctid }, signature: "00" },
+      content: {
+        ctid, author_tip_id: "tip://id/US-midinstall001", signer_tip_id: "tip://id/US-midinstall001",
+        origin_code: "OH", content_hash: "cd".repeat(32), cna_version: "2.2", authors: [],
+        attribution_mode: "signer_authored", extras: {}, registered_urls: [], status: "registered", registered_at: T0 + 50,
+      },
+    };
+
+    await attemptInstall(fx.sourceDag, destDag, {
+      chunkSize: 16,
+      destOptions: { bullshark: engine },
+      midStream: async () => { engine.commit(post); await destDag.flush(); },
+    });
+
+    // Before the fix: content row pruned at END, tx row kept, so replay skips it forever.
+    expect(post.txId).toBeTruthy();
+    expect(destDag.getTx(post.txId)).not.toBeNull();
+    expect(destDag.getContent(ctid)).toBeTruthy();
   });
 });

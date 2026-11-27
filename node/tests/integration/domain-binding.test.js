@@ -6,7 +6,8 @@
  *   1. Happy path: org identity → POST /register (claim stored locally)
  *      → POST /verify (mock DNS) → BIND_DOMAIN tx → commit-handler
  *      applies binding to domain_bindings table.
- *   2. Personal TIP-IDs are rejected at register time.
+ *   2. Personal TIP-IDs are rejected at register time before website
+ *      protection, and accepted from it.
  *   3. Pre-existing verified binding for a DIFFERENT tip_id → 409.
  *   4. Tampered claim signature → 403.
  *   5. Node verification failure (no TXT record) → 422.
@@ -32,6 +33,7 @@ const { initDAG } = require(path.join(SRC, "dag"));
 const { createDomainService } = require(path.join(SRC, "services", "domain-service"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
 const registerDomainSchema = require(path.join(SRC, "schemas", "register-domain"));
+const { GATE_MS } = require(path.join(SRC, "validators", "website-gate"));
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -177,18 +179,33 @@ describe("domain binding happy path (register → verify → commit → get)", (
   });
 });
 
-// ─── 2. Org-only gate ───────────────────────────────────────────────────────
+// ─── 2. Personal TIP-ID gate ────────────────────────────────────────────────
 
-describe("personal TIP-IDs cannot bind domains", () => {
-  test("register rejects with 403 tip_id_not_authorised", () => {
-    const fx = setup();
+describe("personal TIP-IDs bind domains only from website protection", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  function personalClaim(fx) {
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("personal").slice(0, 16)}`;
     seedPersonalIdentity(fx.dag, tipId, kp);
+    return buildSignedClaim({ tipId, privKey: kp.privateKey, domain: "personal.example" });
+  }
 
-    const claim = buildSignedClaim({ tipId, privKey: kp.privateKey, domain: "personal.example" });
-    expect(() => fx.domainService.register(claim))
+  test("before it, register rejects with 403 tip_id_not_authorised", () => {
+    jest.spyOn(Date, "now").mockReturnValue(GATE_MS - 1);
+    const fx = setup();
+    expect(() => fx.domainService.register(personalClaim(fx)))
       .toThrow(expect.objectContaining({ status: 403, code: "tip_id_not_authorised" }));
+    expect(fx.dag.getPendingDomainClaim("personal.example")).toBeNull();
+  });
+
+  test("from it, register records the claim", () => {
+    jest.spyOn(Date, "now").mockReturnValue(GATE_MS + 60_000);
+    const fx = setup();
+    const claim = personalClaim(fx);
+    const out = fx.domainService.register(claim);
+    expect(out.status).toBe(DOMAIN_BINDING_STATUS.PENDING);
+    expect(fx.dag.getPendingDomainClaim("personal.example").tip_id).toBe(claim.tip_id);
   });
 });
 

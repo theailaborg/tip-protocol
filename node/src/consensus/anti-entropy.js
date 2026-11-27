@@ -141,6 +141,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   // Key: TIP node_id. Value: { round, rootKey, firstSeenMs }.
   const _peerDivergenceFirstSeen = new Map();
 
+  // While self is non-ready: continuous disagreement from ready peers at our committed round,
+  // { joinState, sinceMs, lastSeenMs }. Null when none.
+  let _selfDivergence = null;
+
   // Distinct peers reporting divergence at our (committed_round, state_root).
   // Key: `${round}:${rootPrefix}`. Value: Set<peerNodeId>. Old-round entries
   // are pruned as committed_round advances — divergence observations at a
@@ -436,7 +440,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
    *
    * @returns {"snapshot_installed"|"snapshot_failed"|"snapshot_required_no_handler"}
    */
-  async function _runSnapshotFallback(peerId, syncResult, selfState) {
+  async function _runSnapshotFallback(peerId, syncResult, selfState, { allowRegression = false } = {}) {
     if (!snapshotHandler || typeof snapshotHandler.requestSnapshotFromPeer !== "function") {
       // Backward-compat: AE wired without a snapshot handler. Fall back
       // to old behavior — log and let the next AE cycle retry; halt-gate
@@ -464,7 +468,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // Never all-default: minRound 0 + empty requesterNodeId encodes to ZERO bytes
       // in proto3 and the serve rejects it as an empty request.
       const requesterNodeId = getSelfNodeId ? (getSelfNodeId() || "") : "";
-      const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound, requesterNodeId });
+      const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound, requesterNodeId, allowRegression });
       // null means the handler skipped (already installed or in-progress guard fired).
       // Treat as failure so the caller can try the next peer rather than falsely
       // reporting success and setting the recovery cooldown clock.
@@ -540,7 +544,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         `will retry (not forcing ready without state)`
       );
       // Bug 3: cancel any deferred anchor timer that was running before this
-      // install attempt. On success, onSnapshotInstalled calls cancelPendingCommit.
+      // install attempt. On success, onSnapshotInstalled aligns bullshark to the snapshot, which cancels it.
       // On failure, nothing cancels it — the stale timer can fire later and trigger
       // another resync loop.
       if (_cancelPendingCommit) {
@@ -754,6 +758,22 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       return true;
     }
     return false;
+  }
+
+  // Not keyed on the round: a node following the network commits every anchor. A genuine
+  // catch-up is behind (no same-round comparison) and a live install is a partial blend.
+  function _selfDivergencePersistent(joinState) {
+    const installing = _snapshotResyncInFlight
+      || (snapshotHandler && typeof snapshotHandler.isInstalling === "function" && snapshotHandler.isInstalling());
+    if (installing) { _selfDivergence = null; return false; }
+    const now = nowMs();
+    const grace = CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS;
+    if (!_selfDivergence || _selfDivergence.joinState !== joinState || now - _selfDivergence.lastSeenMs > grace) {
+      _selfDivergence = { joinState, sinceMs: now, lastSeenMs: now };
+      return false;
+    }
+    _selfDivergence.lastSeenMs = now;
+    return now - _selfDivergence.sinceMs > grace;
   }
 
   function _clearDivergenceTracker(peerNodeId) {
@@ -1002,13 +1022,13 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           }
         }
         _log.notice(`anti-entropy: auto-recovery: syncing snapshot from ${libp2pPeerId.slice(0, 12)}`);
-        let result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        let result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState, { allowRegression: true });
         let attempt = 0;
         while (result === "snapshot_failed" && attempt < SNAPSHOT_BUSY_RETRY_ATTEMPTS) {
           attempt++;
           _log.warn(`anti-entropy: auto-recovery: ${libp2pPeerId.slice(0, 12)} busy — retrying in ${SNAPSHOT_BUSY_RETRY_MS}ms (attempt ${attempt}/${SNAPSHOT_BUSY_RETRY_ATTEMPTS})`);
           await new Promise(r => setTimeout(r, SNAPSHOT_BUSY_RETRY_MS));
-          result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+          result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState, { allowRegression: true });
         }
         if (result === "snapshot_installed") {
           _lastAutoRecoveryAt = nowMs();
@@ -1031,7 +1051,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
             `anti-entropy: auto-recovery: all ${rootDriftedPeers.length} drifted peer(s) unanimously ` +
             `agree on new root ${newRoot.slice(0, 16)} — retrying install from ${fallbackPeer.slice(0, 12)}`
           );
-          const result = await _runSnapshotFallback(fallbackPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+          const result = await _runSnapshotFallback(fallbackPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState, { allowRegression: true });
           if (result === "snapshot_installed") {
             _lastAutoRecoveryAt = nowMs();
             _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${fallbackPeer.slice(0, 12)} (drifted-root fallback), resuming consensus`);
@@ -1296,23 +1316,22 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         ? String(narwhal.joinState() || "ready")
         : "ready";
       const peerJoinState = String(peerStatus.join_state || "ready");
-      // Self non-ready (syncing / catching_up) is INVISIBLE to consensus: it
-      // produces no batches and no acks, so a same-round root mismatch here is a
-      // catch-up artifact (the mirror is partial during snapshot install / cert-
-      // tail replay, or the bullshark committed-round counter merely lags a busy
-      // cluster while the actual state is identical), never a byzantine fault.
-      // Self-halting on it only bounces the joiner into an endless resync
-      // treadmill (and falsely lights up the divergence metric), and it
-      // short-circuits the markCaughtUp promotion so the node can never reach
-      // ready. Grace indefinitely until self is `ready`; the byz-fork check below
-      // still fires the moment self promotes and a genuine mismatch remains , a
-      // non-ready node cannot harm consensus, so deferring the check is safe.
+      // Self non-ready is invisible to consensus and its root is a partial blend while it
+      // installs or replays, so the mismatch is graced; but graced forever a node whose
+      // state really differs never promotes (52 h live). Past the grace it is divergent.
       if (selfJoinState !== "ready") {
-        _log.debug(
-          `anti-entropy: round=${selfCommitted} state-mismatch while self ${selfJoinState} ` +
-          `with peer ${peerLabel} , catch-up artifact, gracing (self invisible to consensus)`
+        if (peerJoinState !== "ready" || !_selfDivergencePersistent(selfJoinState)) {
+          _log.debug(
+            `anti-entropy: round=${selfCommitted} state-mismatch while self ${selfJoinState} ` +
+            `with peer ${peerLabel} , catch-up artifact, gracing (self invisible to consensus)`
+          );
+          return "equal";
+        }
+        _log.warn(
+          `anti-entropy: self ${selfJoinState} at committed_round=${selfCommitted} still disagrees with ready peer ${peerLabel} ` +
+          `after ${Math.round(CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS / 1000)}s (self.root=${selfRoot.slice(0, 16)} ` +
+          `peer.root=${peerRoot.slice(0, 16)}) , treating as divergence`
         );
-        return "equal";
       }
       if (peerJoinState !== "ready") {
         const persistent = _persistentDivergence(peerNode, peerJoinState);
@@ -1371,6 +1390,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // recovered from a transient race isn't held against the grace
     // window if it ever hits another mismatch later.
     _clearDivergenceTracker(peerStatus.node_id || peerId);
+    if (peerCommitted === selfCommitted && selfRoot && selfRoot === peerRoot
+      && String(peerStatus.join_state || "ready") === "ready") _selfDivergence = null;
 
     // Self-healing halt clear. When we're halted with byzantine_fork and
     // this peer's root now matches ours at the same committed_round, check
@@ -2018,10 +2039,17 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       _log.notice(`anti-entropy: triggerSnapshotResync: clearing active halt before snapshot install`);
       narwhal.clearByzantineForkHalt();
     }
+    // Our fork halt plus a committee majority on one other root is the minority recovery's
+    // condition: only then may the install go back past local commits the network never made.
+    const committeeN = narwhal && typeof narwhal.committeeSize === "function" ? Number(narwhal.committeeSize() || 0) : 0;
+    const majority = committeeN > 0 ? Math.floor(committeeN / 2) + 1 : Infinity;
+    const selfRootNow = String((selfState && selfState.state_merkle_root) || "");
+    const majorityConfirmed = (root, votes) => !!_activeHalt && !!root && root !== selfRootNow && votes >= majority;
 
     try {
       const rootDriftedPeers = []; // peers skipped because root drifted from bestRoot
       for (const candidatePeer of orderedPeerIds) {
+        let candidateOnBest = false;
         // Verify each candidate still holds the majority root before installing.
         // A peer that was at the majority root when tallied may have since
         // installed a minority snapshot; re-checking avoids propagating wrong
@@ -2048,8 +2076,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
             rootDriftedPeers.push({ peerId: candidatePeer, freshRoot: freshCandidateRoot });
             continue;
           }
+          candidateOnBest = !!bestRoot && freshCandidateRoot === bestRoot;
         }
-        const result = await _runSnapshotFallback(candidatePeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        const result = await _runSnapshotFallback(candidatePeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState,
+          { allowRegression: candidateOnBest && majorityConfirmed(bestRoot, bestVotes) });
         if (result === "snapshot_installed") {
           _lastAutoRecoveryAt = nowMs();
           _lastSnapshotResyncCompletedAt = nowMs();
@@ -2083,7 +2113,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
             `fresh majority root ${freshBestRoot.slice(0, 16)} (${freshBestVotes}/${rootDriftedPeers.length} drifted peers) — ` +
             `retrying install from ${freshBestPeer.slice(0, 12)}`
           );
-          const result = await _runSnapshotFallback(freshBestPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+          const result = await _runSnapshotFallback(freshBestPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState,
+            { allowRegression: majorityConfirmed(freshBestRoot, freshBestVotes) });
           if (result === "snapshot_installed") {
             _lastAutoRecoveryAt = nowMs();
             _lastSnapshotResyncCompletedAt = nowMs();
