@@ -4,14 +4,22 @@
  * @description Generate a LINK_PLATFORM claim signature for Postman testing.
  *
  * This tool:
- *   1. Reads your .tip.json backup (DOB-encrypted) and decrypts it, OR
- *      accepts a raw private key hex directly.
+ *   1. Reads your .tip.json backup (locked with a recovery phrase, or with a
+ *      date of birth in older files) and decrypts it, OR accepts a raw
+ *      private key hex directly.
  *   2. Signs the register-social claim payload (4-field ML-DSA-65 signature).
  *   3. Outputs the complete JSON body ready to paste into Postman, AND
  *      optionally calls the API directly.
  *
  * Usage:
- *   # From .tip.json backup (DOB-encrypted):
+ *   # From .tip.json backup locked with a recovery phrase (tip-key-export-v3):
+ *   node scripts/generate-link-claim.js \
+ *     --tip-json ./my-tip-id.tip.json \
+ *     --key-phrase "word1 word2 ... word12" \
+ *     --platform github \
+ *     --profile-url https://github.com/myusername
+ *
+ *   # From an older .tip.json backup locked with a date of birth (tip-key-export-v2):
  *   node scripts/generate-link-claim.js \
  *     --tip-json ./my-tip-id.tip.json \
  *     --dob 01011990 \
@@ -38,13 +46,13 @@
 
 const fs     = require("fs");
 const path   = require("path");
-const crypto = require("crypto");
 const http   = require("http");
 const https  = require("https");
 
 const { nowMs }           = require("../shared/time");
 const { initCrypto, mldsaSign, canonicalJson } = require("../shared/crypto");
 const registerSocialSchema = require("../node/src/schemas/register-social");
+const { readKeyFile, isEncryptedKeyFile, isPhraseKeyFile } = require("../shared/key-file");
 
 // ─── ANSI colors ─────────────────────────────────────────────────────────────
 const T = { reset: "\x1b[0m", bold: "\x1b[1m", green: "\x1b[32m", red: "\x1b[31m", cyan: "\x1b[36m", dim: "\x1b[2m", yellow: "\x1b[33m" };
@@ -64,6 +72,7 @@ const hasFlag = name => process.argv.includes(name);
 
 const tipJsonFile  = getArg("--tip-json");
 const dob          = getArg("--dob");          // MMDDYYYY or MM/DD/YYYY
+const keyPhrase    = getArg("--key-phrase");   // 12 words, for a tip-key-export-v3 file
 const rawTipId     = getArg("--tip-id");
 const rawPrivKey   = getArg("--private-key");
 const platform     = getArg("--platform");
@@ -72,45 +81,22 @@ const nodeUrl      = getArg("--node-url", "http://localhost:4000");
 const callApi      = hasFlag("--call");
 
 // ─── Decrypt .tip.json ───────────────────────────────────────────────────────
-async function decryptTipJson(filePath, dobRaw) {
-  const dobDigits = dobRaw.replace(/\D/g, "");
-  if (dobDigits.length !== 8) {
-    throw new Error("DOB must be 8 digits: MMDDYYYY (e.g. 01011990 for Jan 1, 1990)");
-  }
-
+// v3 files open with the 12-word recovery phrase, v2 files with the date.
+function decryptTipJson(filePath, dobRaw, phrase) {
   const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  if (!parsed.encrypted) throw new Error(".tip.json has no 'encrypted' field — may be a different format");
-  if (parsed.version !== "tip-key-export-v2") {
+  if (!isEncryptedKeyFile(parsed)) {
     throw new Error(`Unsupported .tip.json version: ${parsed.version}`);
   }
-
-  const combined = Buffer.from(parsed.encrypted, "base64");
-  const salt = combined.slice(0, 16);
-  const iv   = combined.slice(16, 28);
-  const ct   = combined.slice(28);
-
-  // PBKDF2 key derivation (same as frontend: 200000 iterations, SHA-256, AES-256-GCM)
-  const keyMaterial = await crypto.webcrypto.subtle.importKey(
-    "raw", new TextEncoder().encode(dobDigits), "PBKDF2", false, ["deriveKey"]
-  );
-  const aesKey = await crypto.webcrypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
-    keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt"]
-  );
-
-  let plaintext;
-  try {
-    const decrypted = await crypto.webcrypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, ct);
-    plaintext = new TextDecoder().decode(decrypted);
-  } catch {
-    throw new Error("Decryption failed — wrong Date of Birth? (format: MMDDYYYY)");
+  let secret = phrase;
+  if (!isPhraseKeyFile(parsed)) {
+    const dobDigits = String(dobRaw || "").replace(/\D/g, "");
+    if (dobDigits.length !== 8) {
+      throw new Error("This file is locked with a date. Pass --dob MMDDYYYY (e.g. 01011990 for Jan 1, 1990)");
+    }
+    secret = dobDigits;
   }
-
-  return {
-    tipId:      parsed.tipId,
-    publicKey:  parsed.publicKey,
-    privateKey: plaintext,
-  };
+  const k = readKeyFile(filePath, secret);
+  return { tipId: k.tip_id, publicKey: k.public_key, privateKey: k.private_key };
 }
 
 // ─── HTTP POST helper ─────────────────────────────────────────────────────────
@@ -140,7 +126,7 @@ async function main() {
 
   if (!platform || !profileUrl) {
     fail("--platform and --profile-url are required");
-    console.log(`\nUsage:\n  node scripts/generate-link-claim.js \\\n    --tip-json ./my.tip.json --dob MMDDYYYY \\\n    --platform github --profile-url https://github.com/myusername\n`);
+    console.log(`\nUsage:\n  node scripts/generate-link-claim.js \\\n    --tip-json ./my.tip.json --key-phrase "word1 ... word12" \\\n    --platform github --profile-url https://github.com/myusername\n`);
     process.exit(1);
   }
 
@@ -150,9 +136,9 @@ async function main() {
   let tipId, privateKey;
 
   if (tipJsonFile) {
-    if (!dob) { fail("--dob MMDDYYYY is required when using --tip-json"); process.exit(1); }
+    if (!dob && !keyPhrase) { fail("--key-phrase or --dob MMDDYYYY is required when using --tip-json"); process.exit(1); }
     info(`Decrypting ${tipJsonFile}...`);
-    const decrypted = await decryptTipJson(tipJsonFile, dob);
+    const decrypted = decryptTipJson(tipJsonFile, dob, keyPhrase);
     tipId      = decrypted.tipId;
     privateKey = decrypted.privateKey;
     ok(`Decrypted: ${tipId}`);
@@ -161,7 +147,7 @@ async function main() {
     privateKey = rawPrivKey;
     ok(`Using provided TIP-ID: ${tipId}`);
   } else {
-    fail("Provide either --tip-json + --dob, OR --tip-id + --private-key");
+    fail("Provide either --tip-json + --key-phrase (or --dob), OR --tip-id + --private-key");
     process.exit(1);
   }
 
