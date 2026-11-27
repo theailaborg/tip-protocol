@@ -225,6 +225,16 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  test("transactionIdSet holds exactly the stored tx ids", async () => {
+    const dag = await makeDag();
+    for (let i = 0; i < 5; i++) dag.addTx({ tx_type: "TEST_EVENT", data: { i, set: true } });
+    await dag.flush();
+    const all = [...dag.iterateAllTransactions()].map(t => t.tx_id);
+    const set = dag.transactionIdSet();
+    expect(set.size).toBe(all.length);
+    for (const id of all) expect(set.has(id)).toBe(true);
+  });
+
   // ── 2. Identity + entity_keys ────────────────────────────────────────────
 
   test("saveIdentity/getIdentity round-trips fields and routes public_key into entity_keys", async () => {
@@ -644,6 +654,24 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
 
     const rotations = [...dag.getRotationsFromGenesis()].map(r => r.rotation_number);
     expect(rotations).toEqual([...rotations].sort((a, b) => a - b));
+  });
+
+  test("pruneCommitteeRotationsAfter drops only the rotations past the given one", async () => {
+    const dag = await makeDag();
+    const mkRotation = (rn, effectiveRound) => ({
+      rotation_number: rn, effective_round: effectiveRound, committee: ["n1", "n2", "n3"],
+      prev_rotation: rn - 1, signer_node_ids: ["n1", "n2", "n3"], signatures: [], payload_hash: `ph-${rn}`, committed_at: T0,
+    });
+    dag.saveCommitteeRotation(mkRotation(17, 1000));
+    dag.saveCommitteeRotation(mkRotation(18, 2000));
+    dag.saveCommitteeRotation(mkRotation(19, 3000));
+
+    expect((await dag.pruneCommitteeRotationsAfter(17)).sort((a, b) => a - b)).toEqual([18, 19]);
+    await dag.flush();
+    expect(dag.getCommitteeRotation(18)).toBeFalsy();
+    expect(dag.getCommitteeRotation(17)).toBeTruthy();
+    expect(dag.getLatestRotation().rotation_number).toBe(17);
+    expect(await dag.pruneCommitteeRotationsAfter(17)).toEqual([]);
   });
 
   // ── 11. Domain bindings + platform links ────────────────────────────────

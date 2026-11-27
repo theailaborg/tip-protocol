@@ -227,7 +227,7 @@ describe("sign / verify round-trip", () => {
   });
 });
 
-// ─── resolveClaimant — claimant gate + DAG presence ─────────────────────────
+// ─── resolveClaimant: claimant gate + DAG presence ─────────────────────────
 
 describe("resolveClaimant", () => {
   test("missing on DAG → 412 signer_not_registered", () => {

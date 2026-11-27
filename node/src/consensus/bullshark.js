@@ -75,6 +75,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
   // history. Cleared when the missing certs arrive (via onCertSaved) or when
   // the retry timer expires (fall back to best-effort commit with what we have).
   let _pendingAnchorCommit = null; // { voteRound, anchorCert, missingHashes, timer }
+  // A snapshot install prunes rows its cut lacks: a commit applied mid-install loses its
+  // effects but keeps its tx row, so replay skips it. Ordering waits for the install.
+  let _orderingPaused = false;
 
   // No-loss sweep before cert GC: rows go to the node-local tx_rejections table
   // (never part of the state root), so nodes may differ here without diverging.
@@ -98,6 +101,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     // committee_history row count to compute success rate.
     committee_rotation_proposals: 0,
     anchors_deferred_incomplete_dag: 0,  // anchor walks that parked due to missing parent certs
+    anchor_checks_paused: 0,             // anchor checks skipped while a snapshot install runs
     anchors_unblocked_by_cert: 0,        // parked anchors that resumed after missing cert arrived
     bft_time_violations: 0,              // anchors skipped for BFT-time monotonicity violations
   };
@@ -215,6 +219,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    * Check if the leader's certificate from the propose round is committed.
    */
   function _checkAnchorCommit(voteRound, { force = false } = {}) {
+    if (_orderingPaused) { _metrics.anchor_checks_paused++; return; }
     const proposeRound = voteRound - 1;
     const leader = _getLeader(proposeRound);
     if (!leader) {
@@ -1057,6 +1062,24 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    * @param {number} round
    * @returns {string|null}
    */
+  function _markAnchorHistoryOrdered(voteRound) {
+    const proposeRound = voteRound - 1;
+    const leader = proposeRound >= 1 ? _getLeader(proposeRound) : null;
+    let anchor = null;
+    try { anchor = leader ? dag.getCertificateByAuthorRound(leader, proposeRound) : null; } catch { anchor = null; }
+    const stack = anchor ? [anchor] : [];
+    while (stack.length > 0) {
+      const cert = stack.pop();
+      if (!cert || _orderedCertHashes.has(cert.hash)) continue;
+      _orderedCertHashes.add(cert.hash);
+      for (const parentHash of cert.parent_hashes || []) {
+        let parent = null;
+        try { parent = dag.getCertificate(parentHash); } catch { parent = null; }   // below the window: ordered long ago
+        if (parent) stack.push(parent);
+      }
+    }
+  }
+
   function _getLeader(round) {
     // Committee is wave-stable, so use this round's wave to pick leader
     // consistently across both propose and vote rounds of the wave.
@@ -1134,6 +1157,16 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
     /** Get the last committed round */
     lastCommittedRound: () => _lastCommittedRound,
+
+    pauseOrdering() { _orderingPaused = true; },
+
+    /** Resume after an install and commit, in order, the anchors that arrived meanwhile. */
+    resumeOrdering(uptoRound) {
+      _orderingPaused = false;
+      return driveCommit(uptoRound);
+    },
+
+    orderingPaused: () => _orderingPaused,
 
     /**
      * Mark all certificates up to a round as already ordered.
@@ -1217,6 +1250,35 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       // does not re-commit anchor waves already covered by the snapshot.
       if (snapshotRound > _lastCommittedRound) {
         _lastCommittedRound = snapshotRound;
+      }
+    },
+
+    /**
+     * Snapshot install: the commit frontier and anchor count become the snapshot's exactly. Anchors
+     * committed past it (during the install, or on the state it replaces) commit again, or their
+     * txs, pruned with the stale history, never apply.
+     */
+    alignToSnapshot(boundaryRound, consensusIndex) {
+      if (_pendingAnchorCommit) {
+        clearTimeout(_pendingAnchorCommit.timer);
+        _pendingAnchorCommit = null;
+      }
+      if (_lastCommittedRound > boundaryRound) {
+        // Our anchors past the snapshot are not the network's, so neither is what they ordered,
+        // at or below the boundary too: keep only the snapshot anchor's history, marked below.
+        _orderedCertHashes.clear();
+        log.notice(`Bullshark: commit frontier lowered ${_lastCommittedRound} → ${boundaryRound} to the snapshot`);
+      }
+      _lastCommittedRound = boundaryRound;
+      // Ordered at the snapshot is exactly the last anchor's causal history: marking it keeps the
+      // next anchor from re-collecting shipped certs, and from skipping one only a later anchor orders.
+      _markAnchorHistoryOrdered(boundaryRound);
+      if (consensusIndex > 0 && consensusIndex !== _consensusIndex) {
+        _consensusIndex = consensusIndex;
+        if (dag.setConsensusMeta) {
+          try { dag.setConsensusMeta("last_consensus_index", _consensusIndex); }
+          catch (err) { log.warn(`alignToSnapshot: consensus_meta write failed: ${err.message}`); }
+        }
       }
     },
 

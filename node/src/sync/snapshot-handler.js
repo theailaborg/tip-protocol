@@ -117,6 +117,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // fires so the guard resets for the next needed resync.
   let _snapInstalled = false;
   let _snapInstallInProgress = false;
+  let _installGen = 0;            // owner of the running install; a superseded call leaves its state alone
+  let _installOpening = false;    // request sent, no header yet: the only phase a call can wedge in
+  let _orderingHeld = false;      // marker armed over a mixed state: commit nothing on it until it resolves
   // Set to true only during the synchronous DB-write phase of _installSnapshot
   // (dag.clearCanonicalState + row rebuild inside runInTransaction). Separate
   // from _snapInstallInProgress so majority peers with stable canonical state
@@ -139,11 +142,40 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // when idle; during an install: { phase, installed, total, bytes }.
   let _installProgress = null;
 
+  // A new sync cycle may install again, but a running install stays exclusive: a second one
+  // would replace its bulk buffers and resume commits under it.
   function resetInstallState() {
     _snapInstalled = false;
-    _snapInstallInProgress = false;
+    if (_snapInstallInProgress) return;
     _snapServing = false;
     _installProgress = null;
+  }
+
+  function _clearWedgedInstall() {
+    _installGen++;
+    _snapInstallInProgress = false;
+    _installOpening = false;
+    resetInstallState();
+    // The wedged call never reaches its finally; nothing landed in it, so only a held marker keeps ordering paused.
+    _resumeOrderingUnlessHeld();
+  }
+
+  function _resumeOrderingUnlessHeld() {
+    if (_orderingHeld || !bullshark || typeof bullshark.orderingPaused !== "function" || !bullshark.orderingPaused()) return;
+    bullshark.resumeOrdering(dag.getLatestRound());
+  }
+
+  // Commits on a partly installed state would carry its root into new commit rows, which the
+  // stale-marker check then takes for attestation.
+  function _holdOrdering() {
+    _orderingHeld = true;
+    if (bullshark && typeof bullshark.pauseOrdering === "function") bullshark.pauseOrdering();
+  }
+
+  function _releaseHeldOrdering() {
+    if (!_orderingHeld) return;
+    _orderingHeld = false;
+    _resumeOrderingUnlessHeld();
   }
 
   // #132 boot recovery: a crash mid-install reboots with MIXED state and the
@@ -160,9 +192,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // this node authorize the peers it must now resync from.
     log.warn(
       `Snapshot: interrupted install detected (marker=${marker}) , keeping state; ` +
-      `node stays in syncing and reconciles on the next install`
+      `node stays in syncing, commits nothing and reconciles on the next install`
     );
     resetInstallState();
+    _holdOrdering();
     return true;
   }
 
@@ -173,10 +206,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // treat "inconsistent" as the resync-now signal, not just retry.
   async function resolveStaleInstallMarker() {
     if (_snapInstallInProgress) {
-      // A hung open never arms the stall timer; without this the flag wedged forever.
-      if (nowMs() - _installFlagSince > 2 * SNAPSHOT_DOWNLOAD.STALL_MS) {
+      // A hung open never arms the stall timer; past the header the stream's stall timer and the
+      // local finalize own the time, so a slow finalize is not a wedge.
+      if (_installOpening && nowMs() - _installFlagSince > 2 * SNAPSHOT_DOWNLOAD.STALL_MS) {
         log.warn(`Snapshot: install flag wedged for ${Math.round((nowMs() - _installFlagSince) / 1000)}s with no progress, resetting`);
-        resetInstallState();
+        _clearWedgedInstall();
       } else {
         return "installing";
       }
@@ -184,7 +218,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     let marker = null;
     try { marker = typeof dag.getConsensusMeta === "function" ? dag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) : null; }
     catch { return "none"; }
-    if (!marker || !String(marker).startsWith("in_progress")) return "none";
+    if (!marker || !String(marker).startsWith("in_progress")) { _releaseHeldOrdering(); return "none"; }
     const latest = typeof dag.getLatestCommit === "function" ? dag.getLatestCommit() : null;
     if (!latest || !latest.state_merkle_root) return "no_commit";
     const selfRoot = computeStateMerkleRoot(dag);
@@ -201,6 +235,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       `Snapshot: stale install marker cleared , state root matches attested commit ${latest.round} ` +
       `(${selfRoot.slice(0, 12)}...), no re-install needed`
     );
+    _releaseHeldOrdering();
     return "cleared";
   }
 
@@ -362,6 +397,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       ? Number((bullshark.stats() || {}).consensusIndex || 0)
       : Number(latest.consensus_index || 0);
 
+    // History is cut at the header: txs and commits added while the stream is in flight would put
+    // the joiner's history ahead of its state, and its catch-up then skips those anchors.
+    const txIdsAtCut = dag.transactionIdSet();
+
     // Total rows for the joiner's install % (display-only, never hashed/signed);
     // the tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
     let _snapTotalRows = 0;
@@ -483,6 +522,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // hash and store in SnapshotTxRow.canonical_json.
         const txRoot = createTxsFullRootBuilder();
         for (const tx of dag.iterateAllTransactions()) {
+          if (!txIdsAtCut.has(tx.tx_id)) continue;
           yield _frameFullHistoryRow(K.TX, "SnapshotTxRow", canonicalJson(canonTx(tx)), txRoot);
           txRowsSent++;
           await _breathe();
@@ -490,11 +530,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         txsFullRoot = txRoot.finalize();
         yield _framePhaseEnd(K.TX, txRowsSent, txsFullRoot);
 
-        // Phase C: commits history except latest (#49). Latest already
+        // Phase C: commits history below the header round (#49). Latest already
         // rides in SnapshotHeader — including it twice would double-count
         // in the receiver's commits table and break the install.
         const commitRoot = createCommitsFullRootBuilder();
         for (const c of dag.iterateAllCommitsExcept(latest.round)) {
+          if (c.round > latest.round) continue;   // past the cut, see txIdsAtCut
           yield _frameFullHistoryRow(K.COMMIT, "SnapshotCommitRow", canonicalJson(canonCommit(c)), commitRoot);
           commitRowsSent++;
           await _breathe();
@@ -657,7 +698,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
    * @param {string} [opts.requesterNodeId] optional — for server-side logging
    * @returns {Promise<{ round, consensus_index, rows_installed, state_merkle_root, txs_merkle_root }>}
    */
-  async function requestSnapshotFromPeer(peerId, { minRound = 0, requesterNodeId = "" } = {}) {
+  // allowRegression: a committee majority has confirmed our state is wrong, so commits we hold
+  // past the peer's snapshot are not the network's; the install replaces that history.
+  async function requestSnapshotFromPeer(peerId, { minRound = 0, requesterNodeId = "", allowRegression = false } = {}) {
     if (!network) throw new Error("snapshot: no network node");
 
     // First-wins guard: if another install already completed or is in progress
@@ -671,9 +714,16 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       return null;
     }
     _snapInstallInProgress = true;
+    _installOpening = true;
     _installFlagSince = nowMs();
+    const gen = ++_installGen;
+    const owns = () => gen === _installGen;
+    const pausesOrdering = !!bullshark && typeof bullshark.pauseOrdering === "function";
+    if (pausesOrdering) bullshark.pauseOrdering();
     let markerArmed = false;   // in_progress written for this attempt
     let anyRowLanded = false;  // at least one batch reached the DB
+    let bulkBegun = false;
+    let installedOk = false;
 
     log.info(`Snapshot: requesting from ${peerId.slice(0, 12)}... (min_round=${minRound})`);
 
@@ -682,6 +732,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     let stream;
     try {
       stream = await network.openStream(peerId, SNAPSHOT_PROTOCOL);
+      if (!owns()) throw new Error("install superseded: its open wedged and was cleared");
       // Write the request (one frame, length-prefixed for symmetry with the
       // server-side framing — server reads exactly one message).
       const reqBuf = encode("SnapshotRequest", { minRound, requesterNodeId });
@@ -708,6 +759,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const rotationRows = [];                  // few + tiny; chain-of-trust needs all
       const rpRows = [];                        // few; installed at RP boundary
       const seen = { state: 0, tx: 0, commit: 0, rotation: 0, cert: 0, rp: 0 };
+      const streamedTxIds = new Set();          // reconcile keep-set for tx history
+      const commitRounds = new Set();
+      const commitIndexes = new Set();
       const phaseVerified = new Set();          // which phase trailers arrived
       let header = null, end = null;
       let verifiedRotations = [];
@@ -762,6 +816,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         }
         switch (kind) {
           case K.HEADER: {
+            if (!owns()) throw new Error("install superseded: its open wedged and was cleared");
+            _installOpening = false;
             header = decode("SnapshotHeader", proto);
             if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
             snapTotalRows = Number(header.totalRows) || 0;
@@ -771,7 +827,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             // accepted: regress-then-replay-own-log is the recovery.
             {
               const latestOwn = typeof dag.getLatestCommit === "function" ? dag.getLatestCommit() : null;
-              if (latestOwn && Number(header.round) < Number(latestOwn.round)
+              if (!allowRegression && latestOwn && Number(header.round) < Number(latestOwn.round)
                 && computeStateMerkleRoot(dag) === latestOwn.state_merkle_root) {
                 throw new Error(
                   `peer snapshot round ${Number(header.round)} < our attested head ${latestOwn.round} ` +
@@ -791,7 +847,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             // Route DB writes through per-table batchInsert with per-row
             // conflict semantics (Postgres only; no-op where unsupported).
             // endBulkInstall() runs in the finally.
-            if (typeof dag.beginBulkInstall === "function") dag.beginBulkInstall();
+            if (typeof dag.beginBulkInstall === "function") { dag.beginBulkInstall(); bulkBegun = true; }
             break;
           }
           case K.STATE: {
@@ -823,6 +879,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           }
           case K.TX: {
             const tx = _decodeFullRow(proto, "SnapshotTxRow", txsRoot, "tx");
+            streamedTxIds.add(tx.tx_id);
             enqueue(() => { if (_installTxRow(tx)) txInstalled++; });
             seen.tx++;
             await maybeFlush();
@@ -830,6 +887,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           }
           case K.COMMIT: {
             const c = _decodeFullRow(proto, "SnapshotCommitRow", commitsRoot, "commit");
+            const cRound = Number(c.round);
+            const cIndex = Number(c.consensus_index || 0);
+            // Refused at the first such row: the history must end below the header (a peer without
+            // the cut streams later rows) and name each round and anchor index once.
+            if (cRound >= Number(header.round)) {
+              throw new Error(`snapshot carries a commit at round ${cRound}, at or past its header round ${Number(header.round)}: not cut at the header`);
+            }
+            if (commitRounds.has(cRound) || (cIndex > 0 && commitIndexes.has(cIndex))) {
+              throw new Error(`snapshot commit history repeats round ${cRound} or consensus_index ${cIndex}`);
+            }
+            commitRounds.add(cRound);
+            if (cIndex > 0) commitIndexes.add(cIndex);
             enqueue(() => dag.saveCommit(c));
             seen.commit++;
             await maybeFlush();
@@ -899,6 +968,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
                 if (Number(pe.count) !== seen.tx) throw new Error(`tx phase count mismatch: trailer=${pe.count} seen=${seen.tx}`);
                 derivedTxs = txsRoot.finalize();
                 if (derivedTxs !== peRoot) throw new Error(`txs_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedTxs.slice(0, 16)}...`);
+                // The streamed commit history replaces ours, saved as it arrives rather than held in
+                // memory. Not auth material, and an abort leaves the marker set, so a resync follows.
+                await dag.clearCommits();
                 break;
               }
               case K.COMMIT: {
@@ -1060,6 +1132,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         throw new Error(`peer_consensus_index (${peerConsensusIndex}) < snapshot consensus_index (${snapshotConsensusIndex}) — peer is lying about its anchor count`);
       }
 
+      if (commitIndexes.has(snapshotConsensusIndex)) {
+        throw new Error(`snapshot commit history repeats the header's consensus_index ${snapshotConsensusIndex}`);
+      }
+
       // ── Reconcile ─────────────────────────────────────────────────────
       // Delete local rows the peer didn't stream: the old wipe's deletion
       // exactness without its destructive window. Runs ONLY after attestation,
@@ -1068,6 +1144,25 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       if (prunedRows.length > 0) {
         await dag.flush();
         log.notice(`Snapshot: reconcile pruned ${prunedRows.length} stale local row(s) absent from the snapshot`);
+      }
+      const streamedRotations = new Set(rotationRows.map(r => Number(r.rotation_number)));
+      if (streamedRotations.size > 0) {
+        const droppedRotations = await dag.pruneCommitteeRotationsAfter(Math.max(...streamedRotations));
+        if (droppedRotations.length > 0) {
+          log.notice(`Snapshot: reconcile dropped local rotation(s) ${droppedRotations.join(",")} past the snapshot's history`);
+        }
+      }
+      // A streamed rotation tx skipped as a duplicate of ours (same rotation, same payload) stands
+      // for our own copy, so that copy stays; a rotation the snapshot did not ship does not.
+      for (const tx of dag.getTxsByType(TX_TYPES.COMMITTEE_ROTATION)) {
+        const rn = tx.data?.rotation_number;
+        if (rn == null || !streamedRotations.has(Number(rn))) continue;
+        const installedRotation = dag.getCommitteeRotation(rn);
+        if (installedRotation && installedRotation.payload_hash === tx.data?.payload_hash) streamedTxIds.add(tx.tx_id);
+      }
+      const prunedTxs = await dag.pruneTransactionsExcept(streamedTxIds);
+      if (prunedTxs.length > 0) {
+        log.notice(`Snapshot: reconcile pruned ${prunedTxs.length} local tx row(s) absent from the snapshot`);
       }
       // Tx history is a union of local + peer rows: local REGISTER_CONTENT
       // copies superseded by the canonical registration (content.tx_id) are
@@ -1134,14 +1229,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       resetRegisteredAgain(dag);
       if (typeof onSnapshotInstalled === "function") {
         try {
-          onSnapshotInstalled(peerCommittedRound);
+          onSnapshotInstalled(Math.max(peerCommittedRound, snapshotRound), Math.max(peerConsensusIndex, snapshotConsensusIndex));
         } catch (err) {
           log.error(`Snapshot: onSnapshotInstalled callback failed: ${err.message} — node may experience BFT-time violations or stale pending commits until restart`);
         }
       }
 
-      _snapInstalled = true;
-      _snapInstallInProgress = false;
+      installedOk = true;
+      if (owns()) {
+        _snapInstalled = true;
+        _snapInstallInProgress = false;
+      }
       _lastInstallSource = peerId;
       return {
         round: Number(header.round),
@@ -1180,24 +1278,36 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // peers, and the next install's upsert+prune reconciles it exactly.
       // Before any row landed there is nothing mixed; the marker would only
       // refuse ready on state that is exactly what it was (AZ, 147 refusals/10 min).
-      if (markerArmed && !anyRowLanded) {
-        try {
-          dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
-          if (typeof dag.flush === "function") await dag.flush();
-          log.warn(`Snapshot: aborted from ${peerId.slice(0, 12)} before any row landed, install marker cleared`);
-        } catch { /* the marker path resolves it on the next AE tick */ }
+      if (owns()) {
+        if (markerArmed && !anyRowLanded) {
+          try {
+            dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
+            if (typeof dag.flush === "function") await dag.flush();
+            log.warn(`Snapshot: aborted from ${peerId.slice(0, 12)} before any row landed, install marker cleared`);
+          } catch { /* the marker path resolves it on the next AE tick */ }
+        }
+        _snapInstallInProgress = false;
+        _installOpening = false;
+        _snapServing = false;
+        _installProgress = null;
+        _metrics.install_in_progress_bytes = 0;
+        _metrics.install_in_progress_rows = 0;
       }
-      _snapInstallInProgress = false;
-      _snapServing = false;
-      _installProgress = null;
-      _metrics.install_in_progress_bytes = 0;
-      _metrics.install_in_progress_rows = 0;
       throw err;
     } finally {
       // Always leave bulk mode: buffers are drained at every batch flush, so
       // on error this only drops rows the retry will re-stream anyway.
-      if (typeof dag.endBulkInstall === "function") dag.endBulkInstall();
+      if (bulkBegun && typeof dag.endBulkInstall === "function") dag.endBulkInstall();
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
+      if (pausesOrdering && owns()) {
+        try {
+          if (!installedOk && markerArmed && anyRowLanded) _holdOrdering();
+          else {
+            if (installedOk) _orderingHeld = false;
+            _resumeOrderingUnlessHeld();
+          }
+        } catch (err) { log.error(`Snapshot: resuming commit ordering after install failed: ${err.message}`); }
+      }
     }
   }
 
@@ -1281,10 +1391,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // the joiner stays serve-capable after the anchor cert is GC'd. BFT-Time
   // int64 fields coerce protobuf Long → Number.
   function _installHeaderCommitRow(header) {
+    dag.saveCommit(_headerCommitRecord(header));
+  }
+
+  function _headerCommitRecord(header) {
     const _toInt = (v) => (typeof v === "object" && v !== null) ? Number(v.toString()) : Number(v || 0);
     const headerAnchorBatchHash = header.anchorBatchHash && header.anchorBatchHash.length
       ? bytesToHex(header.anchorBatchHash) : null;
-    dag.saveCommit({
+    return {
       round: Number(header.round),
       anchor_cert_hash: bytesToHex(header.anchorCertHash),
       anchor_batch_hash: headerAnchorBatchHash,
@@ -1299,7 +1413,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       ack_signatures: (header.ackSignatures || []).map(bytesToHex),
       ack_signed_ats: (header.ackSignedAts || []).map(_toInt),
       cert_timestamp: _toInt(header.certTimestamp),
-    });
+    };
   }
 
   function _installSnapshot(header, queues, snapBytes) {

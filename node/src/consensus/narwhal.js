@@ -1438,6 +1438,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _catchingUpEnteredAt = nowMs();
     _catchUpTarget = Math.max(0, peerCommittedRound || round);
     log.notice(`Snapshot installed at round ${round}; catching up to peer head ${_catchUpTarget}`);
+    _resetTailWatch();
     _startWatchdog();
   }
 
@@ -1502,10 +1503,19 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   }
 
   let _tailCompleteLogged = false;
+  let _tailCompleteAt = 0;
+  let _tailStuckWarned = false;
+
+  // Per catching_up cycle: a new install can start one while the watchdog is still running.
+  function _resetTailWatch() {
+    _tailCompleteLogged = false;
+    _tailCompleteAt = 0;
+    _tailStuckWarned = false;
+  }
 
   function _startWatchdog() {
     if (_watchdogTimer) return;
-    _tailCompleteLogged = false;
+    _resetTailWatch();
     const tick = Math.max(500, Math.floor(CONSENSUS.ROUND_TIMEOUT_MS / 2));
     _watchdogTimer = safeSetInterval(_watchdogCheck, tick, "narwhal.watchdog");
   }
@@ -1525,6 +1535,14 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       if (!_tailCompleteLogged) {
         log.info(`Watchdog: cert tail reached target ${_catchUpTarget} after ${Math.floor(elapsed / 1000)}s; holding catching_up until a peer confirms the state root`);
         _tailCompleteLogged = true;
+        _tailCompleteAt = nowMs();
+      }
+      // Promotion that never comes means our root differs from the peers'; anti-entropy
+      // resyncs that case, this makes it visible on nodes that log at warn.
+      const held = nowMs() - _tailCompleteAt;
+      if (!_tailStuckWarned && held > CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS * 2) {
+        log.warn(`Watchdog: cert tail complete for ${Math.floor(held / 1000)}s but not promoted to ready; our state root likely differs from the peers'`);
+        _tailStuckWarned = true;
       }
       return;
     }

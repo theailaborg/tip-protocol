@@ -313,11 +313,17 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
     if (result.imported > 0) {
       log.info(`Synced ${result.imported} certificates from peer (rounds ${result.fromRound}-${result.toRound})`);
 
-      const committed = replaySyncedTxs(dag, commitHandler, result.fromRound, result.toRound);
-      if (committed > 0) log.info(`Replayed ${committed} transactions from synced certificates`);
+      // A snapshot install in flight prunes whatever is applied meanwhile and sets the frontier
+      // itself; its resume commits these rounds in order.
+      if (typeof bullshark.orderingPaused === "function" && bullshark.orderingPaused()) {
+        log.info(`Sync: snapshot install in flight, rounds ${result.fromRound}-${result.toRound} are left to its resume`);
+      } else {
+        const committed = replaySyncedTxs(dag, commitHandler, result.fromRound, result.toRound);
+        if (committed > 0) log.info(`Replayed ${committed} transactions from synced certificates`);
 
-      // Mark synced certificates as ordered so Bullshark doesn't re-commit their txs
-      bullshark.markOrderedUpTo(result.toRound);
+        // Mark synced certificates as ordered so Bullshark doesn't re-commit their txs
+        bullshark.markOrderedUpTo(result.toRound);
+      }
     }
 
     // Promotion to ready is owned by the catch-up flow now: the snapshot

@@ -271,6 +271,66 @@ describe("narwhal tri-state join FSM", () => {
     }
   });
 
+  test("watchdog warns once when the tail is complete but promotion never comes", () => {
+    jest.useFakeTimers();
+    const lines = [];
+    const spies = ["log", "warn", "error", "info"].map((m) => jest.spyOn(console, m).mockImplementation((...a) => lines.push(a.join(" "))));
+    try {
+      const { narwhal, dag } = buildNarwhal();
+      narwhal.enterSyncMode();
+      narwhal.start();
+      narwhal.markSnapshotInstalled(100, 150);
+      dag.saveCertificate({
+        hash: shake256("cert:150:self"), round: 150, author_node_id: SELF_ID,
+        batch: { round: 150, author_node_id: SELF_ID, txs: [], signature: "00" },
+        acknowledgments: [], parent_hashes: [], signature: "00", timestamp: 1767225600150,
+      });
+      const stuck = (l) => /cert tail complete for \d+s but not promoted/.test(l);
+      jest.advanceTimersByTime(CONSENSUS.ROUND_TIMEOUT_MS * 11);
+      jest.advanceTimersByTime(CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS * 2 - 5000);
+      expect(lines.filter(stuck)).toHaveLength(0);
+      jest.advanceTimersByTime(10000);
+      expect(lines.filter(stuck)).toHaveLength(1);
+      jest.advanceTimersByTime(CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS);
+      expect(lines.filter(stuck)).toHaveLength(1);
+      expect(narwhal.joinState()).toBe("catching_up");
+      narwhal.stop();
+    } finally {
+      spies.forEach((s) => s.mockRestore());
+      jest.useRealTimers();
+    }
+  });
+
+  test("a second catching_up cycle under a still-running watchdog warns again", () => {
+    jest.useFakeTimers();
+    const lines = [];
+    const spies = ["log", "warn", "error", "info"].map((m) => jest.spyOn(console, m).mockImplementation((...a) => lines.push(a.join(" "))));
+    try {
+      const { narwhal, dag } = buildNarwhal();
+      const stuck = (l) => /cert tail complete for \d+s but not promoted/.test(l);
+      const cycle = (target) => {
+        narwhal.enterSyncMode();
+        narwhal.markSnapshotInstalled(target - 50, target);
+        dag.saveCertificate({
+          hash: shake256(`cert:${target}:self`), round: target, author_node_id: SELF_ID,
+          batch: { round: target, author_node_id: SELF_ID, txs: [], signature: "00" },
+          acknowledgments: [], parent_hashes: [], signature: "00", timestamp: 1767225600000 + target,
+        });
+        jest.advanceTimersByTime(CONSENSUS.ROUND_TIMEOUT_MS * 11 + CONSENSUS.SELF_SYNC_DIVERGENCE_GRACE_MS * 2 + 5000);
+      };
+      narwhal.enterSyncMode();
+      narwhal.start();
+      cycle(150);
+      expect(lines.filter(stuck)).toHaveLength(1);
+      cycle(400);
+      expect(lines.filter(stuck)).toHaveLength(2);
+      narwhal.stop();
+    } finally {
+      spies.forEach((s) => s.mockRestore());
+      jest.useRealTimers();
+    }
+  });
+
   test("watchdog leaves catching_up alone when within threshold", () => {
     jest.useFakeTimers();
     try {
