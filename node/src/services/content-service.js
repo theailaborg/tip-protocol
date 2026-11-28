@@ -431,6 +431,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
   async function register(body) {
     contentRegisterSchema.validateRequest(body, {
       mediaLimits: config.mediaLimits, dag, activationMs: config.orgMembersActivationMs,
+      authorExtraRolesActivationMs: config.authorExtraRolesActivationMs,
     });
 
     const {
@@ -914,6 +915,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         name: id ? (id.creator_name || null) : null,
         tip_id_type: a.tip_id_type || (id ? id.tip_id_type : null) || TIP_ID_TYPES.PERSONAL,
         role: a.role || null,
+        extra_roles: Array.isArray(a.extra_roles) ? a.extra_roles : [],
         // Roster role on the signer org (editor, author, ...) when the author is an active member.
         member_role: membership ? membership.role : null,
         tier: sc ? sc.tier.name : null,

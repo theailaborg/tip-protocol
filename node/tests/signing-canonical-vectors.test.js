@@ -116,6 +116,18 @@ describe("canonical signed-payload golden vectors", () => {
     expect(withParent.canonical.includes("parent_url")).toBe(true);
   });
 
+  test("strip rule holds for REGISTER_CONTENT authors[].extra_roles", () => {
+    const reqOnly = VECTORS["REGISTER_CONTENT:required_only"];
+    const withExtra = VECTORS["REGISTER_CONTENT:with_extra_roles"];
+    expect(reqOnly).toBeTruthy();
+    expect(withExtra).toBeTruthy();
+    expect(reqOnly.canonical.includes("extra_roles")).toBe(false);
+    expect(withExtra.canonical.includes("\"extra_roles\":[\"editor\",\"reviewer\"]")).toBe(true);
+    const contract = SCHEMA_FOR_TX_TYPE[TX_TYPES.REGISTER_CONTENT];
+    const nulled = { ...reqOnly.data, authors: reqOnly.data.authors.map(a => ({ ...a, extra_roles: null })) };
+    expect(canonicalJson(contract.buildSigningPayload(nulled))).toBe(reqOnly.canonical);
+  });
+
   // ── Replay regression tests (GH #121) ──────────────────────────────────────
   // These verify that ctid and is_appeal are load-bearing fields in the signed
   // payload — i.e. swapping either value produces a different canonical string,

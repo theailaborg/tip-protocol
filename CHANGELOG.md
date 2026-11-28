@@ -86,6 +86,18 @@ upgrades before it; `TIP_SITE_SNAPSHOT_ACTIVATION_MS` overrides it outside produ
 - tip-content-fingerprint 2.9.0 (`cf-web-1`, the v2.9.0 release tarball, SHAKE-256
   `3b963bbf1959b664f1ba1253dd634ed6890720c8f623c897a6a3ca0d6854929f`); 2.7.1 to 2.9.0
   changes nothing the node already used. Page proofs come from its `web.merkleTree`.
+**Several roles for one person on a post** (commit rule, gated on
+`AUTHOR_EXTRA_ROLES.ACTIVATION_MS`, provisional 2026-12-15 00:00 UTC; every node on this
+release before it)
+- An author entry may carry an optional signed `extra_roles` next to `role`, for example
+  `"role": "author", "extra_roles": ["editor", "reviewer"]`. It is bound into the signed
+  payload only when present, so single-role entries and every existing signature are
+  unchanged (new golden vector `REGISTER_CONTENT:with_extra_roles`).
+- Rules: `role` is a roster role; `extra_roles` holds 1 to 4 other roster roles, each once,
+  in roster order (`400 author_extra_roles_invalid`). Before the epoch the API answers
+  `409 author_extra_roles_not_open` and commit drops it, judged at the round's certificate
+  time. `TIP_AUTHOR_EXTRA_ROLES_ACTIVATION_MS` overrides it on an isolated cluster.
+- `GET /v1/content/:ctid` `authors_resolved[]` gains `extra_roles` (`[]` when none).
 
 **Node 2.9.10: a licensed organization's signed emails are one pool** (API time only,
 no consensus change and no activation; mixed versions are safe)

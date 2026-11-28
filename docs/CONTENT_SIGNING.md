@@ -110,10 +110,11 @@ signature_hex    = signature.hex()                                      // 6618 
 
 ## 5. The `authors[]` array
 
-Ordered byline. Index 0 is the primary byline. Each entry is exactly 5 keys, no extras (the canonical builder strips anything else):
+Ordered byline. Index 0 is the primary byline. Each entry has these 5 keys, plus `extra_roles` only when the person holds more than one role on the post (the canonical builder strips anything else):
 
 | Key | Type | Required? | Default when absent |
 |---|---|---|---|
+| `extra_roles` | string[] | no | absent (strip rule: bound only when present, so a single-role entry signs byte-identical to before the key existed) |
 | `key_mode` | string | no | `"attribution"` |
 | `role` | string | no | `"contributor"` |
 | `signed` | boolean | no | `false` |
@@ -124,6 +125,7 @@ Constraints:
 - The array MUST have at least one entry. If the signer is also the only author (typical self-published case), put a single entry whose `tip_id` matches `signer_tip_id`.
 - `key_mode` values: `"attribution"` (default — the author is credited but didn't sign separately) and `"co_signed"` (the author also produced their own signature, carried in the request envelope's `co_signatures[]` — see §10).
 - `role` values: `"byline"` (visible byline), `"contributor"` (named contributor not in the byline), `"editor"`, `"translator"`. Free-form for now; UIs render whatever's there.
+- `extra_roles`: the person's further roles on this post, next to their main `role`. Accepted from `AUTHOR_EXTRA_ROLES.ACTIVATION_MS` (refused before it with `409 author_extra_roles_not_open`, judged at the round's certificate time at commit). When present, `role` must be one of `author`, `editor`, `contributor`, `reviewer`, `correspondent`, and `extra_roles` lists 1 to 4 other roles from that list, each once, in that order, so one set of roles has exactly one signed form; anything else is `400 author_extra_roles_invalid`. Omit the key (do not send `[]`) when the person has one role. Example: `"role": "author", "extra_roles": ["editor", "reviewer"]`.
 - `signed` MUST be `true` if and only if a corresponding co-signature is present in the envelope.
 - `tip_id_type`: `"personal"` or `"organization"`. Mirrors the `tip_id_type` column on the identity row (set at REGISTER_IDENTITY time, VP-attested). **Strict cross-check:** at API admission and consensus replay, the verifier confirms that `authors[i].tip_id_type` matches `dag.getIdentity(authors[i].tip_id).tip_id_type` — mismatch → `412 author_tip_id_type_mismatch`. This prevents misattribution (e.g. claiming an org TIP-ID as a personal byline).
 
@@ -433,6 +435,8 @@ Common codes for `POST /v1/content/register`:
 | 400 | `content_required` | Neither `content` nor `media_canonical_hash` provided. |
 | 400 | `authors_required` | `authors[]` missing or empty. |
 | 400 | `authors_tip_id_invalid` | An `authors[].tip_id` is missing or not in `tip://id/...` format. |
+| 400 | `author_extra_roles_invalid` | An `authors[].extra_roles` is not 1 to 4 roles from the roster list, each once, in roster order, other than `role`, or `role` is not a roster role (§5). |
+| 409 | `author_extra_roles_not_open` | `authors[].extra_roles` before `AUTHOR_EXTRA_ROLES.ACTIVATION_MS` (§5). |
 | 400 | `attribution_mode_invalid` | `attribution_mode` not in the enum (`self` / `employed` / `hosted`). |
 | 400 | `extras_invalid` | `extras` is not a plain object (e.g. array or null). |
 | 400 | `extras_email_invalid` | `extras.email` is present but is not `{ v: 1 }` with optional `recipients`, `from`, `all` and `attachments`, each 64 lowercase hex (§8). |

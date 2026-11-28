@@ -1179,8 +1179,12 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
           url_takeovers: d.url_takeovers, extras: d.extras, parent_url: d.parent_url, content_hash: d.content_hash,
         });
         if (!r.valid) return { valid: false, error: r.error.message };
-        // Authors: DAG presence, type and org roster, activation-gated.
-        const a = contentRegisterSchema.verifyAuthors(tx, dag, _orgMemberOpts());
+        // Authors: DAG presence, type, org roster and extra roles, activation-gated.
+        const a = contentRegisterSchema.verifyAuthors(tx, dag, {
+          ..._orgMemberOpts(),
+          authorExtraRolesActivationMs: config ? config.authorExtraRolesActivationMs : undefined,
+          atMs: certTimestamp > 0 ? certTimestamp : now,
+        });
         return a.ok ? { valid: true } : { valid: false, error: a.error };
       }
 
