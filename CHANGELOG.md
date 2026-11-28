@@ -11,6 +11,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**Node 2.9.12: several roles for one person on a post** (commit rule, gated on
+`AUTHOR_EXTRA_ROLES.ACTIVATION_MS` = 2026-11-28 15:00 UTC; every node, partners included,
+on 2.9.12 before it)
+- An author entry may carry an optional signed `extra_roles` next to `role`, for example
+  `"role": "author", "extra_roles": ["editor", "reviewer"]`. It is bound into the signed
+  payload only when present, so single-role entries and every existing signature are
+  unchanged (new golden vector `REGISTER_CONTENT:with_extra_roles`).
+- Rules: `role` is a roster role; `extra_roles` holds 1 to 4 other roster roles, each once,
+  in roster order (`400 author_extra_roles_invalid`). Before the epoch the API answers
+  `409 author_extra_roles_not_open` and commit drops it, judged at the round's certificate
+  time. `TIP_AUTHOR_EXTRA_ROLES_ACTIVATION_MS` overrides it on an isolated cluster.
+- `GET /v1/content/:ctid` `authors_resolved[]` gains `extra_roles` (`[]` when none).
+
 **Node 2.9.10: a licensed organization's signed emails are one pool** (API time only,
 no consensus change and no activation; mixed versions are safe)
 - The billing answer to `POST /api/email-signs/check` may now carry

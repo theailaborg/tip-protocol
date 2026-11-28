@@ -65,6 +65,12 @@ const CASES = [
   ["UNBIND_DOMAIN", "base", { domain: "example.com", node_id: "tip://node/n1", reason: "revoked", revoked_at: 1767225600000 }],
   ["REGISTER_CONTENT", "required_only", REGISTER_CONTENT_BASE],
   ["REGISTER_CONTENT", "with_parent_url", { ...REGISTER_CONTENT_BASE, parent_url: "https://example.com/parent-post/" }],
+  ["REGISTER_CONTENT", "with_extra_roles", {
+    ...REGISTER_CONTENT_BASE,
+    signer_tip_id: "tip://id/GB-org",
+    attribution_mode: "employed",
+    authors: [{ key_mode: "attribution", role: "author", extra_roles: ["editor", "reviewer"], signed: false, tip_id: "tip://id/IN-member", tip_id_type: "personal" }],
+  }],
   ["ORG_MEMBER_INVITED", "base", { org_tip_id: "tip://id/GB-org", member_tip_id: "tip://id/IN-member", role: "author", invited_at: 1767225600000 }],
   ["ORG_MEMBER_INVITE_CANCELLED", "base", { org_tip_id: "tip://id/GB-org", member_tip_id: "tip://id/IN-member", invite_tx_id: "invite-deadbeef", claimed_at: 1767225600000, signer_tip_id: "tip://id/IN-member" }],
   ["ORG_MEMBER_ADDED", "base", { org_tip_id: "tip://id/GB-org", member_tip_id: "tip://id/IN-member", invite_tx_id: "invite-deadbeef", accepted_at: 1767225600000 }],

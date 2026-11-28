@@ -42,14 +42,14 @@ const ORG2 = "tip://id/US-0e7db4040667073a";
 const ALICE = "tip://id/IN-cbcd2ea94f1f1d49";
 const BOB = "tip://id/US-ed1c6dbddac62443";
 const BASE_TS = 1767225600000;
-const ACTIVE = { activationMs: 0 };
+const ACTIVE = { activationMs: 0, authorExtraRolesActivationMs: 0 };
 
 let round = 0;
 // Scenario clock: recent past, so the service's wall-clock view of "open invite" matches the frozen tx timestamps.
 let ts = nowMs() - 120_000;
 const next = () => (ts += 1000);
 
-function setup() {
+function setup(extraConfig = { authorExtraRolesActivationMs: 0 }) {
   const dag = initDAG({ dbPath: ":memory:" });
   const nodeKp = generateMLDSAKeypair();
   const keys = {};
@@ -63,7 +63,7 @@ function setup() {
   });
   saveId(ORG, "organization"); saveId(ORG2, "organization"); saveId(ALICE, "personal"); saveId(BOB, "personal");
   for (const id of Object.keys(keys)) dag.setScore(id, 500, 0, BASE_TS);
-  const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey, orgMembersActivationMs: 0 };
+  const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey, orgMembersActivationMs: 0, ...extraConfig };
   const handler = createCommitHandler({ dag, scoring: initScoring(dag, config), config });
   const service = createOrgMemberService({ dag, config, submitTx: () => ({}) });
   return { dag, keys, handler, service };
@@ -420,5 +420,75 @@ describe("11. a member author's signed role is what they did for this post, from
     contentAccepted(ctx, ORG, [ORG], "self", { role: "publisher" });
     // Personal co-authors are not roster members: any role is fine.
     contentAccepted(ctx, ALICE, [ALICE, BOB], "self", { role: "byline" });
+  });
+});
+
+describe("12. one person may hold several roles on a post: role plus extra_roles", () => {
+  // Fresh DAG per test, so the scenario clock can restart in the recent past.
+  beforeEach(() => { ts = nowMs() - 120_000; });
+
+  test("1 to 4 further roster roles, each once, in roster order, are accepted for members and personal co-authors", async () => {
+    const ctx = setup();
+    joined(ctx, ORG, ALICE);
+    contentAccepted(ctx, ORG, [ALICE], "employed", { extra_roles: ["editor"] });
+    contentAccepted(ctx, ORG, [ALICE], "employed", { role: "editor", extra_roles: ["author", "reviewer"] });
+    contentAccepted(ctx, ORG, [ALICE], "employed", { extra_roles: ["editor", "contributor", "reviewer", "correspondent"] });
+    contentAccepted(ctx, ALICE, [ALICE, BOB], "self", { role: "author", extra_roles: ["editor"] });
+  });
+
+  test("the extra roles are signed: the record keeps them, and roles changed after signing are dropped", async () => {
+    const ctx = setup();
+    joined(ctx, ORG, ALICE);
+    const c = contentBody(ctx, ORG, [ALICE], "employed", { extra_roles: ["editor", "reviewer"] });
+    const tx = contentTx(ctx, c, next());
+    expect(commit(ctx, tx)).toMatchObject({ committed: 1, dropped: 0 });
+    const rec = ctx.dag.getContent(tx.data.ctid);
+    expect(rec.authors[0]).toMatchObject({ tip_id: ALICE, role: "author", extra_roles: ["editor", "reviewer"] });
+    const tampered = contentBody(ctx, ORG, [ALICE], "employed", { extra_roles: ["editor"] });
+    tampered.body.authors[0].extra_roles = ["editor", "reviewer"];
+    expect(commit(ctx, contentTx(ctx, tampered, next()))).toMatchObject({ committed: 0, dropped: 1 });
+  });
+
+  test("an empty list, a repeat, the wrong order, the main role again, an unknown role or a byline entry are refused at API and DAG", async () => {
+    const ctx = setup();
+    joined(ctx, ORG, ALICE);
+    const bad = "author_extra_roles_invalid";
+    contentRejected(ctx, ORG, [ALICE], bad, "employed", { extra_roles: [] });
+    contentRejected(ctx, ORG, [ALICE], bad, "employed", { extra_roles: ["editor", "editor"] });
+    contentRejected(ctx, ORG, [ALICE], bad, "employed", { extra_roles: ["reviewer", "editor"] });
+    contentRejected(ctx, ORG, [ALICE], bad, "employed", { extra_roles: ["author"] });
+    contentRejected(ctx, ORG, [ALICE], bad, "employed", { extra_roles: ["senior-editor"] });
+    contentRejected(ctx, ORG, [ORG], bad, "self", { extra_roles: ["editor"] });   // role "byline"
+    contentRejected(ctx, ALICE, [ALICE], bad, "self", { extra_roles: ["editor"] }); // role "byline"
+    expect(() => contentSchema.buildSigningPayload(
+      { ...contentBody(ctx, ORG, [ALICE]).body, authors: [{ tip_id: ALICE, role: "author", extra_roles: "editor" }] }, "a".repeat(64),
+    )).toThrow(expect.objectContaining({ code: bad }));
+  });
+
+  test("before the activation epoch extra roles are refused at API and DAG; a single role still passes", async () => {
+    const opensAt = next() + 10_000_000;
+    const ctx = setup({ authorExtraRolesActivationMs: opensAt });
+    joined(ctx, ORG, ALICE);
+    const c = contentBody(ctx, ORG, [ALICE], "employed", { extra_roles: ["editor"] });
+    const deps = { dag: ctx.dag, now: next(), mediaLimits: {}, activationMs: 0, authorExtraRolesActivationMs: opensAt };
+    expect(() => contentSchema.validateRequest(c.body, deps)).toThrow(expect.objectContaining({ code: "author_extra_roles_not_open", status: 409 }));
+    expect(commit(ctx, contentTx(ctx, c, next()))).toMatchObject({ committed: 0, dropped: 1 });
+    contentAccepted(ctx, ORG, [ALICE]);
+  });
+
+  test("at commit the epoch is judged on the round's certificate time, not the signed tx timestamp", async () => {
+    const opensAt = nowMs() - 30_000;
+    const ctx = setup({ authorExtraRolesActivationMs: opensAt });
+    joined(ctx, ORG, ALICE);
+    const commitAt = (tx, certTimestamp) => ctx.handler.commitOrderedTxs([tx], ++round, { certTimestamp });
+    const signedAfter = contentTx(ctx, contentBody(ctx, ORG, [ALICE], "employed", { extra_roles: ["editor"] }), opensAt + 1000);
+    expect(commitAt(signedAfter, opensAt - 1)).toMatchObject({ committed: 0, dropped: 1 });
+    expect(contentSchema.verifyAuthors(signedAfter, ctx.dag, { ...ACTIVE, authorExtraRolesActivationMs: opensAt, atMs: opensAt - 1 }))
+      .toMatchObject({ ok: false, code: "author_extra_roles_not_open" });
+    // Same timing with a single role commits: the drop above is the epoch, nothing else.
+    const control = contentTx(ctx, contentBody(ctx, ORG, [ALICE], "employed"), opensAt + 2000);
+    expect(commitAt(control, opensAt - 1)).toMatchObject({ committed: 1, dropped: 0 });
+    const signedBefore = contentTx(ctx, contentBody(ctx, ORG, [ALICE], "employed", { extra_roles: ["reviewer"] }), opensAt - 1000);
+    expect(commitAt(signedBefore, opensAt)).toMatchObject({ committed: 1, dropped: 0 });
   });
 });

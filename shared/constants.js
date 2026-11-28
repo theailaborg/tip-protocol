@@ -1260,6 +1260,13 @@ const ORG_MEMBERS = Object.freeze({
 // Roster roles are labels only (no permission is attached yet); locked so the
 // chain never carries variants of the same word.
 const ORG_MEMBER_ROLES = Object.freeze(["author", "editor", "contributor", "reviewer", "correspondent"]);
+// A person's further roles on one post, next to `role`: optional signed
+// `authors[].extra_roles`, absent when there are none (strip rule). Each role
+// appears once, in ORG_MEMBER_ROLES order. New commit rule, so epoch-gated.
+const AUTHOR_EXTRA_ROLES = Object.freeze({
+  MAX: 4,
+  ACTIVATION_MS: 1795878000000, // 2026-11-28 15:00:00 UTC mainnet activation
+});
 // Signing keys resolve at tx.timestamp so history keeps verifying after a
 // rotation or recovery, which would also let a retired key sign forever via a
 // backdated tx. At commit the resolved key must not have been retired more
@@ -1359,6 +1366,7 @@ module.exports = {
   EMAIL_SEALS_REQUIRED_ACTIVATION_MS,
   SEALED_REQUEUE_ACTIVATION_MS,
   ORG_MEMBER_ROLES,
+  AUTHOR_EXTRA_ROLES,
   ORG_MEMBER_STATUS,
   PARENT_URL_LOOKUP,
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,

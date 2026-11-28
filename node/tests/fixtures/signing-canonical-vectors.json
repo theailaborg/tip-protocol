@@ -232,6 +232,33 @@
     },
     "canonical": "{\"attribution_mode\":\"self\",\"authors\":[{\"key_mode\":\"attribution\",\"role\":\"byline\",\"signed\":false,\"tip_id\":\"tip://id/US-author\",\"tip_id_type\":\"personal\"}],\"cna_version\":\"CNA-2.2\",\"content_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"extras\":{},\"origin_code\":\"OH\",\"parent_url\":\"https://example.com/parent-post/\",\"registered_urls\":[\"https://example.com/post/\"],\"signer_tip_id\":\"tip://id/US-author\"}"
   },
+  "REGISTER_CONTENT:with_extra_roles": {
+    "tx_type": "REGISTER_CONTENT",
+    "data": {
+      "signer_tip_id": "tip://id/GB-org",
+      "origin_code": "OH",
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "attribution_mode": "employed",
+      "extras": {},
+      "registered_urls": [
+        "https://example.com/post/"
+      ],
+      "authors": [
+        {
+          "key_mode": "attribution",
+          "role": "author",
+          "extra_roles": [
+            "editor",
+            "reviewer"
+          ],
+          "signed": false,
+          "tip_id": "tip://id/IN-member",
+          "tip_id_type": "personal"
+        }
+      ]
+    },
+    "canonical": "{\"attribution_mode\":\"employed\",\"authors\":[{\"extra_roles\":[\"editor\",\"reviewer\"],\"key_mode\":\"attribution\",\"role\":\"author\",\"signed\":false,\"tip_id\":\"tip://id/IN-member\",\"tip_id_type\":\"personal\"}],\"cna_version\":\"CNA-2.2\",\"content_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"extras\":{},\"origin_code\":\"OH\",\"registered_urls\":[\"https://example.com/post/\"],\"signer_tip_id\":\"tip://id/GB-org\"}"
+  },
   "ORG_MEMBER_INVITED:base": {
     "tx_type": "ORG_MEMBER_INVITED",
     "data": {
