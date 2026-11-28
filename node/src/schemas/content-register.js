@@ -50,7 +50,7 @@ const MCH_SPEC = Object.freeze({
 });
 const {
   TX_TYPES, ORIGIN, CNA_VERSIONS, CNA22_AUTHOR_KEYS, MAX_AUTHORS_PER_POST, TIP_ID_TYPES, ORG_MEMBER_ROLES,
-  ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
+  AUTHOR_EXTRA_ROLES, ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
   PERCEPTUAL_FINGERPRINT_KIND_VALUES, PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
   PERCEPTUAL_FINGERPRINTS_PROFILE, PERCEPTUAL_FINGERPRINTS_ENCODINGS, TEXT_LSH, DOCUMENT_FINGERPRINT,
@@ -159,13 +159,52 @@ function _checkAuthorRoster(signerTipId, authors, dag, atMs, opts) {
 }
 
 /**
+ * A person's further roles on the post (`extra_roles`, normalized entries),
+ * accepted from AUTHOR_EXTRA_ROLES.ACTIVATION_MS. `role` must be a roster role;
+ * the extras are 1 to MAX other roster roles, each once, in ORG_MEMBER_ROLES
+ * order, so one set of roles has exactly one signed form. `atMs` is the API
+ * clock at submit and the round's certificate time at commit.
+ */
+function _checkExtraRoles(authors, atMs, opts = {}) {
+  const listed = authors.filter((a) => a.extra_roles !== undefined);
+  if (listed.length === 0) return;
+  const opensAt = Number.isFinite(opts.authorExtraRolesActivationMs)
+    ? opts.authorExtraRolesActivationMs : AUTHOR_EXTRA_ROLES.ACTIVATION_MS;
+  if (!(atMs >= opensAt)) {
+    throw schemaError(409, "More than one role per author is not accepted yet", "author_extra_roles_not_open");
+  }
+  for (const a of listed) {
+    const pos = a.extra_roles.map((r) => ORG_MEMBER_ROLES.indexOf(r));
+    const inOrder = pos.every((p, i) => p >= 0 && (i === 0 || p > pos[i - 1]));
+    if (!ORG_MEMBER_ROLES.includes(a.role) || pos.length === 0 || pos.length > AUTHOR_EXTRA_ROLES.MAX
+      || !inOrder || a.extra_roles.includes(a.role)) {
+      throw schemaError(
+        400,
+        `Author ${a.tip_id}: extra_roles must list 1 to ${AUTHOR_EXTRA_ROLES.MAX} roles other than role, each once, in this order: ${ORG_MEMBER_ROLES.join(", ")}`,
+        "author_extra_roles_invalid",
+      );
+    }
+  }
+}
+
+/**
  * Commit-time author check (consensus replay). The signer's signature is
  * verified by the unified dispatcher; this re-runs the DAG presence, type
  * and roster predicates on the frozen tx.timestamp. A gossiped tx never
  * passes validateRequest, so this is the only place they bind.
  */
-function verifyAuthors(tx, dag, opts) {
+function verifyAuthors(tx, dag, opts = {}) {
   const d = tx.data || {};
+  // Only a tx that carries extra_roles is normalized here, so replay of every
+  // older tx is unchanged.
+  if (Array.isArray(d.authors) && d.authors.some((a) => a && a.extra_roles != null)) {
+    try {
+      _checkExtraRoles(d.authors.map(_normalizeAuthor), Number.isFinite(opts.atMs) ? opts.atMs : tx.timestamp, opts);
+    } catch (err) {
+      if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
+      throw err;
+    }
+  }
   if (!roster.checkActive(tx.timestamp, opts).ok) return { ok: true };
   try {
     const authors = (Array.isArray(d.authors) ? d.authors : []).map(_normalizeAuthor);
@@ -339,12 +378,13 @@ function validateRequest(body, deps) {
   _checkAuthorsRegistered(body.authors, deps.dag);
   const now = typeof deps.now === "number" ? deps.now : nowMs();
   _checkAuthorRoster(body.signer_tip_id, body.authors, deps.dag, now, deps);
+  _checkExtraRoles(body.authors.map(_normalizeAuthor), now, deps);
 }
 
 /**
- * Normalise a single author entry to exactly the 5 spec keys with
- * defaults for the optional ones. Strips any extra fields the client
- * tried to slip in.
+ * Normalise a single author entry to the 5 spec keys with defaults for
+ * the optional ones, plus `extra_roles` when present. Strips any other
+ * fields the client tried to slip in.
  */
 function _normalizeAuthor(a) {
   if (!a || typeof a !== "object") {
@@ -353,13 +393,22 @@ function _normalizeAuthor(a) {
   if (typeof a.tip_id !== "string" || !a.tip_id.startsWith("tip://id/")) {
     throw schemaError(400, "authors[].tip_id must be a tip://id/... string", "authors_tip_id_invalid");
   }
-  return {
+  const out = {
     key_mode: typeof a.key_mode === "string" ? a.key_mode : "attribution",
     role: typeof a.role === "string" ? a.role : "contributor",
     signed: !!a.signed,
     tip_id: a.tip_id,
     tip_id_type: typeof a.tip_id_type === "string" ? a.tip_id_type : "personal",
   };
+  // Strip rule: bound only when present, so a single-role entry signs
+  // byte-identical to before this field existed.
+  if (a.extra_roles != null) {
+    if (!Array.isArray(a.extra_roles) || !a.extra_roles.every((r) => typeof r === "string")) {
+      throw schemaError(400, "authors[].extra_roles must be an array of role names", "author_extra_roles_invalid");
+    }
+    out.extra_roles = [...a.extra_roles];
+  }
+  return out;
 }
 
 /**
