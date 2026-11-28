@@ -1265,7 +1265,7 @@ const ORG_MEMBER_ROLES = Object.freeze(["author", "editor", "contributor", "revi
 // appears once, in ORG_MEMBER_ROLES order. New commit rule, so epoch-gated.
 const AUTHOR_EXTRA_ROLES = Object.freeze({
   MAX: 4,
-  ACTIVATION_MS: 1797292800000, // 2026-12-15 00:00:00 UTC, provisional, set at release
+  ACTIVATION_MS: 1795878000000, // 2026-11-28 15:00:00 UTC mainnet activation
 });
 // Signing keys resolve at tx.timestamp so history keeps verifying after a
 // rotation or recovery, which would also let a retired key sign forever via a

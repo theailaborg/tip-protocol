@@ -11,9 +11,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-**Several roles for one person on a post** (commit rule, gated on
-`AUTHOR_EXTRA_ROLES.ACTIVATION_MS`, provisional 2026-12-15 00:00 UTC; every node on this
-release before it)
+**Node 2.9.12: several roles for one person on a post** (commit rule, gated on
+`AUTHOR_EXTRA_ROLES.ACTIVATION_MS` = 2026-11-28 15:00 UTC; every node, partners included,
+on 2.9.12 before it)
 - An author entry may carry an optional signed `extra_roles` next to `role`, for example
   `"role": "author", "extra_roles": ["editor", "reviewer"]`. It is bound into the signed
   payload only when present, so single-role entries and every existing signature are
